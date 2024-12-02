@@ -29,13 +29,13 @@ router.post('/signup', async (req, res) => {
     }
 
     // Hash the password
-    const hashedPassword = await bcrypt.hash(password, 10);
+    //const hashedPassword = await bcrypt.hash(password, 10);
 
     // Create new user
     const newUser = new User({
       name,
       email,
-      password: hashedPassword,
+      password,
       teamName,
       playStationId,
     });
@@ -57,11 +57,11 @@ router.post('/login', async (req, res) => {
       return res.status(404).json({ message: 'User not found!' });
     }
 
-    console.log('Password input:', password);
-    console.log('Hashed password in DB:', user.password);
+    // console.log('Password input:', password);
+    // console.log('Hashed password in DB:', user.password);
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
+    //const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (password != user.password) {
       return res.status(401).json({ message: 'Invalid credentials!' });
     }
 
