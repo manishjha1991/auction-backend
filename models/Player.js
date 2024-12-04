@@ -8,7 +8,10 @@ const PlayerSchema = new mongoose.Schema({
   type: { type: String, enum: ['Gold', 'Silver', 'Emerald', 'Sapphire'], required: true },
   image: { type: String, required: true }, // Path to uploaded image
   currentBid: { type: Number, default: 0 },
-  currentBidder: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  currentBidder: {
+    id: { type: String, default: null },
+    name: { type: String, default: null },
+  },
   sold: { type: Boolean, default: false },
 });
 
