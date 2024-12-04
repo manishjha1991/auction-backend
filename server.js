@@ -8,7 +8,7 @@ const { Server } = require('socket.io');
 const authRoutes = require('./routes/auth');
 const playerRoutes = require('./routes/players'); // Adjust the path as needed
 const userRoutes = require('./routes/user'); // Adjust the path
-
+const bidRoutes = require('./routes/bidRoutes'); // Import bid routes
 
 const app = express();
 const server = http.createServer(app);
@@ -25,6 +25,8 @@ app.use('/auth', authRoutes);
 app.use('/players', playerRoutes); // This sets the base route for players
 app.use('/api/users', userRoutes); // Mount the route
 app.use('/api/players', playerRoutes);
+app.use('/api/bids', bidRoutes); // Mount bid routes
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 

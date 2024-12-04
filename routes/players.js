@@ -14,11 +14,6 @@ router.get('/', async (req, res) => {
   }
 });
 
-
-
-
-
-
 // Multer setup for file upload
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -88,6 +83,54 @@ router.put('/:id', upload.single('image'), async (req, res) => {
   }
 });
 
+// Place a bid
+router.put("/:id/bid", async (req, res) => {
+  const { id } = req.params;
+  const { bidAmount, bidder } = req.body;
+
+  try {
+    const player = await Player.findById(id);
+
+    if (!player) {
+      return res.status(404).json({ message: "Player not found" });
+    }
+
+    if (player.currentBidder?.id === bidder.id) {
+      return res.status(400).json({ message: "You cannot bid again until another user bids." });
+    }
+
+    if (bidAmount < player.currentBid + 1000000) {
+      return res.status(400).json({ message: "Minimum bid increment is ₹10 Lakh." });
+    }
+
+    // Update player's bid
+    player.currentBid = bidAmount;
+    player.currentBidder = bidder;
+
+    await player.save();
+
+    res.json({ currentBid: player.currentBid, currentBidder: player.currentBidder });
+  } catch (err) {
+    res.status(500).json({ message: "Error updating bid" });
+  }
+});
+
+// Mark a player as sold
+router.put("/:id/sold", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const player = await Player.findByIdAndUpdate(id, { sold: true }, { new: true });
+
+    if (!player) {
+      return res.status(404).json({ message: "Player not found" });
+    }
+
+    res.json(player);
+  } catch (err) {
+    res.status(500).json({ message: "Error marking player as sold" });
+  }
+});
 
 module.exports = router;
 
