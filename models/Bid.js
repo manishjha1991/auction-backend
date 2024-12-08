@@ -5,6 +5,7 @@ const BidSchema = new mongoose.Schema({
     bidder: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     bidAmount: { type: Number, required: true },
     timestamp: { type: Date, default: Date.now },
+    isBidOn:{ type: Boolean, default: true },
 });
 
 module.exports = mongoose.model('Bid', BidSchema);

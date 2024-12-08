@@ -137,12 +137,14 @@ router.get("/:playerId/bids", async (req, res) => {
         bidder: bid.bidder,
         bidAmount: formatPrice(bid.bidAmount), // Format bid amount
         createdAt: bid.timestamp,
+        isBidOn:bid.isBidOn
       })),
       allBids: allBids.map((bid) => ({
         id: bid._id,
         bidder: bid.bidder,
         bidAmount: formatPrice(bid.bidAmount), // Format bid amount
         createdAt: bid.timestamp,
+        isBidOn:bid.isBidOn
       })),
     });
   } catch (error) {

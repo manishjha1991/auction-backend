@@ -83,7 +83,7 @@ router.post("/:playerId/exit", validateUser, async (req, res) => {
     }
 
     // Fetch all active bids for the player
-    const activeBids = await Bid.find({ playerId }).sort({ bidAmount: -1 });
+    const activeBids = await Bid.find({ playerId, isBidOn: 1 }).sort({ bidAmount: -1 });
 
     if (!activeBids || activeBids.length === 0) {
       return res.status(400).json({ message: "No active bids found for this player." });
@@ -109,8 +109,8 @@ router.post("/:playerId/exit", validateUser, async (req, res) => {
       });
     }
 
-    // Remove the user's bid
-    await Bid.deleteMany({ playerId, bidder: userId });
+    // Update the user's bid to inactive
+    await Bid.updateMany({ playerId, bidder: userId }, { $set: { isBidOn: false} });
 
     // Update the player's currentBid and currentBidder
     if (otherBidders.length > 0) {
@@ -133,6 +133,7 @@ router.post("/:playerId/exit", validateUser, async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+
 
 
 
