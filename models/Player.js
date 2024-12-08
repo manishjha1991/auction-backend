@@ -1,18 +1,18 @@
 const mongoose = require('mongoose');
 
 const PlayerSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  role: { type: String, required: true },
-  style: { type: String, required: true },
-  basePrice: { type: Number, required: true },
-  type: { type: String, enum: ['Gold', 'Silver', 'Emerald', 'Sapphire'], required: true },
-  image: { type: String, required: true }, // Path to uploaded image
-  currentBid: { type: Number, default: 0 },
-  currentBidder: {
-    id: { type: String, default: null },
-    name: { type: String, default: null },
-  },
-  sold: { type: Boolean, default: false },
+    playerID: { type: String, required: true, unique: true },
+    name: { type: String, required: true },
+    type: { type: String, enum: ["Emerald", "Silver", "Gold", "Sapphire"], required: true },
+    role: { type: String, enum: ["Batsman", "Bowler", "Allrounder", "WicketKeeper"], required: true },
+    basePrice: { type: Number, required: true },
+    style:{ type: String, required: true },
+    basePriceUnit: { type: String, enum: ["CR", "Lakh"], required: true },
+    overallScore: { type: Number, required: true },
+    profilePicture: { type: String },
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now },
+    isSold: { type: Boolean, default: false }
 });
 
 module.exports = mongoose.model('Player', PlayerSchema);

@@ -22,9 +22,9 @@ app.use(cors());
 app.use(express.json());
 
 app.use('/auth', authRoutes);
-app.use('/players', playerRoutes); // This sets the base route for players
+app.use('/api/player', playerRoutes); // This sets the base route for players
 app.use('/api/users', userRoutes); // Mount the route
-app.use('/api/players', playerRoutes);
+app.use('/api', playerRoutes);
 app.use('/api/bids', bidRoutes); // Mount bid routes
 
 io.on('connection', (socket) => {
