@@ -6,7 +6,8 @@ const UserSchema = new mongoose.Schema({
   password: { type: String, required: true },
   teamName: { type: String },
   teamImage: { type: String },
-  purse: { type: Number, default: 100 },
+  purse: { type: mongoose.Schema.Types.Decimal128, default: 1000000000 },
+
   boughtPlayers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Player' }],
   currentBid: {
     playerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Player' },

@@ -5,7 +5,7 @@ const router = express.Router();
 const User = require('../models/User'); // Adjust the path based on your project structure
 const Player = require('../models/Player');
 const Bid = require('../models/Bid');
-
+const UserPlayer = require('../models/UserPlayer');
 
 
 // Signup Route
@@ -84,36 +84,49 @@ router.get("/:userId/details", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    // Fetch sold players (players the user has won)
-    const soldPlayers = await Player.find({ userId })
+    // Fetch sold players for the user
+    const soldPlayers = await UserPlayer.find({ userId })
       .populate("playerId", "name type role basePrice")
       .exec();
 
-    // Fetch current bids
-    const currentBids = await Bid.find({ bidder: userId })
-      .populate("playerId", "name type role basePrice currentBid")
-      .sort({ createdAt: -1 })
-      .exec();
+    // Fetch all bids for the user
 
-    // Separate active and past bids
-    const pastBids = [];
-    const activeBids = [];
+    const userBids = await Bid.find({ bidder: userId })
+    .populate("playerId", "name type role basePrice")
+    .sort({ timestamp: -1 })
+    .exec();
+  
+  // Separate active and past bids
+  const activeBids = [];
+  const pastBids = [];
+  
+  for (const bid of userBids) {
+    if (bid.isBidOn && bid.isActive) {
+      // Active bids
+      activeBids.push({
+        player: bid.playerId,
+        bidAmount: bid.bidAmount,
+        status: "Active",
+      });
+    } else {
+      // Past bids: Check if the user is the highest bidder
+      const highestBid = await Bid.findOne({ playerId: bid.playerId._id })
+        .sort({ bidAmount: -1 })
+        .exec();
+  
+      const status = highestBid && highestBid.bidder.toString() === userId.toString() ? "Won" : "Lost";
+  
+      pastBids.push({
+        player: bid.playerId,
+        bidAmount: bid.bidAmount,
+        status: status,
+      });
+    }
+  }
 
-    currentBids.forEach((bid) => {
-      if (bid.playerId.isSold) {
-        pastBids.push({
-          player: bid.playerId,
-          bidAmount: bid.bidAmount,
-          status: "Lost",
-        });
-      } else {
-        activeBids.push({
-          player: bid.playerId,
-          bidAmount: bid.bidAmount,
-          status: "Active",
-        });
-      }
-    });
+
+    // Limit past bids to the last 5
+    const lastFivePastBids = pastBids.slice(0, 5);
 
     res.status(200).json({
       user: {
@@ -128,13 +141,15 @@ router.get("/:userId/details", async (req, res) => {
         bidValue: sp.bidValue,
       })),
       activeBids,
-      pastBids,
+      pastBids: lastFivePastBids,
     });
   } catch (error) {
     console.error("Error fetching user details:", error);
     res.status(500).json({ message: "Internal server error." });
   }
 });
+
+
 
 
 

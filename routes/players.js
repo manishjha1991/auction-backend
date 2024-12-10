@@ -31,22 +31,12 @@ router.post('/player', upload.single('profilePicture'), async (req, res) => {
     }
 
     // Format the base price
-    const formatBasePrice = (price) => {
-      const value = Number(price);
-      if (value >= 10000000) return `${(value / 10000000).toFixed(2)} CR`;
-      if (value >= 100000) return `${(value / 100000).toFixed(2)} Lakh`;
-      return `${(value / 1000).toFixed(2)} K`;
-    };
-
-    const formattedBasePrice = formatBasePrice(basePrice);
-
     const newPlayer = new Player({
       playerID: uuidv4(),
       name,
       type,
       role,
-      basePrice: basePrice, // Save the formatted base price
-      basePriceUnit,
+      basePrice, // Save the formatted base price
       overallScore,
       profilePicture,
       style,
@@ -130,19 +120,19 @@ router.get("/:playerId/bids", async (req, res) => {
         battingStyle: player.style || null,
         score: player.overallScore || null,
         status:player.isSold,
-        basePrice: formatPrice(player.basePrice), // Format base price
+        basePrice: player.basePrice, // Format base price
       },
       topTwoBids: lastTwoBids.map((bid) => ({
         id: bid._id,
         bidder: bid.bidder,
-        bidAmount: formatPrice(bid.bidAmount), // Format bid amount
+        bidAmount: bid.bidAmount, // Format bid amount
         createdAt: bid.timestamp,
         isBidOn:bid.isBidOn
       })),
       allBids: allBids.map((bid) => ({
         id: bid._id,
         bidder: bid.bidder,
-        bidAmount: formatPrice(bid.bidAmount), // Format bid amount
+        bidAmount: bid.bidAmount, // Format bid amount
         createdAt: bid.timestamp,
         isBidOn:bid.isBidOn
       })),
@@ -177,7 +167,7 @@ router.get("/players/data", async (req, res) => {
 
             // Use bidValue as base price if available
             if (userPlayer.bidValue) {
-              basePrice = formatPrice(userPlayer.bidValue);
+              basePrice = userPlayer.bidValue;
             }
           }
         } else {

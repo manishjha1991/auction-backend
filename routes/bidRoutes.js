@@ -1,10 +1,11 @@
 const express = require("express");
 const Bid = require("../models/Bid");
 const Player = require("../models/Player");
-const UserPlayer =require("../models/UserPlayer");
+const UserPlayer = require("../models/UserPlayer");
 const router = express.Router();
 const BidHistory = require("../models/BidHistory.js");
 const validateUser = require("../config/validation.js")
+const User = require("../models/User.js");
 // Place a bid
 router.put("/:playerId/bid", validateUser, async (req, res) => {
   const { playerId } = req.params;
@@ -21,7 +22,17 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     if (player.isSold) {
       return res.status(400).json({ message: "Cannot place bids on a sold player." });
     }
-
+    // Check if the user has any active bids on other players
+    const activeBidsOnOtherPlayers = await Bid.find({
+      bidder,
+      isActive: true,
+      playerId: { $ne: playerId }, // Exclude the current player
+    });
+    if (activeBidsOnOtherPlayers.length > 0) {
+      return res.status(400).json({
+        message: "You already have an active bid on another player. Exit the current auction to bid on this player.",
+      });
+    }
     // Check if bid is valid
     if (bidAmount < player.basePrice || (player.currentBid && bidAmount <= player.currentBid)) {
       return res.status(400).json({
@@ -29,21 +40,40 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
       });
     }
 
-    // Fetch the last bid for this player
-    const lastBid = await Bid.findOne({ playerId }).sort({ timestamp: -1 });
+    // Fetch all active bids for the player
+    const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 }); // Sort by bidAmount or timestamp as required
+
+    // Ensure there is only one active bid
+    if (activeBids.length > 1) {
+      return res.status(400).json({
+        message: "Invalid state: Multiple active bids found. Please contact support.",
+      });
+    }
 
     // Ensure the same user cannot place consecutive bids
-    if (lastBid && lastBid.bidder.toString() === bidder.toString()) {
+    if (activeBids.length > 0 && activeBids[0].bidder.toString() === bidder.toString()) {
       return res.status(400).json({
         message: "You cannot place consecutive bids. Wait for another bidder to bid.",
       });
     }
 
-    // Save the bid to the bids collection
+    // Fetch all bids for the player and exclude the last two bids
+    const bidsToUpdate = await Bid.find({ playerId })
+      .sort({ bidAmount: -1 }) // Sort by bidAmount or timestamp
+      .skip(2); // Skip the top two bids
+
+    // Mark all bids except the last two as inactive
+    await Bid.updateMany(
+      { _id: { $in: bidsToUpdate.map((bid) => bid._id) } },
+      { $set: { isActive: false } }
+    );
+
+    // Save the new bid to the bids collection
     const newBid = new Bid({
       playerId,
       bidder,
       bidAmount,
+      isActive: true, // Mark the new bid as active
     });
     await newBid.save();
 
@@ -62,7 +92,6 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
-
 
 
 // Out from bid
@@ -110,7 +139,7 @@ router.post("/:playerId/exit", validateUser, async (req, res) => {
     }
 
     // Update the user's bid to inactive
-    await Bid.updateMany({ playerId, bidder: userId }, { $set: { isBidOn: false} });
+    await Bid.updateMany({ playerId, bidder: userId }, { $set: { isBidOn: false, isActive: false } });
 
     // Update the player's currentBid and currentBidder
     if (otherBidders.length > 0) {
@@ -135,22 +164,14 @@ router.post("/:playerId/exit", validateUser, async (req, res) => {
 });
 
 
-
-
-
-
 // Get all bids for a player
-
-
-
-
 router.post("/bid/sold", async (req, res) => {
   const { playerID } = req.body;
 
   try {
     // Find the player
     const player = await Player.findById(playerID);
-    
+
     if (!player) {
       return res.status(404).json({ message: "Player not found" });
     }
@@ -170,6 +191,12 @@ router.post("/bid/sold", async (req, res) => {
     // Find the highest bid
     const highestBid = bids[0];
 
+    // Mark all bids as inactive
+    await Bid.updateMany(
+      { playerId: playerID },
+      { $set: { isActive: false, isBidOn: false } }
+    );
+
     // Create an entry in the UserPlayer schema for the sold player
     const newUserPlayer = new UserPlayer({
       playerId: playerID,
@@ -188,11 +215,13 @@ router.post("/bid/sold", async (req, res) => {
       // Create a new history entry if it doesn't exist
       await new BidHistory({
         playerId: playerID,
+        bidID: highestBid._id, // Add bidID
         bids: bids.map((bid) => ({
-          bidder: bid.bidder,
+          userID: bid.bidder, // Add userID for each bid
           bidAmount: bid.bidAmount,
-          status: bid._id === highestBid._id,
+          status: bid._id.toString() === highestBid._id.toString(),
           createdAt: bid.createdAt,
+          updatedAt: bid.updatedAt,
         })),
       }).save();
     } else {
@@ -204,7 +233,24 @@ router.post("/bid/sold", async (req, res) => {
       });
       await bidHistory.save();
     }
+// Fetch the winning user
+const user = await User.findById(highestBid.bidder);
 
+// Check if the user exists
+if (!user) {
+  return res.status(404).json({ message: "Winning bidder not found." });
+}
+
+// Ensure the user has enough balance to cover the bid amount
+if (user.purse < highestBid.bidAmount) {
+  return res.status(400).json({ message: "Insufficient purse balance for the winning bidder." });
+}
+
+// Deduct the bid amount from the user's purse
+user.purse -= highestBid.bidAmount;
+
+// Save the updated user details
+await user.save();
     res.status(200).json({
       message: "Player sold successfully.",
       player: player.name,
@@ -216,6 +262,7 @@ router.post("/bid/sold", async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
+
 
 
 

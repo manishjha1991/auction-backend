@@ -6,6 +6,7 @@ const BidSchema = new mongoose.Schema({
     bidAmount: { type: Number, required: true },
     timestamp: { type: Date, default: Date.now },
     isBidOn:{ type: Boolean, default: true },
+    isActive:{ type: Boolean, default: true }
 });
 
 module.exports = mongoose.model('Bid', BidSchema);
