@@ -196,12 +196,20 @@ router.get("/players/data", async (req, res) => {
       })
     );
 
-    res.status(200).json(formattedPlayers);
+    // Sort players to prioritize those with currentBidder
+    const sortedPlayers = formattedPlayers.sort((a, b) => {
+      if (a.currentBidder !== "N/A" && b.currentBidder === "N/A") return -1; // a has currentBidder, b does not
+      if (a.currentBidder === "N/A" && b.currentBidder !== "N/A") return 1; // b has currentBidder, a does not
+      return 0; // Keep the original order if both have or don't have currentBidder
+    });
+
+    res.status(200).json(sortedPlayers);
   } catch (error) {
     console.error("Error fetching player data:", error);
     res.status(500).json({ message: "Internal server error." });
   }
 });
+
 
 
 
