@@ -53,48 +53,48 @@ router.post('/player', upload.single('profilePicture'), async (req, res) => {
 
 // Edit Player
 router.put('/player/:playerID', upload.single('profilePicture'), async (req, res) => {
-    try {
-        const { playerID } = req.params;
-        const updates = req.body;
+  try {
+    const { playerID } = req.params;
+    const updates = req.body;
 
-        // If a new profile picture is uploaded, update its path
-        if (req.file) {
-            updates.profilePicture = req.file.path;
-        }
-
-        const updatedPlayer = await Player.findOneAndUpdate(
-            { playerID },
-            { $set: updates, updatedAt: new Date() },
-            { new: true }
-        );
-
-        if (!updatedPlayer) {
-            return res.status(404).json({ message: 'Player not found' });
-        }
-
-        res.status(200).json({ message: 'Player updated successfully', player: updatedPlayer });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Internal Server Error' });
+    // If a new profile picture is uploaded, update its path
+    if (req.file) {
+      updates.profilePicture = req.file.path;
     }
+
+    const updatedPlayer = await Player.findOneAndUpdate(
+      { playerID },
+      { $set: updates, updatedAt: new Date() },
+      { new: true }
+    );
+
+    if (!updatedPlayer) {
+      return res.status(404).json({ message: 'Player not found' });
+    }
+
+    res.status(200).json({ message: 'Player updated successfully', player: updatedPlayer });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 
 // Delete Player
 router.delete('/player/:playerID', async (req, res) => {
-    try {
-        const { playerID } = req.params;
+  try {
+    const { playerID } = req.params;
 
-        const deletedPlayer = await Player.findOneAndDelete({ playerID });
+    const deletedPlayer = await Player.findOneAndDelete({ playerID });
 
-        if (!deletedPlayer) {
-            return res.status(404).json({ message: 'Player not found' });
-        }
-
-        res.status(200).json({ message: 'Player deleted successfully' });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Internal Server Error' });
+    if (!deletedPlayer) {
+      return res.status(404).json({ message: 'Player not found' });
     }
+
+    res.status(200).json({ message: 'Player deleted successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 router.get("/:playerId/bids", async (req, res) => {
   const { playerId } = req.params;
@@ -119,7 +119,7 @@ router.get("/:playerId/bids", async (req, res) => {
         role: player.role,
         battingStyle: player.style || null,
         score: player.overallScore || null,
-        status:player.isSold,
+        status: player.isSold,
         basePrice: player.basePrice, // Format base price
       },
       topTwoBids: lastTwoBids.map((bid) => ({
@@ -127,14 +127,14 @@ router.get("/:playerId/bids", async (req, res) => {
         bidder: bid.bidder,
         bidAmount: bid.bidAmount, // Format bid amount
         createdAt: bid.timestamp,
-        isBidOn:bid.isBidOn
+        isBidOn: bid.isBidOn
       })),
       allBids: allBids.map((bid) => ({
         id: bid._id,
         bidder: bid.bidder,
         bidAmount: bid.bidAmount, // Format bid amount
         createdAt: bid.timestamp,
-        isBidOn:bid.isBidOn
+        isBidOn: bid.isBidOn
       })),
     });
   } catch (error) {
@@ -154,7 +154,7 @@ router.get("/players/data", async (req, res) => {
         let currentBidderName = "N/A";
         let teamName = "N/A";
         let status = "Unsold";
-        let basePrice = `${player.basePrice} `; // Default to player's base price
+        let basePrice = parseFloat(player.basePrice); // Default to player's base price
 
         if (player.isSold) {
           // Fetch UserPlayer details if the player is sold
@@ -167,7 +167,7 @@ router.get("/players/data", async (req, res) => {
 
             // Use bidValue as base price if available
             if (userPlayer.bidValue) {
-              basePrice = userPlayer.bidValue;
+              basePrice = parseFloat(userPlayer.bidValue);
             }
           }
         } else {
@@ -179,6 +179,7 @@ router.get("/players/data", async (req, res) => {
           if (highestBid) {
             currentBidderName = highestBid.bidder.name || "N/A";
             teamName = highestBid.bidder.teamName || "N/A";
+            basePrice = parseFloat(highestBid.bidAmount); // Use highest bid amount as base price
           }
         }
 
@@ -187,7 +188,7 @@ router.get("/players/data", async (req, res) => {
           name: player.name,
           type: player.type,
           role: player.role,
-          basePrice: basePrice, // Use bidValue if available, otherwise base price
+          basePrice: `${basePrice}`, // Use highest bid value if available, otherwise base price
           currentBidder: currentBidderName,
           teamName: teamName,
           status: status,
@@ -201,6 +202,7 @@ router.get("/players/data", async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
+
 
 
 module.exports = router;

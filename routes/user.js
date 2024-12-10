@@ -85,44 +85,44 @@ router.get("/:userId/details", async (req, res) => {
     }
 
     // Fetch sold players for the user
-    const soldPlayers = await UserPlayer.find({ userId })
+    const soldPlayers = await UserPlayer.find({ userId, isActive: true })
       .populate("playerId", "name type role basePrice")
       .exec();
 
     // Fetch all bids for the user
 
     const userBids = await Bid.find({ bidder: userId })
-    .populate("playerId", "name type role basePrice")
-    .sort({ timestamp: -1 })
-    .exec();
-  
-  // Separate active and past bids
-  const activeBids = [];
-  const pastBids = [];
-  
-  for (const bid of userBids) {
-    if (bid.isBidOn && bid.isActive) {
-      // Active bids
-      activeBids.push({
-        player: bid.playerId,
-        bidAmount: bid.bidAmount,
-        status: "Active",
-      });
-    } else {
-      // Past bids: Check if the user is the highest bidder
-      const highestBid = await Bid.findOne({ playerId: bid.playerId._id })
-        .sort({ bidAmount: -1 })
-        .exec();
-  
-      const status = highestBid && highestBid.bidder.toString() === userId.toString() ? "Won" : "Lost";
-  
-      pastBids.push({
-        player: bid.playerId,
-        bidAmount: bid.bidAmount,
-        status: status,
-      });
+      .populate("playerId", "name type role basePrice")
+      .sort({ timestamp: -1 })
+      .exec();
+
+    // Separate active and past bids
+    const activeBids = [];
+    const pastBids = [];
+
+    for (const bid of userBids) {
+      if (bid.isBidOn && bid.isActive) {
+        // Active bids
+        activeBids.push({
+          player: bid.playerId,
+          bidAmount: bid.bidAmount,
+          status: "Active",
+        });
+      } else {
+        // Past bids: Check if the user is the highest bidder
+        const highestBid = await Bid.findOne({ playerId: bid.playerId._id })
+          .sort({ bidAmount: -1 })
+          .exec();
+
+        const status = highestBid && highestBid.bidder.toString() === userId.toString() ? "Won" : "Lost";
+
+        pastBids.push({
+          player: bid.playerId,
+          bidAmount: bid.bidAmount,
+          status: status,
+        });
+      }
     }
-  }
 
 
     // Limit past bids to the last 5
@@ -148,6 +148,60 @@ router.get("/:userId/details", async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
+
+router.get("/purses", async (req, res) => {
+  try {
+    // Fetch all users
+    const users = await User.find().select("name purse");
+
+    const userData = await Promise.all(
+      users.map(async (user) => {
+        // Fetch players owned by the user (from UserPlayer)
+        const userPlayers = await UserPlayer.find({ userId: user._id, isActive: true }).populate(
+          "playerId",
+          "name type"
+        );
+
+        // Fetch active bids placed by the user (from Bid)
+        const activeBids = await Bid.find({ bidder: user._id, isActive: true })
+          .populate("playerId", "name type")
+          .sort({ bidAmount: -1 });
+
+        // Map sold players (from UserPlayer)
+        const soldPlayers = userPlayers.map((entry) => ({
+          name: entry.playerId.name,
+          boughtValue: entry.bidValue,
+          type: entry.playerId.type,
+          isBidOn: false, // Sold players are not actively being bid on
+          biddingPrice: null,
+          biddingBy: null,
+        }));
+
+        // Map actively bid players (from Bid)
+        const biddingPlayers = activeBids.map((bid) => ({
+          name: bid.playerId.name,
+          boughtValue: null, // Not yet sold, so no bought value
+          type: bid.playerId.type,
+          isBidOn: true, // Actively being bid on
+          biddingPrice: bid.bidAmount,
+          biddingBy: user.name, // User placing the bid
+        }));
+
+        return {
+          userName: user.name,
+          purseValue: parseFloat(user.purse.toString()), // Convert Decimal128 to Number
+          players: [...soldPlayers, ...biddingPlayers], // Combine sold and bidding players
+        };
+      })
+    );
+
+    res.status(200).json(userData);
+  } catch (error) {
+    console.error("Error fetching user purse data:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
+});
+
 
 
 
