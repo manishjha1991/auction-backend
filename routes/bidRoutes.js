@@ -54,13 +54,19 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
 
     // Fetch all active bids for the player
     const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 }); // Sort by bidAmount or timestamp as required
+    const userBid = activeBids.find((bid) => bid.bidder.toString() === bidder);
 
-    // Ensure there is only one active bid
-    if (activeBids.length > 1) {
-      return res.status(400).json({
-        message: "Invalid state: Multiple active bids found. Please contact support.",
-      });
+    if (!userBid) {
+      if (activeBids.length > 1) {
+        return res.status(400).json({
+          message: "Invalid state: Multiple active bids found. Please contact support.",
+        });
+      }
+      // Case 1: User already has an active bid
+      // return { success: true, message: "Bidder ID found. Proceeding with the process.", data: { bidAmount } };
     }
+    // Ensure there is only one active bid
+    
 
     // Ensure the same user cannot place consecutive bids
     if (activeBids.length > 0 && activeBids[0].bidder.toString() === bidder.toString()) {
