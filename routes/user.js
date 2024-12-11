@@ -162,10 +162,11 @@ router.get("/purses", async (req, res) => {
           "name type"
         );
 
-        // Fetch active bids placed by the user (from Bid)
-        const activeBids = await Bid.find({ bidder: user._id, isActive: true })
+        // Fetch the last active bid placed by the user (from Bid)
+        const lastActiveBid = await Bid.findOne({ bidder: user._id, isActive: true })
           .populate("playerId", "name type")
-          .sort({ bidAmount: -1 });
+          .sort({ bidAmount: -1 }) // Sort by highest bid
+          .exec();
 
         // Map sold players (from UserPlayer)
         const soldPlayers = userPlayers.map((entry) => ({
@@ -177,20 +178,25 @@ router.get("/purses", async (req, res) => {
           biddingBy: null,
         }));
 
-        // Map actively bid players (from Bid)
-        const biddingPlayers = activeBids.map((bid) => ({
-          name: bid.playerId.name,
-          boughtValue: null, // Not yet sold, so no bought value
-          type: bid.playerId.type,
-          isBidOn: true, // Actively being bid on
-          biddingPrice: bid.bidAmount,
-          biddingBy: user.name, // User placing the bid
-        }));
+        // Map the last actively bid player
+        const biddingPlayers =
+          lastActiveBid
+            ? [
+                {
+                  name: lastActiveBid.playerId.name,
+                  boughtValue: null, // Not yet sold, so no bought value
+                  type: lastActiveBid.playerId.type,
+                  isBidOn: true, // Actively being bid on
+                  biddingPrice: lastActiveBid.bidAmount,
+                  biddingBy: user.name, // User placing the bid
+                },
+              ]
+            : []; // No active bid, return an empty array
 
         return {
           userName: user.name,
           purseValue: parseFloat(user.purse.toString()), // Convert Decimal128 to Number
-          players: [...soldPlayers, ...biddingPlayers], // Combine sold and bidding players
+          players: [...soldPlayers, ...biddingPlayers], // Combine sold and the last bidding player
         };
       })
     );
@@ -201,7 +207,6 @@ router.get("/purses", async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
-
 
 
 
