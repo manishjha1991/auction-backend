@@ -6,8 +6,10 @@ const User = require('../models/User'); // Adjust the path based on your project
 const Player = require('../models/Player');
 const Bid = require('../models/Bid');
 const UserPlayer = require('../models/UserPlayer');
-
-
+const multer = require('multer');
+const path = require('path');
+// Configure Multer for file uploads
+const upload = multer({ dest: 'uploads/' });
 // Signup Route
 router.post('/signup', async (req, res) => {
   const { name, email, password, teamName, playStationId } = req.body;
@@ -71,9 +73,6 @@ router.post('/login', async (req, res) => {
   }
 });
 
-
-
-
 router.get("/:userId/details", async (req, res) => {
   const { userId } = req.params;
 
@@ -133,6 +132,7 @@ router.get("/:userId/details", async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        image:user.teamImage,
         teamName: user.teamName,
         purse: user.purse,
       },
@@ -209,10 +209,50 @@ router.get("/purses", async (req, res) => {
 });
 
 
+//Edit Profile Api 
 
+router.put('/:id', upload.single('teamImage'), async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { name, teamName } = req.body;
 
+    // Validate inputs
+    if (!name || !teamName) {
+      return res.status(400).json({ message: 'Name and team name are required.' });
+    }
 
+    const user = await User.findById(userId);
 
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
 
+    // Update user fields
+    user.name = name;
+    user.teamName = teamName;
+
+    // Update teamImage if provided
+    if (req.file) {
+      const teamImagePath = `/uploads/${req.file.filename}`; // Update with proper file storage path
+      user.teamImage = teamImagePath;
+    }
+
+    await user.save();
+
+    res.status(200).json({
+      message: 'Profile updated successfully.',
+      user: {
+        name: user.name,
+        teamName: user.teamName,
+        teamImage: user.teamImage,
+      },
+    });
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    res.status(500).json({ message: 'An error occurred while updating the profile.' });
+  }
+});
 
 module.exports = router;
+
+
