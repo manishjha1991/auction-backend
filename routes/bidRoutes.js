@@ -30,6 +30,18 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "Bidder not found." });
     }
+    // Fetch active bids on this player
+    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
+
+    // Ensure only two bidders can actively bid on the player
+    const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
+
+    if (activeBidders.length >= 2 && !activeBidders.includes(bidder.toString())) {
+      return res.status(400).json({
+        message: 'Only two bidders can actively bid on a player. Wait for one of the current bidders to exit.',
+      });
+    }
+
 
     // Fetch the highest active bid for the player from the Bid collection
     const highestBid = await Bid.findOne({ playerId, isActive: true })
@@ -59,8 +71,8 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     // Check if the user has sufficient purse balance for the calculated bid amount
     const lockedAmount =
       user.currentBid &&
-      user.currentBid.playerId &&
-      user.currentBid.playerId.toString() === playerId
+        user.currentBid.playerId &&
+        user.currentBid.playerId.toString() === playerId
         ? user.currentBid.amount
         : 0;
 
@@ -123,10 +135,6 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
-
-
-
-
 
 
 // Out from bid
@@ -211,116 +219,6 @@ router.post("/:playerId/exit", validateUser, async (req, res) => {
 });
 
 
-
-
-// router.post("/bid/sold", async (req, res) => {
-//   const { playerID } = req.body;
-
-//   try {
-//     // Find the player
-//     const player = await Player.findById(playerID);
-
-//     if (!player) {
-//       return res.status(404).json({ message: "Player not found" });
-//     }
-
-//     // Check if the player is already sold
-//     if (player.isSold) {
-//       return res.status(400).json({ message: "Player is already sold." });
-//     }
-
-//     // Fetch all bids for the player
-//     const bids = await Bid.find({ playerId: playerID }).sort({ bidAmount: -1 });
-
-//     if (!bids || bids.length === 0) {
-//       return res.status(404).json({ message: "No bids found for this player." });
-//     }
-
-//     // Find the highest bid
-//     const highestBid = bids[0];
-
-//     // Mark all bids as inactive
-//     await Bid.updateMany(
-//       { playerId: playerID },
-//       { $set: { isActive: false } }
-//     );
-
-//     // Create an entry in the UserPlayer schema for the sold player
-//     const newUserPlayer = new UserPlayer({
-//       playerId: playerID,
-//       userId: highestBid.bidder,
-//       bidValue: highestBid.bidAmount,
-//       isActive: true
-//     });
-//     await newUserPlayer.save();
-
-
-
-//     // Log the sold bid in the BidHistory schema
-//     const bidHistory = await BidHistory.findOne({ playerId: playerID });
-//     if (!bidHistory) {
-//       // Create a new history entry if it doesn't exist
-//       await new BidHistory({
-//         playerId: playerID,
-//         bidID: highestBid._id, // Add bidID
-//         bids: bids.map((bid) => ({
-//           userID: bid.bidder, // Add userID for each bid
-//           bidAmount: bid.bidAmount,
-//           status: bid._id.toString() === highestBid._id.toString(),
-//           createdAt: bid.createdAt,
-//           updatedAt: bid.updatedAt,
-//         })),
-//       }).save();
-//     } else {
-//       // Update existing history
-//       bidHistory.bids.forEach((history) => {
-//         if (history._id.toString() === highestBid._id.toString()) {
-//           history.status = true;
-//         }
-//       });
-//       await bidHistory.save();
-//     }
-//     // Fetch the winning user
-//     const user = await User.findById(highestBid.bidder);
-
-//     // Check if the user exists
-//     if (!user) {
-//       return res.status(404).json({ message: "Winning bidder not found." });
-//     }
-
-//     // Ensure the user has enough balance to cover the bid amount
-//     if (user.purse < highestBid.bidAmount) {
-//       return res.status(400).json({ message: "Insufficient purse balance for the winning bidder." });
-//     }
-
-//     // Deduct the bid amount from the user's purse
-//     // Deduct the bid amount from the user's purse and clear locked bid
-//     const lockedAmount = parseFloat(user.currentBid?.amount || 0);
-//     const purse = parseFloat(user.purse.toString());
-
-//     user.purse = mongoose.Types.Decimal128.fromString(
-//       (purse - highestBid.bidAmount + lockedAmount).toString()
-//     );
-//     user.currentBid = null; // Clear the locked bid
-//     user.boughtPlayers.push(playerID); // Add the player to the user's bought players
-
-//     // Save the updated user details
-//     await user.save();
-
-//     // Mark the player as sold
-//     player.isSold = true;
-//     await player.save();
-//     res.status(200).json({
-//       message: "Player sold successfully.",
-//       player: player.name,
-//       highestBid,
-//       soldTo: highestBid.bidder,
-//     });
-//   } catch (error) {
-//     console.error("Error marking player as sold:", error);
-//     res.status(500).json({ message: "Internal server error." });
-//   }
-// });
 router.post("/bid/sold", async (req, res) => {
   const { playerID } = req.body;
 
