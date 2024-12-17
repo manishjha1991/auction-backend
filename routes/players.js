@@ -158,8 +158,7 @@ router.get("/players/data", async (req, res) => {
 
         if (player.isSold) {
           // Fetch UserPlayer details if the player is sold
-          const userPlayer = await UserPlayer.findOne({ playerId: player._id }).populate("userId", "name teamName");
-
+          const userPlayer = await UserPlayer.findOne({ playerId: player._id, isActive: true }).populate("userId", "name teamName");
           if (userPlayer) {
             currentBidderName = userPlayer.userId.name;
             teamName = userPlayer.userId.teamName || "N/A";
@@ -169,6 +168,7 @@ router.get("/players/data", async (req, res) => {
             if (userPlayer.bidValue) {
               basePrice = parseFloat(userPlayer.bidValue);
             }
+            console.log(currentBidderName)
           }
         } else {
           // Check for active bids if the player is not sold
