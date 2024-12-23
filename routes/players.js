@@ -146,8 +146,7 @@ router.get("/:playerId/bids", async (req, res) => {
 router.get("/players/data", async (req, res) => {
   try {
     // Fetch all players
-    const players = await Player.find();
-
+    const players = await Player.find({ isActive: true });
     // Map players to the desired format
     const formattedPlayers = await Promise.all(
       players.map(async (player) => {
