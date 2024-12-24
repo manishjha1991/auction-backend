@@ -30,6 +30,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "Bidder not found." });
     }
+
     // Fetch active bids on this player
     const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
 
@@ -38,17 +39,26 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
 
     if (activeBidders.length >= 2 && !activeBidders.includes(bidder.toString())) {
       return res.status(400).json({
-        message: 'Only two bidders can actively bid on a player. Wait for one of the current bidders to exit.',
+        message: "Only two bidders can actively bid on a player. Wait for one of the current bidders to exit.",
       });
     }
 
+    // Check if the user has active bids on more than three players
+    const activeBidsByUser = await Bid.find({ bidder, isActive: true });
+    const activePlayerIds = [...new Set(activeBidsByUser.map((bid) => bid.playerId.toString()))];
+
+    if (activePlayerIds.length >= 3 && !activePlayerIds.includes(playerId.toString())) {
+      return res.status(400).json({
+        message: "You can only have active bids on a maximum of three players at a time.",
+      });
+    }
 
     // Fetch the highest active bid for the player from the Bid collection
     const highestBid = await Bid.findOne({ playerId, isActive: true })
       .sort({ bidAmount: -1 })
       .exec();
 
-    // Determine the last bid amount
+    // Determine the last bid amount or use the base price for the first bid
     const lastBidAmount = highestBid ? highestBid.bidAmount : player.basePrice;
 
     // Determine the required bid increment based on player type and last bid amount
@@ -63,16 +73,16 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
       return 1000000; // Default increment
     };
 
-    const bidIncrement = determineBidIncrement(player.type, lastBidAmount);
+    const bidIncrement = highestBid ? determineBidIncrement(player.type, lastBidAmount) : 0;
 
     // Calculate the new bid amount
-    const bidAmount = lastBidAmount + bidIncrement;
+    const bidAmount = highestBid ? lastBidAmount + bidIncrement : player.basePrice;
 
     // Check if the user has sufficient purse balance for the calculated bid amount
     const lockedAmount =
       user.currentBid &&
-        user.currentBid.playerId &&
-        user.currentBid.playerId.toString() === playerId
+      user.currentBid.playerId &&
+      user.currentBid.playerId.toString() === playerId
         ? user.currentBid.amount
         : 0;
 
@@ -81,18 +91,6 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     if (incrementalDeduction > user.purse) {
       return res.status(400).json({
         message: `Insufficient funds in purse. You need at least ₹${incrementalDeduction} to place this bid.`,
-      });
-    }
-
-    // Check if the user has any active bids on other players
-    const activeBidsOnOtherPlayers = await Bid.find({
-      bidder,
-      isActive: true,
-      playerId: { $ne: playerId }, // Exclude the current player
-    });
-    if (activeBidsOnOtherPlayers.length > 0) {
-      return res.status(400).json({
-        message: "You already have an active bid on another player. Exit the current auction to bid on this player.",
       });
     }
 
@@ -137,6 +135,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
 });
 
 
+
 // Out from bid
 router.post("/:playerId/exit", async (req, res) => {
   const { playerId } = req.params;
@@ -167,19 +166,19 @@ router.post("/:playerId/exit", async (req, res) => {
       return res.status(400).json({ message: "No active bids found for this player." });
     }
 
-   // Check if the user has placed a bid (only for non-admin users)
-if (!user.isAdmin) {
-  const userBid = activeBids.find((bid) => bid.bidder.toString() === userId);
-  if (!userBid) {
-    return res.status(400).json({ message: "You cannot exit as you have not placed a bid." });
-  }
+    // Check if the user has placed a bid (only for non-admin users)
+    if (!user.isAdmin) {
+      const userBid = activeBids.find((bid) => bid.bidder.toString() === userId);
+      if (!userBid) {
+        return res.status(400).json({ message: "You cannot exit as you have not placed a bid." });
+      }
 
-  // Check if the user is the highest bidder (only for non-admin users)
-  const highestBid = activeBids[0];
-  if (highestBid.bidder.toString() === userId) {
-    return res.status(400).json({ message: "The highest bidder cannot exit the bid." });
-  }
-}
+      // Check if the user is the highest bidder (only for non-admin users)
+      const highestBid = activeBids[0];
+      if (highestBid.bidder.toString() === userId) {
+        return res.status(400).json({ message: "The highest bidder cannot exit the bid." });
+      }
+    }
 
 
     // Check if the user is the highest bidder
@@ -463,12 +462,5 @@ router.post("/release-player", async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
-
-
-
-
-
-
-
 
 module.exports = router;
