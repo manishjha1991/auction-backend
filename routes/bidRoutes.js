@@ -30,6 +30,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "Bidder not found." });
     }
+
     // Fetch active bids on this player
     const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
 
@@ -42,31 +43,33 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
       });
     }
 
-
     // Fetch the highest active bid for the player from the Bid collection
     const highestBid = await Bid.findOne({ playerId, isActive: true })
       .sort({ bidAmount: -1 })
       .exec();
 
-    // Determine the last bid amount
-    const lastBidAmount = highestBid ? highestBid.bidAmount : player.basePrice;
+    // Determine the new bid amount
+    let bidAmount;
 
-    // Determine the required bid increment based on player type and last bid amount
-    const determineBidIncrement = (playerType, lastBidAmount) => {
-      if (["Sapphire", "Gold", "Emerald"].includes(playerType)) {
-        return 5000000; // ₹50,00,000
-      } else if (playerType === "Silver" && lastBidAmount >= 10000000) {
-        return 5000000; // ₹50,00,000 if last bid amount is ₹1 Cr or more
-      } else if (playerType === "Silver") {
-        return 1000000; // ₹10,00,000 for Silver otherwise
-      }
-      return 1000000; // Default increment
-    };
+    if (!highestBid) {
+      // This is the first bid, so start with the base price
+      bidAmount = player.basePrice;
+    } else {
+      // For subsequent bids, add the increment
+      const determineBidIncrement = (playerType, lastBidAmount) => {
+        if (["Sapphire", "Gold", "Emerald"].includes(playerType)) {
+          return 5000000; // ₹50,00,000
+        } else if (playerType === "Silver" && lastBidAmount >= 10000000) {
+          return 5000000; // ₹50,00,000 if last bid amount is ₹1 Cr or more
+        } else if (playerType === "Silver") {
+          return 1000000; // ₹10,00,000 for Silver otherwise
+        }
+        return 1000000; // Default increment
+      };
 
-    const bidIncrement = determineBidIncrement(player.type, lastBidAmount);
-
-    // Calculate the new bid amount
-    const bidAmount = lastBidAmount + bidIncrement;
+      const bidIncrement = determineBidIncrement(player.type, highestBid.bidAmount);
+      bidAmount = highestBid.bidAmount + bidIncrement;
+    }
 
     // Check if the user has sufficient purse balance for the calculated bid amount
     const lockedAmount =
@@ -135,6 +138,8 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+
+
 
 
 // Out from bid
