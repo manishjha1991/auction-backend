@@ -30,7 +30,17 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "Bidder not found." });
     }
+ // Fetch active bids on this player
+ const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
 
+    // Ensure only two bidders can actively bid on the player
+    const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
+
+    if (activeBidders.length >= 2 && !activeBidders.includes(bidder.toString())) {
+      return res.status(400).json({
+        message: 'Only two bidders can actively bid on a player. Wait for one of the current bidders to exit.',
+      });
+    }
     // Ensure the user has not bid on more than 4 players
     if (user.currentBids.length >= 4 && !user.currentBids.some((bid) => bid.playerId.toString() === playerId)) {
       return res.status(400).json({
