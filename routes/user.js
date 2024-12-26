@@ -163,10 +163,19 @@ router.get("/purses", async (req, res) => {
         );
 
         // Fetch all active bids placed by the user (from Bid)
-        const activeBids = await Bid.find({ bidder: user._id, isActive: true })
+        const activeBids = await Bid.find({ bidder: user._id, isActive: true, isBidOn: true })
           .populate("playerId", "name type")
           .sort({ bidAmount: -1 }) // Sort by highest bid amount
           .exec();
+
+
+        // Group bids by playerId and select the highest bid for each player
+        const highestBidsByPlayer = activeBids.reduce((acc, bid) => {
+          if (!acc[bid.playerId._id] || acc[bid.playerId._id].bidAmount < bid.bidAmount) {
+            acc[bid.playerId._id] = bid; // Keep the highest bid for this player
+          }
+          return acc;
+        }, {});
 
         // Map sold players (from UserPlayer)
         const soldPlayers = userPlayers.map((entry) => ({
@@ -178,8 +187,8 @@ router.get("/purses", async (req, res) => {
           biddingBy: null,
         }));
 
-        // Map all actively bid players
-        const biddingPlayers = activeBids.map((bid) => ({
+        // Map all actively bid players (using highest bid per player)
+        const biddingPlayers = Object.values(highestBidsByPlayer).map((bid) => ({
           name: bid.playerId.name,
           boughtValue: null, // Not yet sold, so no bought value
           type: bid.playerId.type,
@@ -202,6 +211,7 @@ router.get("/purses", async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
+
 
 
 

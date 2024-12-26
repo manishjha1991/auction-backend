@@ -167,7 +167,7 @@ router.get("/players/data", async (req, res) => {
             if (userPlayer.bidValue) {
               basePrice = parseFloat(userPlayer.bidValue);
             }
-            console.log(currentBidderName)
+            
           }
         } else {
           // Check for active bids if the player is not sold
