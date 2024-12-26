@@ -7,17 +7,14 @@ const UserSchema = new mongoose.Schema({
   teamName: { type: String },
   teamImage: { type: String },
   purse: { type: mongoose.Schema.Types.Decimal128, default: 1000000000 },
-
   boughtPlayers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Player' }],
-  currentBid: {
-    playerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Player' },
-    amount: Number,
-  },
-  isAdmin: { type: Boolean, default: false }, // Admin field added
+  currentBids: [
+    {
+      playerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Player' },
+      amount: Number,
+    },
+  ], // Array to track bids on up to 4 players
+  isAdmin: { type: Boolean, default: false },
 });
-// UserSchema.pre('save', async function (next) {
-//   if (!this.isModified('password')) return next();
-//   this.password = await bcrypt.hash(this.password, 10);
-//   next();
-// });
+
 module.exports = mongoose.model('User', UserSchema);
