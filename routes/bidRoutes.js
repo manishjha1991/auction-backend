@@ -131,9 +131,6 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
 
 
 
-
-
-// Out from bid
 router.post("/:playerId/exit", async (req, res) => {
   const { playerId } = req.params;
   const { userId } = req.body;
@@ -156,17 +153,69 @@ router.post("/:playerId/exit", async (req, res) => {
       return res.status(404).json({ message: "User not found." });
     }
 
-    // Check if the user has placed a bid on this player
-    const userBid = user.currentBids.find((bid) => bid.playerId.toString() === playerId);
-    if (!userBid) {
-      return res.status(400).json({ message: "You cannot exit as you have not placed a bid on this player." });
-    }
-
     // Fetch all active bids for the player
     const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
 
     if (!activeBids || activeBids.length === 0) {
       return res.status(400).json({ message: "No active bids found for this player." });
+    }
+
+    // Check if the user is an admin
+    if (user.isAdmin) {
+      if (activeBids.length > 1) {
+        const secondHighestBid = activeBids[1]; // Second-highest bidder
+        const secondHighestBidder = await User.findById(secondHighestBid.bidder);
+
+        if (secondHighestBidder) {
+          const lockedAmount = secondHighestBidder.currentBids.find(
+            (bid) => bid.playerId.toString() === playerId
+          ).amount;
+
+          const purse = parseFloat(secondHighestBidder.purse.toString());
+          secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
+            (purse + lockedAmount).toString()
+          );
+
+          // Remove the second-highest bid from their current bids
+          secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
+            (bid) => bid.playerId.toString() !== playerId
+          );
+          await secondHighestBidder.save();
+
+          // Mark the second-highest bid as inactive
+          await Bid.updateMany(
+            { playerId, bidder: secondHighestBid.bidder },
+            { $set: { isActive: false, isBidOn: false } }
+          );
+
+          // Update the player's current bid and bidder
+          const remainingBidders = activeBids.filter((bid) => bid.bidder.toString() !== secondHighestBid.bidder);
+          if (remainingBidders.length > 0) {
+            const newHighestBid = remainingBidders[0];
+            player.currentBid = newHighestBid.bidAmount;
+            player.currentBidder = newHighestBid.bidder;
+          } else {
+            // If no other bidders, reset the player's current bid
+            player.currentBid = null;
+            player.currentBidder = null;
+          }
+          await player.save();
+
+          return res.json({
+            message: "The second-highest bidder has exited successfully. Locked amount refunded.",
+            currentBid: player.currentBid,
+            currentBidder: player.currentBidder,
+          });
+        }
+      } else {
+        return res.status(400).json({ message: "No second-highest bidder to exit." });
+      }
+    }
+
+    // Check if the user has placed a bid on this player
+    const userBid = user.currentBids.find((bid) => bid.playerId.toString() === playerId);
+    if (!userBid) {
+      return res.status(400).json({ message: "You cannot exit as you have not placed a bid on this player." });
     }
 
     // Ensure the user is not the highest bidder
@@ -210,6 +259,85 @@ router.post("/:playerId/exit", async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+
+
+// Out from bid
+// router.post("/:playerId/exit", async (req, res) => {
+//   const { playerId } = req.params;
+//   const { userId } = req.body;
+
+//   try {
+//     // Find the player
+//     const player = await Player.findById(playerId);
+//     if (!player) {
+//       return res.status(404).json({ message: "Player not found" });
+//     }
+
+//     // Check if the player is already sold
+//     if (player.isSold) {
+//       return res.status(400).json({ message: "Cannot exit bid for a sold player." });
+//     }
+
+//     // Fetch the user
+//     const user = await User.findById(userId);
+//     if (!user) {
+//       return res.status(404).json({ message: "User not found." });
+//     }
+
+//     // Check if the user has placed a bid on this player
+//     const userBid = user.currentBids.find((bid) => bid.playerId.toString() === playerId);
+//     if (!userBid) {
+//       return res.status(400).json({ message: "You cannot exit as you have not placed a bid on this player." });
+//     }
+
+//     // Fetch all active bids for the player
+//     const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
+
+//     if (!activeBids || activeBids.length === 0) {
+//       return res.status(400).json({ message: "No active bids found for this player." });
+//     }
+
+//     // Ensure the user is not the highest bidder
+//     const highestBid = activeBids[0];
+//     if (highestBid.bidder.toString() === userId) {
+//       return res.status(400).json({ message: "The highest bidder cannot exit the bid." });
+//     }
+
+//     // Unlock the amount locked for this player
+//     const lockedAmount = userBid.amount;
+//     const purse = parseFloat(user.purse.toString()); // Convert Decimal128 to Number
+//     user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
+
+//     // Remove the bid from user's current bids
+//     user.currentBids = user.currentBids.filter((bid) => bid.playerId.toString() !== playerId);
+//     await user.save();
+
+//     // Mark the user's bid for this player as inactive
+//     await Bid.updateMany({ playerId, bidder: userId }, { $set: { isActive: false, isBidOn: false } });
+
+//     // Update the player's current bid and bidder
+//     const otherBidders = activeBids.filter((bid) => bid.bidder.toString() !== userId);
+//     if (otherBidders.length > 0) {
+//       const newHighestBid = otherBidders[0];
+//       player.currentBid = newHighestBid.bidAmount;
+//       player.currentBidder = newHighestBid.bidder;
+//     } else {
+//       // If no other bidders, reset the player's current bid
+//       player.currentBid = null;
+//       player.currentBidder = null;
+//     }
+//     await player.save();
+
+//     res.json({
+//       message: "You have exited the bid successfully. Locked amount refunded.",
+//       currentBid: player.currentBid,
+//       currentBidder: player.currentBidder,
+//     });
+//   } catch (error) {
+//     console.error("Error exiting bid:", error);
+//     res.status(500).json({ message: "Internal server error" });
+//   }
+// });
 
 
 router.post("/bid/sold", async (req, res) => {
