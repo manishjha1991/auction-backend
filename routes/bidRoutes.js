@@ -81,16 +81,16 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     const lockedAmount = currentBidOnPlayer ? currentBidOnPlayer.amount : 0;
     const incrementalDeduction = bidAmount - lockedAmount;
 
-    // if (totalLockedAmount + incrementalDeduction > user.purse) {
-    //   return res.status(400).json({
-    //     message: `Insufficient funds in purse. You need at least ₹${incrementalDeduction} to place this bid.`,
-    //   });
-    // }
-    if (user.purse === 0) {
+    if (totalLockedAmount + incrementalDeduction > user.purse) {
       return res.status(400).json({
-        message: "Insufficient funds in purse. Your purse value cannot be zero.",
+        message: `Insufficient funds in purse. You need at least ₹${incrementalDeduction} to place this bid.`,
       });
     }
+    // if (user.purse <= 0) {
+    //   return res.status(400).json({
+    //     message: "Insufficient funds in purse. Your purse value cannot be zero or negative.",
+    //   });
+    // }
     // Ensure the same user cannot place consecutive bids
     if (highestBid && highestBid.bidder.toString() === bidder.toString()) {
       return res.status(400).json({
