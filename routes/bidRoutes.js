@@ -44,7 +44,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     // Ensure the user has not bid on more than 4 players
     if (user.currentBids.length >= 6 && !user.currentBids.some((bid) => bid.playerId.toString() === playerId)) {
       return res.status(400).json({
-        message: "You can bid on a maximum of 4 players at a time. Exit an existing auction to bid on this player.",
+        message: "You can bid on a maximum of 6 players at a time. Exit an existing auction to bid on this player.",
       });
     }
 
