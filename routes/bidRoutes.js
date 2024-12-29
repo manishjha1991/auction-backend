@@ -85,7 +85,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
         message: "Insufficient funds in purse. Your purse value cannot be zero or negative.",
       });
     }
-    if (user.purse < bidAmount || user.purse < 1000000) {
+    if (user.purse < 0 ) {
       return res.status(400).json({
         message: "Insufficient funds in purse. Your purse must be greater than the bid amount and at least ₹10,00,000 to place this bid.",
       });
