@@ -42,7 +42,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
       });
     }
     // Ensure the user has not bid on more than 4 players
-    if (user.currentBids.length >= 6 && !user.currentBids.some((bid) => bid.playerId.toString() === playerId)) {
+    if (user.currentBids.length >= 7 && !user.currentBids.some((bid) => bid.playerId.toString() === playerId)) {
       return res.status(400).json({
         message: "You can bid on a maximum of 6 players at a time. Exit an existing auction to bid on this player.",
       });
@@ -80,7 +80,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     const currentBidOnPlayer = user.currentBids.find((bid) => bid.playerId.toString() === playerId);
     const lockedAmount = currentBidOnPlayer ? currentBidOnPlayer.amount : 0;
     const incrementalDeduction = bidAmount - lockedAmount;
-    if (user.purse <= 0) {
+    if (user.purse <= bidAmount) {
       return res.status(400).json({
         message: "Insufficient funds in purse. Your purse value cannot be zero or negative.",
       });
