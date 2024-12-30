@@ -10,6 +10,7 @@ const playerRoutes = require('./routes/players'); // Adjust the path as needed
 const userRoutes = require('./routes/user'); // Adjust the path
 const bidRoutes = require('./routes/bidRoutes'); // Import bid routes
 const playerStatsRoutes = require('./routes/playerStats'); // Adjust path
+const fixtureRoutes = require('./routes/fixture'); // Adjust path
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
@@ -24,6 +25,7 @@ app.use(express.json());
 app.use('/auth', authRoutes);
 app.use('/api/player', playerRoutes); // This sets the base route for players
 app.use('/api/users', userRoutes); // Mount the route
+app.use('/api/fixtures', fixtureRoutes);
 app.use('/api', playerRoutes);
 app.use('/api/bids', bidRoutes); // Mount bid routes
 app.use('/api/player-stats', playerStatsRoutes);
