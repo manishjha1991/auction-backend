@@ -259,6 +259,87 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
   }
 });
 
+
+router.put('/update-points/:userId', async (req, res) => {
+  const { userId } = req.params;
+  const { points, matchesPlayed } = req.body;
+
+  try {
+    // Validate input
+    if (!points || !matchesPlayed || matchesPlayed <= 0) {
+      return res.status(400).json({ message: 'Invalid points or matches played' });
+    }
+
+    // Fetch the user
+    const user = await User.findById(userId);
+    if (!user || !user.teamName) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Update the points and matches played
+    user.points = points;
+    user.matchesPlayed = matchesPlayed;
+    await user.save();
+
+    res.json({ message: 'Points and matches updated successfully', user });
+  } catch (error) {
+    console.error('Error updating points:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+router.get('/points-table', async (req, res) => {
+  try {
+    // Fetch all users with a team
+    const users = await User.find({ teamName: { $exists: true, $ne: null } })
+      .select('_id teamName points matchesPlayed')
+      .lean();
+
+    if (!users.length) {
+      return res.status(404).json({ message: 'No teams found' });
+    }
+
+    // Transform data to create the points table
+    const pointsTable = users.map((user) => {
+      const averagePoints = user.points / user.matchesPlayed || 0; // Handle division by zero
+      const fairnessThreshold = 0.7; // 70% of max average points
+      const maxPointsPerMatch = 600; // Maximum possible points per match
+      const isFair = averagePoints >= fairnessThreshold * maxPointsPerMatch;
+
+      const fairness = isFair ? 'Excellent' : averagePoints >= 0.5 * maxPointsPerMatch ? 'Good' : 'Fair';
+
+      return {
+        teamName: user.teamName,
+        points: user.points || 0, // Default to 0 if points are undefined
+        _id: user._id,
+        matchesPlayed: user.matchesPlayed || 0, // Default to 0 if matchesPlayed is undefined
+        fairness,
+      };
+    });
+
+    // Sort the points table by points and alphabetically for equal points or zero points
+    const sortedPointsTable = pointsTable.sort((a, b) => {
+      if (b.points !== a.points) {
+        return b.points - a.points; // Sort by points in descending order
+      }
+      return a.teamName.localeCompare(b.teamName); // Sort alphabetically if points are equal
+    });
+
+    // Add rank to each team
+    const rankedPointsTable = sortedPointsTable.map((team, index) => ({
+      rank: index + 1,
+      ...team,
+    }));
+
+    res.json(rankedPointsTable);
+  } catch (error) {
+    console.error('Error fetching points table:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+
 module.exports = router;
 
 
