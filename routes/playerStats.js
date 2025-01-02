@@ -19,7 +19,7 @@ router.get('/list', async (req, res) => {
     const isAdmin = user.isAdmin;
 
     // Fetch all players
-    const allPlayers = await Player.find({}, '_id name type role basePrice style overallScore profilePicture isSold isActive');
+    const allPlayers = await Player.find({isSold:true}, '_id name type role basePrice style overallScore profilePicture isSold isActive').limit(1);
 
     // Filter for active players
     const activePlayers = allPlayers.filter((player) => player.isActive);

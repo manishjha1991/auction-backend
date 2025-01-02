@@ -77,13 +77,14 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     const totalLockedAmount = user.currentBids.reduce((sum, bid) => sum + bid.amount, 0);
     const currentBidOnPlayer = user.currentBids.find((bid) => bid.playerId.toString() === playerId);
     const lockedAmount = currentBidOnPlayer ? currentBidOnPlayer.amount : 0;
-
     // Adjust the total locked amount for existing bid on this player
     const adjustedTotalLockedAmount = totalLockedAmount - lockedAmount;
-
-    if (adjustedTotalLockedAmount + bidAmount > user.purse) {
+    const purseDecimal = user.purse; // Assuming this is a Decimal128 value
+    const purseValue = parseFloat(purseDecimal.toString()); // Convert to a usable number
+    
+    if (purseValue < bidAmount) {
       return res.status(400).json({
-        message: `Insufficient funds in purse. You need at least ₹${bidAmount - (user.purse - adjustedTotalLockedAmount)} to place this bid.`,
+        message: `Insufficient funds in purse. You need at least ₹${bidAmount - (purseValue)} extra to place this bid as your purse having ₹${purseValue} and this bid is for ₹${bidAmount} and your locked amount is ₹${adjustedTotalLockedAmount} free some lock amount to bid again .`,
       });
     }
 
@@ -110,7 +111,10 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     } else {
       user.currentBids.push({ playerId, amount: bidAmount });
     }
-    user.purse -= incrementalDeduction;
+   // Deduct the bid amount from the user's purse
+    user.purse = mongoose.Types.Decimal128.fromString(
+      (parseFloat(user.purse.toString()) - bidAmount).toString()
+    );
     await user.save();
 
     // Update the player's currentBid and currentBidder
