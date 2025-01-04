@@ -262,12 +262,12 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
 
 router.put('/update-points/:userId', async (req, res) => {
   const { userId } = req.params;
-  const { points, matchesPlayed } = req.body;
+  const { points, fairness } = req.body;
 
   try {
     // Validate input
-    if (!points || !matchesPlayed || matchesPlayed <= 0) {
-      return res.status(400).json({ message: 'Invalid points or matches played' });
+    if (points === undefined || points === null) {
+      return res.status(400).json({ message: 'Invalid points value' });
     }
 
     // Fetch the user
@@ -276,23 +276,30 @@ router.put('/update-points/:userId', async (req, res) => {
       return res.status(404).json({ message: 'Team not found' });
     }
 
-    // Update the points and matches played
-    user.points = points;
-    user.matchesPlayed = matchesPlayed;
+    // Update points, matches played, and fairness points
+    user.points = (user.points || 0) + points; // Add points to the existing total
+    user.matchesPlayed = (user.matchesPlayed || 0) + 1; // Increment matches played by 1
+    if (fairness !== undefined) {
+      user.fairnessPoint = (user.fairnessPoint || 0) + fairness; // Add fairness points
+    }
+
     await user.save();
 
-    res.json({ message: 'Points and matches updated successfully', user });
+    res.json({ message: 'Points, matches, and fairness updated successfully', user });
   } catch (error) {
     console.error('Error updating points:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
 
+
+
+
 router.get('/points-table', async (req, res) => {
   try {
     // Fetch all users with a team
     const users = await User.find({ teamName: { $exists: true, $ne: null } })
-      .select('_id teamName points matchesPlayed')
+      .select('_id teamName points matchesPlayed fairnessPoint')
       .lean();
 
     if (!users.length) {
@@ -306,7 +313,7 @@ router.get('/points-table', async (req, res) => {
       const maxPointsPerMatch = 600; // Maximum possible points per match
       const isFair = averagePoints >= fairnessThreshold * maxPointsPerMatch;
 
-      const fairness = isFair ? 'Excellent' : averagePoints >= 0.5 * maxPointsPerMatch ? 'Good' : 'Fair';
+      const fairness = user.fairnessPoint;
 
       return {
         teamName: user.teamName,
