@@ -209,6 +209,69 @@ router.get("/players/data", async (req, res) => {
   }
 });
 
+// Add Trade Player API
+router.post('/trade-player', async (req, res) => {
+  const { player1Id, player2Id } = req.body;
+
+  if (!player1Id || !player2Id) {
+    return res.status(400).json({ message: 'Player IDs are required.' });
+  }
+
+  try {
+    // Fetch both players and their associated teams
+    const [player1, player2] = await Promise.all([
+      UserPlayer.findOne({ playerId: player1Id, isActive: true }).populate('userId'),
+      UserPlayer.findOne({ playerId: player2Id, isActive: true }).populate('userId')
+    ]);
+
+    if (!player1 || !player2) {
+      return res.status(404).json({ message: 'One or both players not found.' });
+    }
+
+    const team1 = player1.userId; // Team associated with player1
+    const team2 = player2.userId; // Team associated with player2
+
+    if (!team1 || !team2) {
+      return res.status(404).json({ message: 'One or both teams not found.' });
+    }
+
+    // Validate purse sufficiency
+    if (Number(team2.purse) < player1.bidValue || Number(team1.purse) < player2.bidValue) {
+      return res.status(400).json({ message: 'Insufficient purse for the trade.' });
+    }
+
+    // Update players
+    player1.userId = team2._id;
+    player2.userId = team1._id;
+    player1.updatedAt = new Date();
+    player2.updatedAt = new Date();
+
+    // Update user purse
+    team1.purse = (Number(team1.purse) + player1.bidValue - player2.bidValue).toFixed(2);
+    team2.purse = (Number(team2.purse) + player2.bidValue - player1.bidValue).toFixed(2);
+
+    // Update boughtPlayers list
+    team1.boughtPlayers = team1.boughtPlayers.filter(id => !id.equals(player1Id));
+    team1.boughtPlayers.push(player2Id);
+
+    team2.boughtPlayers = team2.boughtPlayers.filter(id => !id.equals(player2Id));
+    team2.boughtPlayers.push(player1Id);
+
+    // Save updates
+    await Promise.all([
+      player1.save(),
+      player2.save(),
+      team1.save(),
+      team2.save()
+    ]);
+
+    res.json({ message: 'Trade completed successfully.' });
+  } catch (error) {
+    console.error('Error trading players:', error);
+    res.status(500).json({ message: 'Internal server error.' });
+  }
+});
+
 
 
 
