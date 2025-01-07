@@ -307,29 +307,33 @@ router.get('/points-table', async (req, res) => {
     }
 
     // Transform data to create the points table
-    const pointsTable = users.map((user) => {
-      const averagePoints = user.points / user.matchesPlayed || 0; // Handle division by zero
-      const fairnessThreshold = 0.7; // 70% of max average points
-      const maxPointsPerMatch = 600; // Maximum possible points per match
-      const isFair = averagePoints >= fairnessThreshold * maxPointsPerMatch;
+    const pointsTable = users.map((user) => ({
+      teamName: user.teamName,
+      points: user.points || 0, // Default to 0 if points are undefined
+      _id: user._id,
+      matchesPlayed: user.matchesPlayed || 0, // Default to 0 if matchesPlayed is undefined
+      fairness: user.fairnessPoint || 0, // Default to 0 if fairnessPoint is undefined
+    }));
 
-      const fairness = user.fairnessPoint;
-
-      return {
-        teamName: user.teamName,
-        points: user.points || 0, // Default to 0 if points are undefined
-        _id: user._id,
-        matchesPlayed: user.matchesPlayed || 0, // Default to 0 if matchesPlayed is undefined
-        fairness,
-      };
-    });
-
-    // Sort the points table by points and alphabetically for equal points or zero points
+    // Sort the points table
     const sortedPointsTable = pointsTable.sort((a, b) => {
+      // Priority 1: Points (descending)
       if (b.points !== a.points) {
-        return b.points - a.points; // Sort by points in descending order
+        return b.points - a.points;
       }
-      return a.teamName.localeCompare(b.teamName); // Sort alphabetically if points are equal
+
+      // Priority 2: Fairness points (descending)
+      if (b.fairness !== a.fairness) {
+        return b.fairness - a.fairness;
+      }
+
+      // Priority 3: Matches played (ascending, more matches means lower rank)
+      if (a.matchesPlayed !== b.matchesPlayed) {
+        return a.matchesPlayed - b.matchesPlayed;
+      }
+
+      // Priority 4: Alphabetical order by team name (ascending)
+      return a.teamName.localeCompare(b.teamName);
     });
 
     // Add rank to each team
@@ -344,6 +348,7 @@ router.get('/points-table', async (req, res) => {
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
 
 
 
