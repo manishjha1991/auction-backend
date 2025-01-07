@@ -299,21 +299,35 @@ router.get('/points-table', async (req, res) => {
   try {
     // Fetch all users with a team
     const users = await User.find({ teamName: { $exists: true, $ne: null } })
-      .select('_id teamName points matchesPlayed fairnessPoint')
+      .select('_id teamName points matchesPlayed fairnessPoint teamImage')
       .lean();
 
     if (!users.length) {
       return res.status(404).json({ message: 'No teams found' });
     }
 
-    // Transform data to create the points table
-    const pointsTable = users.map((user) => ({
-      teamName: user.teamName,
-      points: user.points || 0, // Default to 0 if points are undefined
-      _id: user._id,
-      matchesPlayed: user.matchesPlayed || 0, // Default to 0 if matchesPlayed is undefined
-      fairness: user.fairnessPoint || 0, // Default to 0 if fairnessPoint is undefined
-    }));
+    // Transform data to calculate wins, losses, and fairness
+    const pointsTable = users.map((user) => {
+      const matchesPlayed = user.matchesPlayed || 0; // Default to 0 if undefined
+      const points = user.points || 0; // Default to 0 if undefined
+      const fairness = user.fairnessPoint || 0; // Default to 0 if undefined
+      const teamImage = user.teamImage || ''; // Default to empty string if undefined
+
+      // Calculate wins and losses
+      const wins = Math.floor(points / 2); // Each win gives 2 points
+      const losses = matchesPlayed - wins;
+
+      return {
+        _id: user._id,
+        teamName: user.teamName,
+        matchesPlayed,
+        points,
+        wins,
+        losses,
+        fairness,
+        teamImage, // Add the image field
+      };
+    });
 
     // Sort the points table
     const sortedPointsTable = pointsTable.sort((a, b) => {
@@ -327,7 +341,7 @@ router.get('/points-table', async (req, res) => {
         return b.fairness - a.fairness;
       }
 
-      // Priority 3: Matches played (ascending, more matches means lower rank)
+      // Priority 3: Matches played (ascending, fewer matches higher rank)
       if (a.matchesPlayed !== b.matchesPlayed) {
         return a.matchesPlayed - b.matchesPlayed;
       }
@@ -338,7 +352,7 @@ router.get('/points-table', async (req, res) => {
 
     // Add rank to each team
     const rankedPointsTable = sortedPointsTable.map((team, index) => ({
-      rank: index + 1,
+      rank: index + 1, // Assign rank based on sorted order
       ...team,
     }));
 
@@ -348,6 +362,8 @@ router.get('/points-table', async (req, res) => {
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
+
 
 
 
