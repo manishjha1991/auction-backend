@@ -16,14 +16,18 @@ router.get('/', async (req, res) => {
     const existingFixtures = await Fixture.find();
 
     const teamNames = teams.map((team) => team.teamName);
-    const fixtureMap = new Set(existingFixtures.map((f) => `${f.team1}-${f.team2}`));
+    const fixtureMap = new Set(
+      existingFixtures.map((f) =>
+        [f.team1, f.team2].sort().join('-') // Sort team names to ensure consistent order
+      )
+    );
     const newFixtures = [];
 
     for (let i = 0; i < teamNames.length; i++) {
       for (let j = i + 1; j < teamNames.length; j++) {
         const team1 = teamNames[i];
         const team2 = teamNames[j];
-        const fixtureKey = `${team1}-${team2}`;
+        const fixtureKey = [team1, team2].sort().join('-'); // Sort to avoid duplicates
 
         if (!fixtureMap.has(fixtureKey)) {
           newFixtures.push({ team1, team2 });
@@ -66,6 +70,7 @@ router.get('/', async (req, res) => {
 
 
 
+
 router.post('/save', async (req, res) => {
   try {
     const { team1, team2, winner, margin, mom, team1Score, team2Score } = req.body;
@@ -91,6 +96,6 @@ router.post('/save', async (req, res) => {
 });
 
   
-  module.exports = router;
+module.exports = router;
   
 
