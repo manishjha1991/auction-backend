@@ -13,21 +13,38 @@ router.get('/', async (req, res) => {
       .populate('boughtPlayers')
       .select('_id teamName teamImage boughtPlayers');
 
+    // Fetch all existing fixtures
     const existingFixtures = await Fixture.find();
+    const uniqueFixtureMap = new Set();
+
+    // Deduplicate existing fixtures but retain those with a winner
+    for (const fixture of existingFixtures) {
+      const sortedKey = [fixture.team1, fixture.team2].sort().join('-');
+      if (uniqueFixtureMap.has(sortedKey)) {
+        if (!fixture.winner) {
+          // Delete fixture only if the winner field is null
+          await Fixture.deleteOne({ _id: fixture._id });
+        }
+      } else {
+        uniqueFixtureMap.add(sortedKey);
+      }
+    }
+
+    // Re-fetch the cleaned fixtures
+    const cleanedFixtures = await Fixture.find();
 
     const teamNames = teams.map((team) => team.teamName);
     const fixtureMap = new Set(
-      existingFixtures.map((f) =>
-        [f.team1, f.team2].sort().join('-') // Sort team names to ensure consistent order
-      )
+      cleanedFixtures.map((f) => [f.team1, f.team2].sort().join('-'))
     );
     const newFixtures = [];
 
+    // Generate new fixtures while avoiding duplicates
     for (let i = 0; i < teamNames.length; i++) {
       for (let j = i + 1; j < teamNames.length; j++) {
         const team1 = teamNames[i];
         const team2 = teamNames[j];
-        const fixtureKey = [team1, team2].sort().join('-'); // Sort to avoid duplicates
+        const fixtureKey = [team1, team2].sort().join('-');
 
         if (!fixtureMap.has(fixtureKey)) {
           newFixtures.push({ team1, team2 });
@@ -42,6 +59,7 @@ router.get('/', async (req, res) => {
 
     const allFixtures = await Fixture.find().sort({ createdAt: 1 });
 
+    // Enhance fixtures with team details
     const enhancedFixtures = allFixtures.map((fixture) => {
       const team1Details = teams.find((team) => team.teamName === fixture.team1) || {};
       const team2Details = teams.find((team) => team.teamName === fixture.team2) || {};
@@ -67,6 +85,7 @@ router.get('/', async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch fixtures.' });
   }
 });
+
 
 
 
