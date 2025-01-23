@@ -14,7 +14,7 @@ router.get('/', async (req, res) => {
       .select('_id teamName teamImage boughtPlayers');
 
     // Fetch all existing fixtures
-    const existingFixtures = await Fixture.find();
+    const existingFixtures = await Fixture.find({ isActive: true });
     const uniqueFixtureMap = new Set();
 
     // Deduplicate existing fixtures but retain those with a winner

@@ -13,6 +13,7 @@ const FixtureSchema = new mongoose.Schema({
     wickets: { type: Number, default: 0 } 
   }, // Detailed MoM information
   createdAt: { type: Date, default: Date.now },
+  isActive:{ type: Boolean, default: true }
 });
 
 module.exports = mongoose.model('Fixture', FixtureSchema);
