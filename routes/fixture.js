@@ -31,7 +31,7 @@ router.get('/', async (req, res) => {
     }
 
     // Re-fetch the cleaned fixtures
-    const cleanedFixtures = await Fixture.find();
+    const cleanedFixtures = await Fixture.find({ isActive: true });
 
     const teamNames = teams.map((team) => team.teamName);
     const fixtureMap = new Set(
@@ -57,7 +57,7 @@ router.get('/', async (req, res) => {
       await Fixture.insertMany(newFixtures);
     }
 
-    const allFixtures = await Fixture.find().sort({ createdAt: 1 });
+    const allFixtures = await Fixture.find({ isActive: true }).sort({ createdAt: 1 });
 
     // Enhance fixtures with team details
     const enhancedFixtures = allFixtures.map((fixture) => {
