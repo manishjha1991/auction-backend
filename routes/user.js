@@ -364,7 +364,20 @@ router.get('/points-table', async (req, res) => {
 });
 
 
+// GET: All Teams Information
+router.get('/teams', async (req, res) => {
+  try {
+    // Fetch all users that have a team name.
+    const teams = await User.find({ teamName: { $exists: true, $ne: null } })
+      .select('_id name email teamName teamImage purse isAdmin points matchesPlayed fairnessPoint')
+      .lean();
 
+    res.status(200).json({ teams });
+  } catch (error) {
+    console.error('Error fetching teams:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 
 
 

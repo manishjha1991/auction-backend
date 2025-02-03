@@ -18,6 +18,7 @@ const UserSchema = new mongoose.Schema({
   points: { type: Number, default: 0 }, // Store total points
   matchesPlayed: { type: Number, default: 0 }, // Store total matches played
   fairnessPoint:{ type: Number, default: 0 },
+  isActive:{ type: Boolean, default: true },
 });
 
 module.exports = mongoose.model('User', UserSchema);

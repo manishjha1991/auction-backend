@@ -5,24 +5,29 @@ const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const router = express.Router();
 
+
 router.get('/', async (req, res) => {
   try {
+    // Fetch teams (users) that have a valid teamName and are active.
     const teams = await User.find({
       teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isActive: true, // Only include active users
     })
       .populate('boughtPlayers')
       .select('_id teamName teamImage boughtPlayers');
 
-    // Fetch all existing fixtures
+    // Fetch all active fixtures
     const existingFixtures = await Fixture.find({ isActive: true });
     const uniqueFixtureMap = new Set();
 
-    // Deduplicate existing fixtures but retain those with a winner
+    // Deduplicate existing fixtures while retaining those with a winner.
     for (const fixture of existingFixtures) {
-      const sortedKey = [fixture.team1, fixture.team2].sort().join('-');
+      const sortedKey = [fixture.team1.toString(), fixture.team2.toString()]
+        .sort()
+        .join('-');
       if (uniqueFixtureMap.has(sortedKey)) {
         if (!fixture.winner) {
-          // Delete fixture only if the winner field is null
+          // Delete fixture only if the winner field is null.
           await Fixture.deleteOne({ _id: fixture._id });
         }
       } else {
@@ -30,20 +35,25 @@ router.get('/', async (req, res) => {
       }
     }
 
-    // Re-fetch the cleaned fixtures
+    // Re-fetch the cleaned active fixtures.
     const cleanedFixtures = await Fixture.find({ isActive: true });
 
-    const teamNames = teams.map((team) => team.teamName);
+    // Create an array of team IDs (as strings) from active teams only.
+    const teamIds = teams.map((team) => team._id.toString());
+
+    // Create a set of fixture keys (combination of team IDs) from cleaned fixtures.
     const fixtureMap = new Set(
-      cleanedFixtures.map((f) => [f.team1, f.team2].sort().join('-'))
+      cleanedFixtures.map((f) =>
+        [f.team1.toString(), f.team2.toString()].sort().join('-')
+      )
     );
     const newFixtures = [];
 
-    // Generate new fixtures while avoiding duplicates
-    for (let i = 0; i < teamNames.length; i++) {
-      for (let j = i + 1; j < teamNames.length; j++) {
-        const team1 = teamNames[i];
-        const team2 = teamNames[j];
+    // Generate new fixtures using user IDs while avoiding duplicates.
+    for (let i = 0; i < teamIds.length; i++) {
+      for (let j = i + 1; j < teamIds.length; j++) {
+        const team1 = teamIds[i];
+        const team2 = teamIds[j];
         const fixtureKey = [team1, team2].sort().join('-');
 
         if (!fixtureMap.has(fixtureKey)) {
@@ -53,19 +63,32 @@ router.get('/', async (req, res) => {
       }
     }
 
+    // Insert new fixtures if any are found.
     if (newFixtures.length > 0) {
       await Fixture.insertMany(newFixtures);
     }
 
-    const allFixtures = await Fixture.find({ isActive: true }).sort({ createdAt: 1 });
+    // Fetch all active fixtures sorted by createdAt.
+    const allFixtures = await Fixture.find({ isActive: true }).sort({
+      createdAt: 1,
+    });
 
-    // Enhance fixtures with team details
+    // Enhance each fixture with team details and override team1 and team2 with team names.
     const enhancedFixtures = allFixtures.map((fixture) => {
-      const team1Details = teams.find((team) => team.teamName === fixture.team1) || {};
-      const team2Details = teams.find((team) => team.teamName === fixture.team2) || {};
+      const team1Details =
+        teams.find(
+          (team) => team._id.toString() === fixture.team1.toString()
+        ) || {};
+      const team2Details =
+        teams.find(
+          (team) => team._id.toString() === fixture.team2.toString()
+        ) || {};
 
       return {
         ...fixture._doc,
+        // Override team1 and team2 with team names for the response.
+        team1: team1Details.teamName || 'Unknown',
+        team2: team2Details.teamName || 'Unknown',
         team1Details: {
           teamName: team1Details.teamName || 'Unknown',
           teamImage: team1Details.teamImage || null,
@@ -85,10 +108,6 @@ router.get('/', async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch fixtures.' });
   }
 });
-
-
-
-
 
 router.post('/save', async (req, res) => {
   try {

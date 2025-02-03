@@ -10,77 +10,154 @@ router.get('/list', async (req, res) => {
   try {
     const { userId } = req.query;
 
-    // Check if the user exists
-    const user = await User.findById(userId);
+    // Check if the user exists and populate the boughtPlayers field
+    const user = await User.findById(userId).populate({
+      path: 'boughtPlayers',
+      match: { isSold: true, isActive: true },
+      select:
+        '_id name type role basePrice style overallScore profilePicture isSold isActive'
+    });
+    
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
     const isAdmin = user.isAdmin;
-
-    // Fetch all players
-    const allPlayers = await Player.find({isSold:true}, '_id name type role basePrice style overallScore profilePicture isSold isActive').limit(1);
-
-    // Filter for active players
-    const activePlayers = allPlayers.filter((player) => player.isActive);
-
     let playersToSend = [];
-    if (isAdmin) {
-      // Admin sees all active players
-      playersToSend = activePlayers;
-    } else {
-      // User sees only their associated sold players
-      const userPlayerAssociations = await UserPlayer.find({ userId, isActive: true }, 'playerId');
-      const userPlayerIds = userPlayerAssociations.map((association) => association.playerId.toString());
 
-      playersToSend = activePlayers.filter((player) =>
-        player.isSold && userPlayerIds.includes(player._id.toString())
+    if (isAdmin) {
+      // Admin sees all active sold players from the Player collection
+      playersToSend = await Player.find(
+        { isSold: true, isActive: true },
+        '_id name type role basePrice style overallScore profilePicture isSold isActive'
       );
+    } else {
+      // Normal user sees only the players they have bought
+      playersToSend = user.boughtPlayers || [];
     }
 
-    // Fetch match performance stats for players
+    // Helper function to convert balls into overs (X.Y format)
+    const convertBallsToOvers = (balls) => {
+      const b = balls || 0;
+      const overs = Math.floor(b / 6);
+      const remainder = b % 6;
+      return `${overs}.${remainder}`;
+    };
+
+    // Fetch match performance stats for each player
     const playersWithDetails = await Promise.all(
       playersToSend.map(async (player) => {
-        // Fetch match stats
+        // Fetch match stats for this player
         const stats = await PlayerStats.find({ playerId: player._id });
+        
+        // Calculate batting performance per match
+        const battingStats = await Promise.all(
+          stats.map(async (stat) => ({
+            match: stat.matchName,
+            runs: stat.battingStats?.runs || 0,
+            balls: stat.battingStats?.balls || 0,
+            mom: stat.isMom || false,
+            // Lookup the opponent's team name from the User model
+            against:
+              (await User.findById(stat.opponentUserId).select('teamName'))
+                ?.teamName || 'Unknown'
+          }))
+        );
 
-        // Calculate batting and bowling performance per match
-        const battingStats = stats.map((stat) => ({
-          match: stat.matchName,
-          runs: stat.battingStats?.runs || 0,
-          balls: stat.battingStats?.ballsFaced || 0,
-          mom: stat.isManOfTheMatch || false,
-          against: stat.opponent || 'Unknown',
-        }));
-
-        const bowlingStats = stats.map((stat) => ({
-          match: stat.matchName,
-          overs: Math.floor((stat.bowlingStats?.ballsBowled || 0) / 6),
-          wickets: stat.bowlingStats?.wickets || 0,
-          runs: stat.bowlingStats?.runsConceded || 0,
-          mom: stat.isManOfTheMatch || false,
-          against: stat.opponent || 'Unknown',
-        }));
+        // Calculate bowling performance per match
+        const bowlingStats = await Promise.all(
+          stats.map(async (stat) => ({
+            match: stat.matchName,
+            overs: convertBallsToOvers(stat.bowlingStats?.ballsBowled),
+            wickets: stat.bowlingStats?.wickets || 0,
+            runs: stat.bowlingStats?.runsGiven || 0,
+            mom: stat.isMom || false,
+            // Lookup the opponent's team name from the User model
+            against:
+              (await User.findById(stat.opponentUserId).select('teamName'))
+                ?.teamName || 'Unknown'
+          }))
+        );
 
         // Calculate total stats
-        const totalBattingRuns = battingStats.reduce((sum, match) => sum + match.runs, 0);
-        const totalWickets = bowlingStats.reduce((sum, match) => sum + match.wickets, 0);
+        const totalBattingRuns = battingStats.reduce(
+          (sum, match) => sum + match.runs,
+          0
+        );
+        const totalWickets = bowlingStats.reduce(
+          (sum, match) => sum + match.wickets,
+          0
+        );
 
         return {
+          _id: player._id,
           name: player.name,
+          type: player.type,
+          role: player.role,
+          team: user.teamName, // Get team name from the user document
           matchPerformance: {
             batting: battingStats,
-            bowling: bowlingStats,
+            bowling: bowlingStats
           },
           totalStats: {
             batting: { runs: totalBattingRuns },
-            bowling: { wickets: totalWickets },
-          },
+            bowling: { wickets: totalWickets }
+          }
         };
       })
     );
 
-    res.json({ players: playersWithDetails });
+    // ---------------------------
+    // Create Playoff Fixtures
+    // ---------------------------
+    // For this example, we are simply querying the top five teams (active teams with a valid teamName).
+    // Adjust the sorting field based on your ranking system.
+    const playoffTeams = await User.find({
+      isActive: true,
+      teamName: { $exists: true, $ne: null, $ne: 'NA' }
+    })
+      .sort({ teamName: 1 }) // Replace with your ranking criteria if available
+      .limit(5);
+    
+    let playoffFixtures = [];
+    if (playoffTeams.length === 5) {
+      playoffFixtures = [
+        {
+          matchType: 'Qualifier 1',
+          team1: playoffTeams[0].teamName,
+          team2: playoffTeams[1].teamName,
+          // In Qualifier 1, the winner advances directly to the Final,
+          // and the loser goes to Qualifier 2.
+        },
+        {
+          matchType: 'Eliminator 1',
+          team1: playoffTeams[2].teamName,
+          team2: playoffTeams[3].teamName,
+          // The winner of Eliminator 1 goes to Qualifier 2.
+        },
+        {
+          matchType: 'Qualifier 2',
+          team1: 'TBD (Loser of Qualifier 1)',
+          team2: 'TBD (Winner of Eliminator 1)',
+          // Winner advances; loser plays in Eliminator 3.
+        },
+        {
+          matchType: 'Eliminator 3',
+          team1: 'TBD (Loser of Qualifier 2)',
+          team2: playoffTeams[4].teamName,
+          // The winner advances to the Final.
+        },
+        {
+          matchType: 'Final',
+          team1: 'TBD (Winner Qualifier 1)',
+          team2: 'TBD (Winner of Eliminator 3)',
+          // The champion is decided in the Final.
+        }
+      ];
+    }
+    // ---------------------------
+
+    res.json({ players: playersWithDetails, playoffFixtures });
   } catch (error) {
     console.error('Error fetching player list:', error);
     res.status(500).json({ message: 'Error fetching player list', error });
@@ -88,9 +165,13 @@ router.get('/list', async (req, res) => {
 });
 
 
+
+
+
 // Store player stats
 router.post('/store', async (req, res) => {
-  const { playerId, userId, opponentUserId, battingStats, bowlingStats, isMom } = req.body;
+  // Destructure the extra field "wicketsTaken" along with the others.
+  const { playerId, userId, opponentUserId, battingStats, bowlingStats, wicketsTaken, isMom } = req.body;
 
   try {
     const newStats = new PlayerStats({
@@ -98,7 +179,11 @@ router.post('/store', async (req, res) => {
       userId,
       opponentUserId,
       battingStats,
-      bowlingStats,
+      bowlingStats: {
+        runsGiven: bowlingStats.runsGiven,
+        ballsBowled: bowlingStats.ballsBowled,
+        wickets: wicketsTaken   // <-- store the extra field value here
+      },
       isMom: isMom || false, // Default to false if not provided
     });
     await newStats.save();
@@ -108,6 +193,7 @@ router.post('/store', async (req, res) => {
     res.status(500).json({ message: 'Error saving player stats', error });
   }
 });
+
 
 
 // Fetch stats for a player

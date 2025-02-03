@@ -35,6 +35,11 @@ const playerStatsSchema = new mongoose.Schema({
       type: Number,
       required: false,
     },
+    wickets: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
   },
   isMom: {
     type: Boolean,
