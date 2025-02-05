@@ -5,6 +5,7 @@ const router = express.Router();
 const User = require('../models/User'); // Adjust the path based on your project structure
 const Player = require('../models/Player');
 const Bid = require('../models/Bid');
+const Fixture = require('../models/Fixture');
 const UserPlayer = require('../models/UserPlayer');
 const multer = require('multer');
 const path = require('path');
@@ -73,23 +74,23 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// routes/user.js (example)
 router.get("/:userId/details", async (req, res) => {
   const { userId } = req.params;
 
   try {
-    // Fetch user data
+    // 1) Fetch user data
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
 
-    // Fetch sold players for the user
+    // 2) Fetch sold players for the user
     const soldPlayers = await UserPlayer.find({ userId, isActive: true })
       .populate("playerId", "name type role basePrice")
       .exec();
 
-    // Fetch all bids for the user
-
+    // 3) Fetch all bids for the user
     const userBids = await Bid.find({ bidder: userId })
       .populate("playerId", "name type role basePrice")
       .sort({ timestamp: -1 })
@@ -113,7 +114,10 @@ router.get("/:userId/details", async (req, res) => {
           .sort({ bidAmount: -1 })
           .exec();
 
-        const status = highestBid && highestBid.bidder.toString() === userId.toString() ? "Won" : "Lost";
+        const status =
+          highestBid && highestBid.bidder.toString() === userId.toString()
+            ? "Won"
+            : "Lost";
 
         pastBids.push({
           player: bid.playerId,
@@ -123,16 +127,55 @@ router.get("/:userId/details", async (req, res) => {
       }
     }
 
-
     // Limit past bids to the last 5
     const lastFivePastBids = pastBids.slice(0, 5);
 
+    // 4) Fetch last 5 fixtures (matches) for this user's team
+    //    We assume user.teamName matches fixture.team1 or fixture.team2
+    let fixtures = await Fixture.find({
+      $or: [
+        { team1: user.teamName },
+        { team2: user.teamName },
+      ],
+      isActive: true,
+    })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .exec();
+
+    // Transform fixture data into a simpler "score/fairness/result/opponentTeam" format
+    const lastFiveMatches = fixtures.map((fx) => {
+      // Determine if user is team1 or team2 in this fixture
+      const isTeam1 = (fx.team1 === user.teamName);
+
+      // The user's score/fairness
+      const userScore = isTeam1 ? fx.team1Score : fx.team2Score;
+      const userFairness = isTeam1 ? fx.team1Fairness : fx.team2Fairness;
+
+      // Opponent is whichever team isn't the user's
+      const opponentTeam = isTeam1 ? fx.team2 : fx.team1;
+
+      // Determine result from fixture's winner field
+      let userResult = "TBD";
+      if (fx.winner) {
+        userResult = (fx.winner === user.teamName) ? "Won" : "Lost";
+      }
+
+      return {
+        score: userScore || "NA",
+        fairness: userFairness || 0,
+        result: userResult,
+        opponentTeam: opponentTeam || "NA",
+      };
+    });
+
+    // 5) Return everything, including the new lastFiveMatches
     res.status(200).json({
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
-        image:user.teamImage,
+        image: user.teamImage,
         teamName: user.teamName,
         purse: user.purse,
       },
@@ -142,12 +185,15 @@ router.get("/:userId/details", async (req, res) => {
       })),
       activeBids,
       pastBids: lastFivePastBids,
+      lastFiveMatches, // <-- includes opponentTeam now
     });
   } catch (error) {
     console.error("Error fetching user details:", error);
     res.status(500).json({ message: "Internal server error." });
   }
 });
+
+
 
 router.get("/purses", async (req, res) => {
   try {
