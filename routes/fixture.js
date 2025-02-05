@@ -5,13 +5,12 @@ const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const router = express.Router();
 
-
 router.get('/', async (req, res) => {
   try {
     // Fetch teams (users) that have a valid teamName and are active.
     const teams = await User.find({
       teamName: { $exists: true, $ne: null, $ne: 'NA' },
-      isActive: true, // Only include active users
+      isActive: true,
     })
       .populate('boughtPlayers')
       .select('_id teamName teamImage boughtPlayers');
@@ -25,6 +24,7 @@ router.get('/', async (req, res) => {
       const sortedKey = [fixture.team1.toString(), fixture.team2.toString()]
         .sort()
         .join('-');
+
       if (uniqueFixtureMap.has(sortedKey)) {
         if (!fixture.winner) {
           // Delete fixture only if the winner field is null.
@@ -47,6 +47,7 @@ router.get('/', async (req, res) => {
         [f.team1.toString(), f.team2.toString()].sort().join('-')
       )
     );
+
     const newFixtures = [];
 
     // Generate new fixtures using user IDs while avoiding duplicates.
@@ -76,13 +77,9 @@ router.get('/', async (req, res) => {
     // Enhance each fixture with team details and override team1 and team2 with team names.
     const enhancedFixtures = allFixtures.map((fixture) => {
       const team1Details =
-        teams.find(
-          (team) => team._id.toString() === fixture.team1.toString()
-        ) || {};
+        teams.find((team) => team._id.toString() === fixture.team1.toString()) || {};
       const team2Details =
-        teams.find(
-          (team) => team._id.toString() === fixture.team2.toString()
-        ) || {};
+        teams.find((team) => team._id.toString() === fixture.team2.toString()) || {};
 
       return {
         ...fixture._doc,
@@ -111,29 +108,53 @@ router.get('/', async (req, res) => {
 
 router.post('/save', async (req, res) => {
   try {
-    const { team1, team2, winner, margin, mom, team1Score, team2Score } = req.body;
+    const {
+      team1,
+      team2,
+      winner,
+      margin,
+      mom,
+      team1Score,
+      team2Score,
+      team1Fairness,
+      team2Fairness,
+    } = req.body;
 
     let fixture = await Fixture.findOne({ team1, team2 });
 
+    // If no existing fixture, create a new one
     if (!fixture) {
-      fixture = new Fixture({ team1, team2, winner, margin, mom, team1Score, team2Score });
+      fixture = new Fixture({
+        team1,
+        team2,
+        winner,
+        margin,
+        mom,
+        team1Score,
+        team2Score,
+        team1Fairness,
+        team2Fairness,
+      });
     } else {
+      // Otherwise, update existing fixture
       fixture.winner = winner;
       fixture.margin = margin;
       fixture.mom = mom;
       fixture.team1Score = team1Score;
       fixture.team2Score = team2Score;
+      fixture.team1Fairness = team1Fairness;
+      fixture.team2Fairness = team2Fairness;
     }
 
     await fixture.save();
-    res.status(200).json({ message: 'Fixture result saved successfully!', fixture });
+    res.status(200).json({
+      message: 'Fixture result saved successfully!',
+      fixture,
+    });
   } catch (error) {
     console.error('Error saving fixture:', error);
     res.status(500).json({ message: 'Failed to save fixture result.' });
   }
 });
 
-  
 module.exports = router;
-  
-

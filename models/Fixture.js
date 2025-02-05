@@ -1,3 +1,4 @@
+// models/Fixture.js
 const mongoose = require('mongoose');
 
 const FixtureSchema = new mongoose.Schema({
@@ -7,13 +8,18 @@ const FixtureSchema = new mongoose.Schema({
   margin: { type: String, default: null },
   team1Score: { type: String, default: null },
   team2Score: { type: String, default: null },
+
+  // Separate fairness fields for each team
+  team1Fairness: { type: Number, default: 0 },
+  team2Fairness: { type: Number, default: 0 },
+
   mom: { 
     name: { type: String, default: null }, 
-    score: { type: Number, default: 0 }, 
-    wickets: { type: Number, default: 0 } 
-  }, // Detailed MoM information
+    score: { type: Number }, 
+    wickets: { type: Number } 
+  },
   createdAt: { type: Date, default: Date.now },
-  isActive:{ type: Boolean, default: true }
+  isActive: { type: Boolean, default: true }
 });
 
 module.exports = mongoose.model('Fixture', FixtureSchema);
