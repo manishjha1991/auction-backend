@@ -298,7 +298,7 @@ router.put('/update-points/:userId', async (req, res) => {
 router.get('/points-table', async (req, res) => {
   try {
     // Fetch all users with a team
-    const users = await User.find({ teamName: { $exists: true, $ne: null } })
+    const users = await User.find({ teamName: { $exists: true, $ne: null }, isActive: true })
       .select('_id teamName points matchesPlayed fairnessPoint teamImage')
       .lean();
 
