@@ -5,29 +5,33 @@ const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const router = express.Router();
 
+
+
 router.get('/', async (req, res) => {
   try {
-    // Fetch teams (users) that have a valid teamName and are active.
+    // 1) Fetch teams (users) that have a valid teamName and are active.
     const teams = await User.find({
       teamName: { $exists: true, $ne: null, $ne: 'NA' },
       isActive: true,
     })
       .populate('boughtPlayers')
-      .select('_id teamName teamImage boughtPlayers');
+      .select('teamName teamImage boughtPlayers'); 
+      // Notice we DO NOT select _id, 
+      // because we only match on teamName now
 
-    // Fetch all active fixtures
+    // 2) Fetch all active fixtures (which store team1/team2 as strings)
     const existingFixtures = await Fixture.find({ isActive: true });
-    const uniqueFixtureMap = new Set();
 
-    // Deduplicate existing fixtures while retaining those with a winner.
+    // Deduplicate existing fixtures with the same pair of team names
+    const uniqueFixtureMap = new Set();
     for (const fixture of existingFixtures) {
-      const sortedKey = [fixture.team1.toString(), fixture.team2.toString()]
-        .sort()
-        .join('-');
+      // Both team1 and team2 are strings, so just do:
+      const sortedKey = [fixture.team1, fixture.team2].sort().join('-');
 
       if (uniqueFixtureMap.has(sortedKey)) {
+        // If we already have this pair, 
+        // and there's no winner => remove the duplicate
         if (!fixture.winner) {
-          // Delete fixture only if the winner field is null.
           await Fixture.deleteOne({ _id: fixture._id });
         }
       } else {
@@ -35,70 +39,80 @@ router.get('/', async (req, res) => {
       }
     }
 
-    // Re-fetch the cleaned active fixtures.
+    // 3) Re-fetch cleaned active fixtures
     const cleanedFixtures = await Fixture.find({ isActive: true });
 
-    // Create an array of team IDs (as strings) from active teams only.
-    const teamIds = teams.map((team) => team._id.toString());
+    // 4) Create an array of team names from active users
+    const teamNames = teams.map((team) => team.teamName);
 
-    // Create a set of fixture keys (combination of team IDs) from cleaned fixtures.
+    // 5) Build a set of fixture keys from existing fixtures
     const fixtureMap = new Set(
       cleanedFixtures.map((f) =>
-        [f.team1.toString(), f.team2.toString()].sort().join('-')
+        [f.team1, f.team2].sort().join('-')
       )
     );
 
+    // 6) Generate new fixtures for all unique pairs of team names
     const newFixtures = [];
-
-    // Generate new fixtures using user IDs while avoiding duplicates.
-    for (let i = 0; i < teamIds.length; i++) {
-      for (let j = i + 1; j < teamIds.length; j++) {
-        const team1 = teamIds[i];
-        const team2 = teamIds[j];
-        const fixtureKey = [team1, team2].sort().join('-');
+    for (let i = 0; i < teamNames.length; i++) {
+      for (let j = i + 1; j < teamNames.length; j++) {
+        const t1 = teamNames[i];
+        const t2 = teamNames[j];
+        const fixtureKey = [t1, t2].sort().join('-');
 
         if (!fixtureMap.has(fixtureKey)) {
-          newFixtures.push({ team1, team2 });
+          newFixtures.push({ team1: t1, team2: t2 });
           fixtureMap.add(fixtureKey);
         }
       }
     }
 
-    // Insert new fixtures if any are found.
+    // 7) Insert any new fixtures
     if (newFixtures.length > 0) {
       await Fixture.insertMany(newFixtures);
     }
 
-    // Fetch all active fixtures sorted by createdAt.
+    // 8) Fetch *all* active fixtures sorted by createdAt
     const allFixtures = await Fixture.find({ isActive: true }).sort({
       createdAt: 1,
     });
 
-    // Enhance each fixture with team details and override team1 and team2 with team names.
+    // 9) Enhance each fixture with user/team details, matched by teamName
     const enhancedFixtures = allFixtures.map((fixture) => {
-      const team1Details =
-        teams.find((team) => team._id.toString() === fixture.team1.toString()) || {};
-      const team2Details =
-        teams.find((team) => team._id.toString() === fixture.team2.toString()) || {};
+      // Try to find user details by matching user.teamName === fixture.team1
+      const team1Details = teams.find(
+        (t) => t.teamName === fixture.team1
+      ) || {};
+
+      // Same for team2
+      const team2Details = teams.find(
+        (t) => t.teamName === fixture.team2
+      ) || {};
 
       return {
         ...fixture._doc,
-        // Override team1 and team2 with team names for the response.
-        team1: team1Details.teamName || 'Unknown',
-        team2: team2Details.teamName || 'Unknown',
+        // Keep the original team1/team2 in place 
+        // or override them if you'd like, e.g.:
+        // team1: team1Details.teamName || fixture.team1,
+        // team2: team2Details.teamName || fixture.team2,
+        team1: fixture.team1,
+        team2: fixture.team2,
+
+        // Add extra details
         team1Details: {
-          teamName: team1Details.teamName || 'Unknown',
+          teamName: team1Details.teamName || fixture.team1 || 'Unknown',
           teamImage: team1Details.teamImage || null,
           players: team1Details.boughtPlayers || [],
         },
         team2Details: {
-          teamName: team2Details.teamName || 'Unknown',
+          teamName: team2Details.teamName || fixture.team2 || 'Unknown',
           teamImage: team2Details.teamImage || null,
           players: team2Details.boughtPlayers || [],
         },
       };
     });
 
+    // Return final list
     res.status(200).json(enhancedFixtures);
   } catch (error) {
     console.error('Error fetching fixtures:', error);

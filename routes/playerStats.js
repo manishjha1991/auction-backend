@@ -170,29 +170,78 @@ router.get('/list', async (req, res) => {
 
 // Store player stats
 router.post('/store', async (req, res) => {
-  // Destructure the extra field "wicketsTaken" along with the others.
-  const { playerId, userId, opponentUserId, battingStats, bowlingStats, wicketsTaken, isMom } = req.body;
-
   try {
-    const newStats = new PlayerStats({
+    const {
       playerId,
       userId,
       opponentUserId,
       battingStats,
-      bowlingStats: {
-        runsGiven: bowlingStats.runsGiven,
-        ballsBowled: bowlingStats.ballsBowled,
-        wickets: wicketsTaken   // <-- store the extra field value here
-      },
-      isMom: isMom || false, // Default to false if not provided
-    });
-    await newStats.save();
+      bowlingStats,
+      wicketsTaken,
+      isMom,
+    } = req.body;
 
-    res.status(201).json({ message: 'Player stats saved successfully', data: newStats });
+    // 1) Check if a stats doc already exists for this "match"
+    //    (defining match by userId, opponentUserId, playerId).
+    const existingStats = await PlayerStats.findOne({
+      playerId,
+      userId,
+      opponentUserId,
+    });
+
+    if (existingStats) {
+      // 2) If it exists, update the fields
+      existingStats.battingStats = {
+        runs: battingStats.runs || 0,
+        balls: battingStats.balls || 0,
+      };
+
+      existingStats.bowlingStats = {
+        runsGiven: bowlingStats.runsGiven || 0,
+        ballsBowled: bowlingStats.ballsBowled || 0,
+        wickets: wicketsTaken || 0, // store the "wicketsTaken" here
+      };
+
+      existingStats.isMom = isMom || false;
+
+      // 3) Save updates
+      await existingStats.save();
+
+      return res.status(200).json({
+        message: 'Player stats updated successfully',
+        data: existingStats,
+      });
+    } else {
+      // 4) Otherwise, create a new stats document
+      const newStats = new PlayerStats({
+        playerId,
+        userId,
+        opponentUserId,
+        battingStats: {
+          runs: battingStats.runs || 0,
+          balls: battingStats.balls || 0,
+        },
+        bowlingStats: {
+          runsGiven: bowlingStats.runsGiven || 0,
+          ballsBowled: bowlingStats.ballsBowled || 0,
+          wickets: wicketsTaken || 0,
+        },
+        isMom: isMom || false,
+      });
+
+      await newStats.save();
+
+      return res.status(201).json({
+        message: 'Player stats saved successfully',
+        data: newStats,
+      });
+    }
   } catch (error) {
-    res.status(500).json({ message: 'Error saving player stats', error });
+    console.error('Error saving/updating player stats:', error);
+    return res.status(500).json({ message: 'Error saving player stats', error });
   }
 });
+
 
 
 

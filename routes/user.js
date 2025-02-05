@@ -132,6 +132,7 @@ router.get("/:userId/details", async (req, res) => {
 
     // 4) Fetch last 5 fixtures (matches) for this user's team
     //    We assume user.teamName matches fixture.team1 or fixture.team2
+    // In your route or controller:
     let fixtures = await Fixture.find({
       $or: [
         { team1: user.teamName },
@@ -139,9 +140,10 @@ router.get("/:userId/details", async (req, res) => {
       ],
       isActive: true,
     })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: 1 })
       .limit(5)
       .exec();
+
 
     // Transform fixture data into a simpler "score/fairness/result/opponentTeam" format
     const lastFiveMatches = fixtures.map((fx) => {
