@@ -296,6 +296,263 @@ router.get('/stats/:playerId', async (req, res) => {
 
 
 
+// GET /stats-overview
+router.get('/stats-overview', async (req, res) => {
+  try {
+    // 1) Fetch all PlayerStats docs, populating references
+    const allStats = await PlayerStats.find()
+      .populate({
+        path: 'playerId',
+        model: Player, 
+        select: 'name role type basePrice isActive',
+      })
+      .populate({
+        path: 'userId',
+        model: User,
+        select: 'name teamName isActive',
+      })
+      .populate({
+        path: 'opponentUserId',
+        model: User,
+        select: 'name teamName isActive',
+      });
+
+    // Helper functions
+    const calcStrikeRate = (runs, balls) => {
+      if (!balls || balls === 0) return 0;
+      return (runs / balls) * 100; // e.g. 30 runs in 15 balls = 200 SR
+    };
+    const calcEconomy = (runsGiven, ballsBowled) => {
+      if (!ballsBowled || ballsBowled === 0) return 99_999; // big number if no data
+      return (runsGiven / (ballsBowled / 6)); // e.g. 24 runs in 24 balls => 6.0 econ
+    };
+
+    // 2) Variables to track single-match records
+    let highestStrikeRateDoc = null;
+    let highestSRValue = 0;
+
+    let bestEconomyDoc = null;
+    let bestEconValue = 99_999; // track minimum economy
+
+    let highestWicketsDoc = null;
+    let highestWicketsCount = 0;
+
+    let highestScoreDoc = null;
+    let highestScoreRuns = 0;
+
+    // 3) Variables to track total runs/wickets (leading scorers)
+    //    We accumulate for each player across all matches
+    const totalRunsMap = {};     // { playerId: sum_of_runs }
+    const totalWicketsMap = {};  // { playerId: sum_of_wickets }
+
+    // 4) Arrays for 5-wicket hauls, 4-wicket hauls, centuries, half-centuries
+    const highestFiveWicketHauls = []; 
+    const highestFourWicketHauls = [];
+    const centuries = [];
+    const halfCenturies = [];
+
+    // 5) Iterate over every stats doc, compute the relevant info
+    allStats.forEach((statDoc) => {
+      const { 
+        playerId, 
+        userId, 
+        opponentUserId,
+        battingStats,
+        bowlingStats,
+        createdAt,
+      } = statDoc;
+
+      // Basic checks
+      const playerName   = playerId?.name ?? 'Unknown Player';
+      const teamName     = userId?.teamName ?? 'Unknown Team';
+      const opponentName = opponentUserId?.teamName ?? 'Unknown Opponent';
+
+      // A) Single-match computations
+      const runs  = battingStats?.runs || 0;
+      const balls = battingStats?.balls || 0;
+      const sr    = calcStrikeRate(runs, balls);
+
+      const runsGiven   = bowlingStats?.runsGiven || 0;
+      const ballsBowled = bowlingStats?.ballsBowled || 0;
+      const wickets     = bowlingStats?.wickets || 0;
+      const economy     = calcEconomy(runsGiven, ballsBowled);
+
+      // 1) Highest Strike Rate
+      if (sr > highestSRValue) {
+        highestSRValue = sr;
+        highestStrikeRateDoc = {
+          playerName,
+          teamName,
+          strikeRate: parseFloat(sr.toFixed(2)),
+        };
+      }
+      // 2) Best Economy
+      if (economy < bestEconValue) {
+        bestEconValue = economy;
+        bestEconomicalBowler = {
+          playerName,
+          teamName,
+          economy: parseFloat(economy.toFixed(2)),
+        };
+      }
+      // 3) Highest Wicket Taker (single match)
+      if (wickets > highestWicketsCount) {
+        highestWicketsCount = wickets;
+        highestWicketsDoc = {
+          playerName,
+          teamName,
+          wickets,
+          opponentTeam: opponentName,
+        };
+      }
+      // 4) Highest Score (single match)
+      if (runs > highestScoreRuns) {
+        highestScoreRuns = runs;
+        highestScoreDoc = {
+          playerName,
+          teamName,
+          opponentTeam: opponentName,
+          score: runs,
+        };
+      }
+
+      // B) Totals for leading wicket taker / run scorer
+      const pId = String(playerId._id); // convert to string key
+      if (!totalRunsMap[pId])     totalRunsMap[pId] = 0;
+      if (!totalWicketsMap[pId])  totalWicketsMap[pId] = 0;
+
+      totalRunsMap[pId]    += runs;
+      totalWicketsMap[pId] += wickets;
+
+      // C) Specialized arrays
+      // 5-wicket hauls => if wickets >= 5
+      if (wickets >= 5) {
+        highestFiveWicketHauls.push({
+          playerName,
+          teamName,
+          opponentTeam: opponentName,
+          wickets,
+          date: createdAt,
+        });
+      }
+      // 4-wicket hauls => if wickets == 4
+      if (wickets === 4) {
+        highestFourWicketHauls.push({
+          playerName,
+          teamName,
+          opponentTeam: opponentName,
+          wickets,
+          date: createdAt,
+        });
+      }
+      // Centuries => if runs >= 100
+      if (runs >= 100) {
+        centuries.push({
+          playerName,
+          teamName,
+          againstTeam: opponentName,
+          runs,
+          date: createdAt,
+        });
+      }
+      // Half-centuries => if 50 <= runs < 100
+      else if (runs >= 50 && runs < 100) {
+        halfCenturies.push({
+          playerName,
+          teamName,
+          againstTeam: opponentName,
+          runs,
+          date: createdAt,
+        });
+      }
+    });
+
+    // 6) Find overall leading wicket taker & run scorer
+    //    We need to know who the player is => we need to do another pass or store the best ID
+    let leadingWicketTaker = null;
+    let maxWickets = 0;
+
+    let leadingRunScorer = null;
+    let maxRuns = 0;
+
+    // Because we also want the player's name/team, we can do a quick second pass
+    // or we can keep a small map of (playerId -> { name, team })
+    // For now, let's do a single pass over keys in totalRunsMap:
+    for (let playerStat of allStats) {
+      const pid       = String(playerStat.playerId._id);
+      const playerName= playerStat.playerId?.name ?? 'Unknown Player';
+      const teamName  = playerStat.userId?.teamName ?? 'Unknown Team';
+
+      // A) Leading run scorer
+      if (totalRunsMap[pid] > maxRuns) {
+        maxRuns = totalRunsMap[pid];
+        leadingRunScorer = {
+          playerName,
+          teamName,
+          totalRuns: maxRuns,
+        };
+      }
+      // B) Leading wicket taker
+      if (totalWicketsMap[pid] > maxWickets) {
+        maxWickets = totalWicketsMap[pid];
+        leadingWicketTaker = {
+          playerName,
+          teamName,
+          totalWickets: maxWickets,
+        };
+      }
+    }
+
+    // 7) Construct final response object matching your StatsOverview shape
+    const response = {
+      highestStrikeRate: highestStrikeRateDoc || {
+        playerName: '',
+        teamName: '',
+        strikeRate: 0,
+      },
+      bestEconomicalBowler: bestEconomicalBowler || {
+        playerName: '',
+        teamName: '',
+        economy: 0,
+      },
+      highestWicketTakerInMatch: highestWicketsDoc || {
+        playerName: '',
+        teamName: '',
+        wickets: 0,
+        opponentTeam: '',
+      },
+      highestScore: highestScoreDoc || {
+        playerName: '',
+        teamName: '',
+        opponentTeam: '',
+        score: 0,
+      },
+      leadingWicketTaker: leadingWicketTaker || {
+        playerName: '',
+        teamName: '',
+        totalWickets: 0,
+      },
+      leadingRunScorer: leadingRunScorer || {
+        playerName: '',
+        teamName: '',
+        totalRuns: 0,
+      },
+      highestFiveWicketHauls,
+      highestFourWicketHauls,
+      centuries,
+      halfCenturies,
+    };
+
+    return res.status(200).json(response);
+  } catch (err) {
+    console.error('Error generating StatsOverview:', err);
+    return res
+      .status(500)
+      .json({ message: 'Error generating stats overview', error: err });
+  }
+});
+
+
 module.exports = router;
 
 
