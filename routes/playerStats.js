@@ -169,11 +169,11 @@ router.get('/list', async (req, res) => {
 
 
 // Store player stats
+// routes/playerStats.js (example)
 router.post('/store', async (req, res) => {
   try {
     const {
       playerId,
-      userId,
       opponentUserId,
       battingStats,
       bowlingStats,
@@ -181,8 +181,24 @@ router.post('/store', async (req, res) => {
       isMom,
     } = req.body;
 
-    // 1) Check if a stats doc already exists for this "match"
-    //    (defining match by userId, opponentUserId, playerId).
+    // 1) Find which user owns this playerId:
+    //    We'll look for the user whose boughtPlayers array includes playerId.
+    const ownerUser = await User.findOne({
+      boughtPlayers: playerId,
+    });
+
+    // If no user found owning this player, handle accordingly:
+    if (!ownerUser) {
+      return res.status(400).json({
+        message: 'No user found who owns this playerId',
+      });
+    }
+
+    // This is the user who owns the player
+    const userId = ownerUser._id;
+
+    // 2) Check if a stats doc already exists for this "match" 
+    //    (defining match by userId, opponentUserId, and playerId).
     const existingStats = await PlayerStats.findOne({
       playerId,
       userId,
@@ -190,21 +206,20 @@ router.post('/store', async (req, res) => {
     });
 
     if (existingStats) {
-      // 2) If it exists, update the fields
+      // 3) If it exists, update the fields
       existingStats.battingStats = {
-        runs: battingStats.runs || 0,
-        balls: battingStats.balls || 0,
+        runs: battingStats?.runs || 0,
+        balls: battingStats?.balls || 0,
       };
 
       existingStats.bowlingStats = {
-        runsGiven: bowlingStats.runsGiven || 0,
-        ballsBowled: bowlingStats.ballsBowled || 0,
-        wickets: wicketsTaken || 0, // store the "wicketsTaken" here
+        runsGiven: bowlingStats?.runsGiven || 0,
+        ballsBowled: bowlingStats?.ballsBowled || 0,
+        wickets: wicketsTaken || 0, // store "wicketsTaken" here
       };
 
-      existingStats.isMom = isMom || false;
+      existingStats.isMom = !!isMom; // convert to boolean
 
-      // 3) Save updates
       await existingStats.save();
 
       return res.status(200).json({
@@ -215,18 +230,18 @@ router.post('/store', async (req, res) => {
       // 4) Otherwise, create a new stats document
       const newStats = new PlayerStats({
         playerId,
-        userId,
+        userId,              // <== from the user who actually owns this player
         opponentUserId,
         battingStats: {
-          runs: battingStats.runs || 0,
-          balls: battingStats.balls || 0,
+          runs: battingStats?.runs || 0,
+          balls: battingStats?.balls || 0,
         },
         bowlingStats: {
-          runsGiven: bowlingStats.runsGiven || 0,
-          ballsBowled: bowlingStats.ballsBowled || 0,
+          runsGiven: bowlingStats?.runsGiven || 0,
+          ballsBowled: bowlingStats?.ballsBowled || 0,
           wickets: wicketsTaken || 0,
         },
-        isMom: isMom || false,
+        isMom: !!isMom,
       });
 
       await newStats.save();
@@ -241,6 +256,7 @@ router.post('/store', async (req, res) => {
     return res.status(500).json({ message: 'Error saving player stats', error });
   }
 });
+
 
 
 
@@ -319,12 +335,12 @@ router.get('/stats-overview', async (req, res) => {
 
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
-      if (!balls || balls === 0) return 0;
-      return (runs / balls) * 100; // e.g. 30 runs in 15 balls = 200 SR
+      if (!balls || balls < 6) return 0;
+      return (runs / balls) * 100; 
     };
     const calcEconomy = (runsGiven, ballsBowled) => {
-      if (!ballsBowled || ballsBowled === 0) return 99_999; // big number if no data
-      return (runsGiven / (ballsBowled / 6)); // e.g. 24 runs in 24 balls => 6.0 econ
+      if (!ballsBowled || ballsBowled < 6) return 99_999;
+      return (runsGiven / (ballsBowled / 6));
     };
 
     // 2) Variables to track single-match records
@@ -341,9 +357,11 @@ router.get('/stats-overview', async (req, res) => {
     let highestScoreRuns = 0;
 
     // 3) Variables to track total runs/wickets (leading scorers)
-    //    We accumulate for each player across all matches
-    const totalRunsMap = {};     // { playerId: sum_of_runs }
-    const totalWicketsMap = {};  // { playerId: sum_of_wickets }
+    const totalRunsMap        = {};  
+    const totalWicketsMap     = {};  
+    const matchCountMap       = {};  
+    const totalBallsBowledMap = {};  
+    const momCountMap         = {};  
 
     // 4) Arrays for 5-wicket hauls, 4-wicket hauls, centuries, half-centuries
     const highestFiveWicketHauls = []; 
@@ -386,6 +404,7 @@ router.get('/stats-overview', async (req, res) => {
           strikeRate: parseFloat(sr.toFixed(2)),
         };
       }
+
       // 2) Best Economy
       if (economy < bestEconValue) {
         bestEconValue = economy;
@@ -395,6 +414,7 @@ router.get('/stats-overview', async (req, res) => {
           economy: parseFloat(economy.toFixed(2)),
         };
       }
+
       // 3) Highest Wicket Taker (single match)
       if (wickets > highestWicketsCount) {
         highestWicketsCount = wickets;
@@ -405,6 +425,7 @@ router.get('/stats-overview', async (req, res) => {
           opponentTeam: opponentName,
         };
       }
+
       // 4) Highest Score (single match)
       if (runs > highestScoreRuns) {
         highestScoreRuns = runs;
@@ -420,9 +441,22 @@ router.get('/stats-overview', async (req, res) => {
       const pId = String(playerId._id); // convert to string key
       if (!totalRunsMap[pId])     totalRunsMap[pId] = 0;
       if (!totalWicketsMap[pId])  totalWicketsMap[pId] = 0;
-
       totalRunsMap[pId]    += runs;
       totalWicketsMap[pId] += wickets;
+
+      // B1) Count matches per player
+      if (!matchCountMap[pId]) matchCountMap[pId] = 0;
+      matchCountMap[pId] += 1;
+
+      // B2) Track total balls bowled per player
+      if (!totalBallsBowledMap[pId]) totalBallsBowledMap[pId] = 0;
+      totalBallsBowledMap[pId] += ballsBowled;
+
+      // B3) Check if this stats doc is MoM (CHANGED to `isMom`)
+      if (statDoc.isMom) {
+        if (!momCountMap[pId]) momCountMap[pId] = 0;
+        momCountMap[pId] += 1;
+      }
 
       // C) Specialized arrays
       // 5-wicket hauls => if wickets >= 5
@@ -468,22 +502,17 @@ router.get('/stats-overview', async (req, res) => {
     });
 
     // 6) Find overall leading wicket taker & run scorer
-    //    We need to know who the player is => we need to do another pass or store the best ID
     let leadingWicketTaker = null;
     let maxWickets = 0;
 
     let leadingRunScorer = null;
     let maxRuns = 0;
 
-    // Because we also want the player's name/team, we can do a quick second pass
-    // or we can keep a small map of (playerId -> { name, team })
-    // For now, let's do a single pass over keys in totalRunsMap:
     for (let playerStat of allStats) {
       const pid       = String(playerStat.playerId._id);
       const playerName= playerStat.playerId?.name ?? 'Unknown Player';
       const teamName  = playerStat.userId?.teamName ?? 'Unknown Team';
 
-      // A) Leading run scorer
       if (totalRunsMap[pid] > maxRuns) {
         maxRuns = totalRunsMap[pid];
         leadingRunScorer = {
@@ -492,7 +521,6 @@ router.get('/stats-overview', async (req, res) => {
           totalRuns: maxRuns,
         };
       }
-      // B) Leading wicket taker
       if (totalWicketsMap[pid] > maxWickets) {
         maxWickets = totalWicketsMap[pid];
         leadingWicketTaker = {
@@ -503,7 +531,90 @@ router.get('/stats-overview', async (req, res) => {
       }
     }
 
-    // 7) Construct final response object matching your StatsOverview shape
+    // Build map of player info
+    const playerInfoMap = {};
+    allStats.forEach((statDoc) => {
+      const pid = String(statDoc.playerId._id);
+      if (!playerInfoMap[pid]) {
+        playerInfoMap[pid] = {
+          playerName: statDoc.playerId?.name || 'Unknown Player',
+          teamName: statDoc.userId?.teamName || 'Unknown Team',
+        };
+      }
+    });
+
+    // Top 5 run scorers
+    const runArray = Object.entries(totalRunsMap).map(([pid, runs]) => {
+      return {
+        playerId: pid,
+        playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
+        runs,
+      };
+    });
+    runArray.sort((a, b) => b.runs - a.runs);
+    const top5RunScorers = runArray.slice(0, 5);
+
+    // Top 5 wicket takers
+    const wicketArray = Object.entries(totalWicketsMap).map(([pid, wickets]) => {
+      return {
+        playerId: pid,
+        playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
+        wickets,
+      };
+    });
+    wicketArray.sort((a, b) => b.wickets - a.wickets);
+    const top5WicketTakers = wicketArray.slice(0, 5);
+
+    // Top 5 MOM
+    const momArray = Object.entries(momCountMap).map(([pid, count]) => {
+      return {
+        playerId: pid,
+        playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
+        momCount: count,
+      };
+    });
+    // Sort descending by number of MoM
+    momArray.sort((a, b) => b.momCount - a.momCount);
+    const top5MOM = momArray.slice(0, 5);
+
+    // Top 5 Bowler by Bowling Strike Rate
+    const bowlingStrikeArray = Object.entries(totalBallsBowledMap).map(([pid, balls]) => {
+      const w = totalWicketsMap[pid] || 0;
+      let strikeRate = Number.POSITIVE_INFINITY;
+      if (w > 0) {
+        strikeRate = balls / w;
+      }
+      return {
+        playerId: pid,
+        playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
+        strikeRate,
+      };
+    });
+    const validBowlingStrikeArray = bowlingStrikeArray.filter(item => item.strikeRate !== Infinity);
+    validBowlingStrikeArray.sort((a, b) => a.strikeRate - b.strikeRate);
+    const top5BowlingStrikeRate = validBowlingStrikeArray.slice(0, 5);
+
+    // Top 5 Best Batting Average
+    const averageArray = Object.entries(matchCountMap).map(([pid, matchCount]) => {
+      const runs = totalRunsMap[pid] || 0;
+      const avg = matchCount > 0 ? (runs / matchCount) : 0;
+      return {
+        playerId: pid,
+        playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
+        matches: matchCount,
+        totalRuns: runs,
+        average: avg,
+      };
+    });
+    averageArray.sort((a, b) => b.average - a.average);
+    const top5BestBattingAverage = averageArray.slice(0, 5);
+
+    // 7) Construct final response
     const response = {
       highestStrikeRate: highestStrikeRateDoc || {
         playerName: '',
@@ -541,6 +652,15 @@ router.get('/stats-overview', async (req, res) => {
       highestFourWicketHauls,
       centuries,
       halfCenturies,
+
+      // Existing top 5 arrays
+      top5RunScorers,
+      top5WicketTakers,
+
+      // New fields
+      top5MOM,
+      top5BowlingStrikeRate,
+      top5BestBattingAverage,
     };
 
     return res.status(200).json(response);
@@ -551,6 +671,10 @@ router.get('/stats-overview', async (req, res) => {
       .json({ message: 'Error generating stats overview', error: err });
   }
 });
+
+
+
+
 
 
 module.exports = router;
