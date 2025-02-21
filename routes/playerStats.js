@@ -601,7 +601,7 @@ router.get('/stats-overview', async (req, res) => {
     // Top 5 Best Batting Average
     const averageArray = Object.entries(matchCountMap).map(([pid, matchCount]) => {
       const runs = totalRunsMap[pid] || 0;
-      const avg = matchCount > 0 ? (runs / 10) : 0;
+      const avg = matchCount > 0 ? (runs / matchCount) : 0;
       return {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
