@@ -347,7 +347,7 @@ router.get('/points-table', async (req, res) => {
   try {
     // Fetch all users with a team
     const users = await User.find({ teamName: { $exists: true, $ne: null }, isActive: true })
-      .select('_id teamName points matchesPlayed fairnessPoint teamImage')
+      .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage')
       .lean();
 
     if (!users.length) {
@@ -367,7 +367,7 @@ router.get('/points-table', async (req, res) => {
 
       return {
         _id: user._id,
-        teamName: user.teamName,
+        teamName: user.abbreviation,
         matchesPlayed,
         points,
         wins,
