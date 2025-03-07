@@ -332,7 +332,7 @@ router.get('/stats-overview', async (req, res) => {
         model: User,
         select: 'name teamName isActive',
       });
-
+    
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
       if (!balls || balls < 6) return 0;
@@ -346,7 +346,7 @@ router.get('/stats-overview', async (req, res) => {
     // 2) Variables to track single-match records
     let highestStrikeRateDoc = null;
     let highestSRValue = 0;
-
+    let bestEconomicalBowler = null;
     let bestEconomyDoc = null;
     let bestEconValue = 99_999; // track minimum economy
 
@@ -394,7 +394,7 @@ router.get('/stats-overview', async (req, res) => {
       const ballsBowled = bowlingStats?.ballsBowled || 0;
       const wickets     = bowlingStats?.wickets || 0;
       const economy     = calcEconomy(runsGiven, ballsBowled);
-
+      
       // 1) Highest Strike Rate
       if (sr > highestSRValue) {
         highestSRValue = sr;
@@ -509,6 +509,7 @@ router.get('/stats-overview', async (req, res) => {
     let maxRuns = 0;
 
     for (let playerStat of allStats) {
+      console.log(playerStat)
       const pid       = String(playerStat.playerId._id);
       const playerName= playerStat.playerId?.name ?? 'Unknown Player';
       const teamName  = playerStat.userId?.teamName ?? 'Unknown Team';
