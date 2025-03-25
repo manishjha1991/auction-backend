@@ -179,6 +179,7 @@ router.post('/store', async (req, res) => {
       bowlingStats,
       wicketsTaken,
       isMom,
+      isPlayoffScore,
     } = req.body;
 
     // 1) Find which user owns this playerId:
@@ -205,7 +206,7 @@ router.post('/store', async (req, res) => {
       opponentUserId,
     });
 
-    if (existingStats) {
+    if (existingStats && !isPlayoffScore) {
       // 3) If it exists, update the fields
       existingStats.battingStats = {
         runs: battingStats?.runs || 0,
