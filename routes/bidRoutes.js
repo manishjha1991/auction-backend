@@ -30,6 +30,67 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "Bidder not found." });
     }
+
+    // =====================================================
+    // NEW CODE: Type-limit check
+    const typeLimit = {
+      Sapphire: 2,
+      Gold: 8,
+      Emerald: 4,
+      Silver: 6,
+    };
+
+    // Count how many 'player.type' the user *already bought*
+    const boughtPlayersOfThisType = await Player.countDocuments({
+      _id: { $in: user.boughtPlayers },
+      type: player.type,
+    });
+
+    // Count how many 'player.type' in user's currentBids
+    const currentBidPlayersOfThisType = await Player.countDocuments({
+      _id: { $in: user.currentBids.map((bid) => bid.playerId) },
+      type: player.type,
+    });
+
+    const totalTypeCount = boughtPlayersOfThisType + currentBidPlayersOfThisType;
+
+    // If total is at or exceeds the limit, make sure the user isn’t already bidding on this *exact* player
+    const alreadyBiddingThisPlayer = user.currentBids.some(
+      (bid) => bid.playerId.toString() === playerId
+    );
+
+    if (
+      totalTypeCount >= typeLimit[player.type] &&
+      !alreadyBiddingThisPlayer
+    ) {
+      return res.status(400).json({
+        message: `You have already reached the maximum limit for ${player.type} players (limit: ${typeLimit[player.type]}).`,
+      });
+    }
+    //    For example, total E + S = 5
+    const combinedESLimit = 5;
+
+    // Count how many total Emerald + Sapphire the user has
+    const combinedESCount = await Player.countDocuments({
+      _id: {
+        $in: [
+          ...user.boughtPlayers,
+          ...user.currentBids.map((bid) => bid.playerId),
+        ],
+      },
+      type: { $in: ["Emerald", "Sapphire"] },
+    });
+
+    // If the incoming player is Emerald or Sapphire, check that we won't exceed the combined limit
+    if (
+      ["Emerald", "Sapphire"].includes(player.type) &&
+      combinedESCount >= combinedESLimit &&
+      !alreadyBiddingThisPlayer
+    ) {
+      return res.status(400).json({
+        message: `You have reached the maximum combined limit (${combinedESLimit}) for Emerald + Sapphire players.`,
+      });
+    }
     // Fetch active bids on this player
     const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
 
@@ -81,7 +142,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     const adjustedTotalLockedAmount = totalLockedAmount - lockedAmount;
     const purseDecimal = user.purse; // Assuming this is a Decimal128 value
     const purseValue = parseFloat(purseDecimal.toString()); // Convert to a usable number
-    
+
     if (purseValue < bidAmount) {
       return res.status(400).json({
         message: `Insufficient funds in purse. You need at least ₹${bidAmount - (purseValue)} extra to place this bid as your purse having ₹${purseValue} and this bid is for ₹${bidAmount} and your locked amount is ₹${adjustedTotalLockedAmount} free some lock amount to bid again .`,
@@ -111,7 +172,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     } else {
       user.currentBids.push({ playerId, amount: bidAmount });
     }
-   // Deduct the bid amount from the user's purse
+    // Deduct the bid amount from the user's purse
     user.purse = mongoose.Types.Decimal128.fromString(
       (parseFloat(user.purse.toString()) - bidAmount).toString()
     );
@@ -470,5 +531,90 @@ router.post("/release-player", async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
+
+
+// Add this NEW route alongside your existing routes:
+router.post("/exit-second-highest/all", async (req, res) => {
+  try {
+    // 1. Fetch all players that are still not sold
+    const unsoldPlayers = await Player.find({ isSold: false });
+
+    // We’ll keep track of how many second-highest bidders were exited
+    let totalExits = 0;
+
+    // 2. Loop through each unsold player
+    for (const player of unsoldPlayers) {
+      // 3. Fetch active bids for this player, sorted by highest first
+      const activeBids = await Bid.find({ 
+        playerId: player._id, 
+        isActive: true 
+      }).sort({ bidAmount: -1 });
+
+      // If there are at least 2 active bids, we can remove the second-highest
+      if (activeBids.length > 1) {
+        const secondHighestBid = activeBids[1];
+        const secondHighestBidderId = secondHighestBid.bidder;
+
+        // 4. Fetch the second-highest bidder user
+        const secondHighestBidder = await User.findById(secondHighestBidderId);
+        if (!secondHighestBidder) {
+          // If the user is missing for some reason, skip
+          continue;
+        }
+
+        // 5. Refund their locked amount
+        const currentBidForPlayer = secondHighestBidder.currentBids.find(
+          (bid) => bid.playerId.toString() === player._id.toString()
+        );
+        if (currentBidForPlayer) {
+          const lockedAmount = currentBidForPlayer.amount;
+          const purse = parseFloat(secondHighestBidder.purse.toString());
+          secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
+            (purse + lockedAmount).toString()
+          );
+
+          // Remove the second-highest bid from their current bids
+          secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
+            (bid) => bid.playerId.toString() !== player._id.toString()
+          );
+          await secondHighestBidder.save();
+        }
+
+        // 6. Mark all the second highest user’s bids on this player as inactive
+        await Bid.updateMany(
+          { playerId: player._id, bidder: secondHighestBidderId },
+          { $set: { isActive: false, isBidOn: false } }
+        );
+
+        // 7. Update the player's current bid and bidder to the new highest
+        const remainingBidders = activeBids.filter(
+          (bid) => bid.bidder.toString() !== secondHighestBidderId.toString()
+        );
+        if (remainingBidders.length > 0) {
+          const newHighestBid = remainingBidders[0];
+          player.currentBid = newHighestBid.bidAmount;
+          player.currentBidder = newHighestBid.bidder;
+        } else {
+          // If no other bidders remain, reset the player's current bid
+          player.currentBid = null;
+          player.currentBidder = null;
+        }
+
+        await player.save();
+        totalExits++;
+      }
+    }
+
+    // 8. Return how many second-highest bidders we removed
+    return res.json({
+      message: `Removed second-highest bidder for ${totalExits} player(s).`,
+    });
+  } catch (error) {
+    console.error("Error bulk-exiting second-highest bidders:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+
 
 module.exports = router;

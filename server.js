@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
-
+require('./cronJobs.js');
 const authRoutes = require('./routes/auth');
 const playerRoutes = require('./routes/players'); // Adjust the path as needed
 const userRoutes = require('./routes/user'); // Adjust the path
