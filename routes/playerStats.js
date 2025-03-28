@@ -17,7 +17,7 @@ router.get('/list', async (req, res) => {
       select:
         '_id name type role basePrice style overallScore profilePicture isSold isActive'
     });
-    
+
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -49,7 +49,7 @@ router.get('/list', async (req, res) => {
       playersToSend.map(async (player) => {
         // Fetch match stats for this player
         const stats = await PlayerStats.find({ playerId: player._id });
-        
+
         // Calculate batting performance per match
         const battingStats = await Promise.all(
           stats.map(async (stat) => ({
@@ -88,7 +88,17 @@ router.get('/list', async (req, res) => {
           (sum, match) => sum + match.wickets,
           0
         );
-
+        // 4. Update the Player document with these new totals
+        await Player.findByIdAndUpdate(
+          player._id,
+          {
+            $set: {
+              totalRuns: totalBattingRuns,
+              totalWickets: totalWickets
+            }
+          },
+          { new: true } // so it returns updated doc if you need it
+        );
         return {
           _id: player._id,
           name: player.name,
@@ -118,7 +128,7 @@ router.get('/list', async (req, res) => {
     })
       .sort({ teamName: 1 }) // Replace with your ranking criteria if available
       .limit(5);
-    
+
     let playoffFixtures = [];
     if (playoffTeams.length === 5) {
       playoffFixtures = [
@@ -320,7 +330,7 @@ router.get('/stats-overview', async (req, res) => {
     const allStats = await PlayerStats.find()
       .populate({
         path: 'playerId',
-        model: Player, 
+        model: Player,
         select: 'name role type basePrice isActive',
       })
       .populate({
@@ -333,11 +343,11 @@ router.get('/stats-overview', async (req, res) => {
         model: User,
         select: 'name teamName isActive',
       });
-    
+
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
       if (!balls || balls < 6) return 0;
-      return (runs / balls) * 100; 
+      return (runs / balls) * 100;
     };
     const calcEconomy = (runsGiven, ballsBowled) => {
       if (!ballsBowled || ballsBowled < 6) return 99_999;
@@ -358,23 +368,23 @@ router.get('/stats-overview', async (req, res) => {
     let highestScoreRuns = 0;
 
     // 3) Variables to track total runs/wickets (leading scorers)
-    const totalRunsMap        = {};  
-    const totalWicketsMap     = {};  
-    const matchCountMap       = {};  
-    const totalBallsBowledMap = {};  
-    const momCountMap         = {};  
+    const totalRunsMap = {};
+    const totalWicketsMap = {};
+    const matchCountMap = {};
+    const totalBallsBowledMap = {};
+    const momCountMap = {};
 
     // 4) Arrays for 5-wicket hauls, 4-wicket hauls, centuries, half-centuries
-    const highestFiveWicketHauls = []; 
+    const highestFiveWicketHauls = [];
     const highestFourWicketHauls = [];
     const centuries = [];
     const halfCenturies = [];
 
     // 5) Iterate over every stats doc, compute the relevant info
     allStats.forEach((statDoc) => {
-      const { 
-        playerId, 
-        userId, 
+      const {
+        playerId,
+        userId,
         opponentUserId,
         battingStats,
         bowlingStats,
@@ -382,20 +392,20 @@ router.get('/stats-overview', async (req, res) => {
       } = statDoc;
 
       // Basic checks
-      const playerName   = playerId?.name ?? 'Unknown Player';
-      const teamName     = userId?.teamName ?? 'Unknown Team';
+      const playerName = playerId?.name ?? 'Unknown Player';
+      const teamName = userId?.teamName ?? 'Unknown Team';
       const opponentName = opponentUserId?.teamName ?? 'Unknown Opponent';
 
       // A) Single-match computations
-      const runs  = battingStats?.runs || 0;
+      const runs = battingStats?.runs || 0;
       const balls = battingStats?.balls || 0;
-      const sr    = calcStrikeRate(runs, balls);
+      const sr = calcStrikeRate(runs, balls);
 
-      const runsGiven   = bowlingStats?.runsGiven || 0;
+      const runsGiven = bowlingStats?.runsGiven || 0;
       const ballsBowled = bowlingStats?.ballsBowled || 0;
-      const wickets     = bowlingStats?.wickets || 0;
-      const economy     = calcEconomy(runsGiven, ballsBowled);
-      
+      const wickets = bowlingStats?.wickets || 0;
+      const economy = calcEconomy(runsGiven, ballsBowled);
+
       // 1) Highest Strike Rate
       if (sr > highestSRValue) {
         highestSRValue = sr;
@@ -440,9 +450,9 @@ router.get('/stats-overview', async (req, res) => {
 
       // B) Totals for leading wicket taker / run scorer
       const pId = String(playerId._id); // convert to string key
-      if (!totalRunsMap[pId])     totalRunsMap[pId] = 0;
-      if (!totalWicketsMap[pId])  totalWicketsMap[pId] = 0;
-      totalRunsMap[pId]    += runs;
+      if (!totalRunsMap[pId]) totalRunsMap[pId] = 0;
+      if (!totalWicketsMap[pId]) totalWicketsMap[pId] = 0;
+      totalRunsMap[pId] += runs;
       totalWicketsMap[pId] += wickets;
 
       // B1) Count matches per player
@@ -511,9 +521,9 @@ router.get('/stats-overview', async (req, res) => {
 
     for (let playerStat of allStats) {
       console.log(playerStat)
-      const pid       = String(playerStat.playerId._id);
-      const playerName= playerStat.playerId?.name ?? 'Unknown Player';
-      const teamName  = playerStat.userId?.teamName ?? 'Unknown Team';
+      const pid = String(playerStat.playerId._id);
+      const playerName = playerStat.playerId?.name ?? 'Unknown Player';
+      const teamName = playerStat.userId?.teamName ?? 'Unknown Team';
 
       if (totalRunsMap[pid] > maxRuns) {
         maxRuns = totalRunsMap[pid];

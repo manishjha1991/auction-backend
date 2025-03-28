@@ -12,7 +12,10 @@ const PlayerSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
     isSold: { type: Boolean, default: false },
-    isActive:{ type: Boolean, default: true }
+    isActive:{ type: Boolean, default: true },
+      // NEW FIELDS:
+    totalRuns: { type: Number, default: 0 },
+    totalWickets: { type: Number, default: 0 },
 });
 
 module.exports = mongoose.model('Player', PlayerSchema);

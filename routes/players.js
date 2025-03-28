@@ -99,18 +99,22 @@ router.delete('/player/:playerID', async (req, res) => {
 router.get("/:playerId/bids", async (req, res) => {
   const { playerId } = req.params;
   try {
-    // Check if the player exists
+    // 1. Check if the player exists
     const player = await Player.findById(playerId);
     if (!player) {
       return res.status(404).json({ message: "Player not found." });
     }
-    // Fetch all bids for the player
+
+    // 2. Fetch all bids for the player
     const allBids = await Bid.find({ playerId })
       .populate("bidder", "name email") // Populate bidder's name and email
       .sort({ bidAmount: -1 }) // Sort by bid value (descending)
       .exec();
-    // Add the last two bids to the top of the response
+
+    // 3. Get the top two bids
     const lastTwoBids = allBids ? allBids.slice(0, 2) : [];
+
+    // 4. Respond with player's info + top bids + all bids
     res.status(200).json({
       player: {
         id: player._id,
@@ -120,19 +124,22 @@ router.get("/:playerId/bids", async (req, res) => {
         battingStyle: player.style || null,
         score: player.overallScore || null,
         status: player.isSold,
-        basePrice: player.basePrice, // Format base price
+        basePrice: player.basePrice,
+        // NEW FIELDS (assuming they exist in your Player schema)
+        totalRuns: player.totalRuns || 0,
+        totalWickets: player.totalWickets || 0
       },
       topTwoBids: lastTwoBids.map((bid) => ({
         id: bid._id,
         bidder: bid.bidder,
-        bidAmount: bid.bidAmount, // Format bid amount
+        bidAmount: bid.bidAmount,
         createdAt: bid.timestamp,
         isBidOn: bid.isBidOn
       })),
       allBids: allBids.map((bid) => ({
         id: bid._id,
         bidder: bid.bidder,
-        bidAmount: bid.bidAmount, // Format bid amount
+        bidAmount: bid.bidAmount,
         createdAt: bid.timestamp,
         isBidOn: bid.isBidOn
       })),
@@ -142,6 +149,7 @@ router.get("/:playerId/bids", async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
+
 
 router.get("/players/data", async (req, res) => {
   try {
