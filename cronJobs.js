@@ -13,3 +13,14 @@ cron.schedule('0 0-22 * * *', async () => {
     console.error('[Cron] Error calling exit-second-highest/all:', error.message);
   }
 });
+
+cron.schedule('0 22 * * *', async () => {
+   // minute = 0, hour = 23, every day, every month, every weekday
+    try {
+      // Replace with your actual server URL/port if needed.
+      const response = await axios.post('https://cpl.in.net/api/bids/sold/single-bid');
+      console.log('[Cron] Response:', response.data);
+    } catch (error) {
+      console.error('[Cron] Error calling exit-second-highest/all:', error.message);
+    }
+  });
