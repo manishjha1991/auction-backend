@@ -533,76 +533,75 @@ router.post("/release-player", async (req, res) => {
 // Add this NEW route alongside your existing routes:
 router.post("/exit-second-highest/all", async (req, res) => {
   try {
-    // 1. Fetch all players that are still not sold
     const unsoldPlayers = await Player.find({ isSold: false });
-
-    // We’ll keep track of how many second-highest bidders were exited
     let totalExits = 0;
 
-    // 2. Loop through each unsold player
     for (const player of unsoldPlayers) {
-      // 3. Fetch active bids for this player, sorted by highest first
+      // Find active bids sorted descending
       const activeBids = await Bid.find({ 
-        playerId: player._id, 
-        isActive: true 
+        playerId: player._id,
+        isActive: true
       }).sort({ bidAmount: -1 });
 
-      // If there are at least 2 active bids, we can remove the second-highest
       if (activeBids.length > 1) {
+        // Identify second highest
         const secondHighestBid = activeBids[1];
         const secondHighestBidderId = secondHighestBid.bidder;
 
-        // 4. Fetch the second-highest bidder user
+        // Grab that user
         const secondHighestBidder = await User.findById(secondHighestBidderId);
-        if (!secondHighestBidder) {
-          // If the user is missing for some reason, skip
-          continue;
-        }
+        if (!secondHighestBidder) continue;
 
-        // 5. Refund their locked amount
-        const currentBidForPlayer = secondHighestBidder.currentBids.find(
-          (bid) => bid.playerId.toString() === player._id.toString()
+        // Refund exactly the secondHighestBid's locked amount
+        const lockedBid = secondHighestBidder.currentBids.find(
+          (cb) =>
+            cb.playerId.toString() === player._id.toString() &&
+            cb.amount === secondHighestBid.bidAmount
         );
-        if (currentBidForPlayer) {
-          const lockedAmount = currentBidForPlayer.amount;
+        if (lockedBid) {
           const purse = parseFloat(secondHighestBidder.purse.toString());
           secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
-            (purse + lockedAmount).toString()
+            (purse + lockedBid.amount).toString()
           );
 
-          // Remove the second-highest bid from their current bids
+          // Remove that one doc from user.currentBids
           secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
-            (bid) => bid.playerId.toString() !== player._id.toString()
+            (cb) =>
+              !(
+                cb.playerId.toString() === player._id.toString() &&
+                cb.amount === secondHighestBid.bidAmount
+              )
           );
           await secondHighestBidder.save();
         }
 
-        // 6. Mark all the second highest user’s bids on this player as inactive
-        await Bid.updateMany(
-          { playerId: player._id, bidder: secondHighestBidderId },
+        // Now mark only that single secondHighestBid doc as inactive
+        await Bid.updateOne(
+          { _id: secondHighestBid._id },
           { $set: { isActive: false, isBidOn: false } }
         );
 
-        // 7. Update the player's current bid and bidder to the new highest
-        const remainingBidders = activeBids.filter(
-          (bid) => bid.bidder.toString() !== secondHighestBidderId.toString()
-        );
-        if (remainingBidders.length > 0) {
-          const newHighestBid = remainingBidders[0];
-          player.currentBid = newHighestBid.bidAmount;
-          player.currentBidder = newHighestBid.bidder;
+        // Re-check remaining active bids
+        const remaining = await Bid.find({
+          playerId: player._id,
+          isActive: true,
+        }).sort({ bidAmount: -1 });
+
+        // If there's still at least 1, set that as highest
+        if (remaining.length > 0) {
+          player.currentBid = remaining[0].bidAmount;
+          player.currentBidder = remaining[0].bidder;
         } else {
-          // If no other bidders remain, reset the player's current bid
+          // Reset if no bidders
           player.currentBid = null;
           player.currentBidder = null;
         }
-
         await player.save();
+
         totalExits++;
       }
     }
 
-    // 8. Return how many second-highest bidders we removed
     return res.json({
       message: `Removed second-highest bidder for ${totalExits} player(s).`,
     });
@@ -611,6 +610,7 @@ router.post("/exit-second-highest/all", async (req, res) => {
     return res.status(500).json({ message: "Internal server error" });
   }
 });
+
 
 /**
  * POST /bid/sold/single-bid
