@@ -14,25 +14,28 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
   const { bidder } = req.body;
 
   try {
-    // Fetch the player
+    // 1. Fetch the player
     const player = await Player.findById(playerId);
     if (!player) {
       return res.status(404).json({ message: "Player not found" });
     }
 
-    // Check if the player is already sold
+    // 2. Check if the player is already sold
     if (player.isSold) {
-      return res.status(400).json({ message: "Cannot place bids on a sold player." });
+      return res
+        .status(400)
+        .json({ message: "Cannot place bids on a sold player." });
     }
 
-    // Fetch the user
+    // 3. Fetch the user
     const user = await User.findById(bidder);
     if (!user) {
       return res.status(404).json({ message: "Bidder not found." });
     }
 
-    // =====================================================
-    // NEW CODE: Type-limit check
+    // ============================
+    // 4. Per-Type Limits
+    // ============================
     const typeLimit = {
       Sapphire: 2,
       Gold: 8,
@@ -40,48 +43,35 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
       Silver: 6,
     };
 
-    // Count how many 'player.type' the user *already bought*
     const boughtPlayersOfThisType = await Player.countDocuments({
       _id: { $in: user.boughtPlayers },
       type: player.type,
     });
-
-    // Count how many 'player.type' in user's currentBids
     const currentBidPlayersOfThisType = await Player.countDocuments({
       _id: { $in: user.currentBids.map((bid) => bid.playerId) },
       type: player.type,
     });
-
     const totalTypeCount = boughtPlayersOfThisType + currentBidPlayersOfThisType;
 
-    // If total is at or exceeds the limit, make sure the user isn’t already bidding on this *exact* player
     const alreadyBiddingThisPlayer = user.currentBids.some(
       (bid) => bid.playerId.toString() === playerId
     );
 
-    if (
-      totalTypeCount >= typeLimit[player.type] &&
-      !alreadyBiddingThisPlayer
-    ) {
+    if (totalTypeCount >= typeLimit[player.type] && !alreadyBiddingThisPlayer) {
       return res.status(400).json({
         message: `You have already reached the maximum limit for ${player.type} players (limit: ${typeLimit[player.type]}).`,
       });
     }
-    //    For example, total E + S = 5
-    const combinedESLimit = 5;
 
-    // Count how many total Emerald + Sapphire the user has
+    // ============================
+    // 5. Combined Emerald + Sapphire Limit
+    // ============================
+    const combinedESLimit = 5;
     const combinedESCount = await Player.countDocuments({
-      _id: {
-        $in: [
-          ...user.boughtPlayers,
-          ...user.currentBids.map((bid) => bid.playerId),
-        ],
-      },
+      _id: [...user.boughtPlayers, ...user.currentBids.map((bid) => bid.playerId)],
       type: { $in: ["Emerald", "Sapphire"] },
     });
 
-    // If the incoming player is Emerald or Sapphire, check that we won't exceed the combined limit
     if (
       ["Emerald", "Sapphire"].includes(player.type) &&
       combinedESCount >= combinedESLimit &&
@@ -91,94 +81,101 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
         message: `You have reached the maximum combined limit (${combinedESLimit}) for Emerald + Sapphire players.`,
       });
     }
-    // Fetch active bids on this player
-    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
 
-    // Ensure only two bidders can actively bid on the player
-    const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
-
-    if (activeBidders.length >= 2 && !activeBidders.includes(bidder.toString())) {
+    // ============================
+    // 6. Max 5 Current Bids
+    // ============================
+    if (
+      user.currentBids.length >= 5 &&
+      !user.currentBids.some((bid) => bid.playerId.toString() === playerId)
+    ) {
       return res.status(400).json({
-        message: 'Only two bidders can actively bid on a player. Wait for one of the current bidders to exit.',
-      });
-    }
-    // Ensure the user has not bid on more than 4 players
-    if (user.currentBids.length >= 5 && !user.currentBids.some((bid) => bid.playerId.toString() === playerId)) {
-      return res.status(400).json({
-        message: "You can bid on a maximum of 5 players at a time. Exit an existing auction to bid on this player.",
+        message:
+          "You can bid on a maximum of 5 players at a time. Exit an existing auction to bid on this player.",
       });
     }
 
-    // Fetch the highest active bid for the player
+    // ============================
+    // 7. Fetch the highest active bid for the player
+    // ============================
     const highestBid = await Bid.findOne({ playerId, isActive: true })
       .sort({ bidAmount: -1 })
       .exec();
 
-    // Determine the new bid amount
+    // 8. Determine the new bid amount
     let bidAmount;
     if (!highestBid) {
+      // No active bids => start at basePrice
       bidAmount = player.basePrice;
     } else {
+      // There's an existing bid, figure out increment
       const determineBidIncrement = (playerType, lastBidAmount) => {
         if (["Sapphire", "Gold", "Emerald"].includes(playerType)) {
-          return 5000000;
+          return 5000000; // 50 Lakh increment
         } else if (playerType === "Silver" && lastBidAmount >= 10000000) {
-          return 5000000;
+          return 5000000; // 50 Lakh for Silver if last >= 1 Cr
         } else if (playerType === "Silver") {
-          return 1000000;
+          return 1000000; // 10 Lakh for Silver otherwise
         }
-        return 1000000;
+        return 1000000; // default 10 Lakh
       };
 
       const bidIncrement = determineBidIncrement(player.type, highestBid.bidAmount);
       bidAmount = highestBid.bidAmount + bidIncrement;
     }
 
-    // Calculate the total locked amount for all current bids
-    const totalLockedAmount = user.currentBids.reduce((sum, bid) => sum + bid.amount, 0);
-    const currentBidOnPlayer = user.currentBids.find((bid) => bid.playerId.toString() === playerId);
+    // 9. Check if user has enough purse
+    // First, figure out the incremental difference
+    const currentBidOnPlayer = user.currentBids.find(
+      (bid) => bid.playerId.toString() === playerId
+    );
     const lockedAmount = currentBidOnPlayer ? currentBidOnPlayer.amount : 0;
-    // Adjust the total locked amount for existing bid on this player
-    const adjustedTotalLockedAmount = totalLockedAmount - lockedAmount;
-    const purseDecimal = user.purse; // Assuming this is a Decimal128 value
-    const purseValue = parseFloat(purseDecimal.toString()); // Convert to a usable number
+    const incrementalDifference = bidAmount - lockedAmount;
 
-    if (purseValue < bidAmount) {
-      return res.status(400).json({
-        message: `Insufficient funds in purse. You need at least ₹${bidAmount - (purseValue)} extra to place this bid as your purse having ₹${purseValue} and this bid is for ₹${bidAmount} and your locked amount is ₹${adjustedTotalLockedAmount} free some lock amount to bid again .`,
-      });
+    // If incrementalDifference <= 0 => user is not actually raising
+    // but typically we only handle raising bids. So if <= 0, no additional purse needed.
+    if (incrementalDifference > 0) {
+      const purseValue = parseFloat(user.purse.toString());
+      if (purseValue < incrementalDifference) {
+        return res.status(400).json({
+          message: `Insufficient funds in purse. You need at least ₹${
+            incrementalDifference
+          } extra to place this bid. Your current purse is ₹${purseValue}.`,
+        });
+      }
+      // Deduct only the incremental difference
+      const updatedPurse = purseValue - incrementalDifference;
+      user.purse = mongoose.Types.Decimal128.fromString(updatedPurse.toString());
     }
 
-
-    // Ensure the same user cannot place consecutive bids
+    // 10. Ensure same user can't place consecutive bids
     if (highestBid && highestBid.bidder.toString() === bidder.toString()) {
       return res.status(400).json({
         message: "You cannot place consecutive bids. Wait for another bidder to bid.",
       });
     }
 
-    // Save the new bid to the Bid collection
+    // 11. Save the new bid to the Bid collection
     const newBid = new Bid({
       playerId,
       bidder,
       bidAmount,
       isActive: true,
+      // isBidOn default = true, etc., if that's in your schema
     });
     await newBid.save();
 
-    // Update the user's current bids
+    // 12. Update the user's currentBids
     if (currentBidOnPlayer) {
-      currentBidOnPlayer.amount = bidAmount;
+      // They previously had locked X for this same player
+      currentBidOnPlayer.amount = bidAmount; // new total
     } else {
+      // They didn't have a bid for this player, add a new currentBids entry
       user.currentBids.push({ playerId, amount: bidAmount });
     }
-    // Deduct the bid amount from the user's purse
-    user.purse = mongoose.Types.Decimal128.fromString(
-      (parseFloat(user.purse.toString()) - bidAmount).toString()
-    );
     await user.save();
 
-    // Update the player's currentBid and currentBidder
+    // 13. Update the player's currentBid & currentBidder
     player.currentBid = bidAmount;
     player.currentBidder = bidder;
     await player.save();
