@@ -81,7 +81,17 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
         message: `You have reached the maximum combined limit (${combinedESLimit}) for Emerald + Sapphire players.`,
       });
     }
+ // Fetch active bids on this player
+ const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
 
+ // Ensure only two bidders can actively bid on the player
+ const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
+
+ if (activeBidders.length >= 2 && !activeBidders.includes(bidder.toString())) {
+   return res.status(400).json({
+     message: 'Only two bidders can actively bid on a player. Wait for one of the current bidders to exit.',
+   });
+ }
     // ============================
     // 6. Max 5 Current Bids
     // ============================
