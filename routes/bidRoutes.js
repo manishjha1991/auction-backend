@@ -368,12 +368,26 @@ router.post("/bid/sold", async (req, res) => {
     await Bid.updateMany({ playerId: playerID }, { $set: { isActive: false } });
 
     // Create an entry in the UserPlayer schema for the sold player
+    const existingUserPlayer = await UserPlayer.findOne({
+      playerId: playerID,
+      userId: highestBid.bidder,
+      isActive: true,
+    });
+    
+    if (existingUserPlayer) {
+      return res.status(400).json({
+        message: "User already has this player active sold on last click.  stop cliking sold its slready sold so.",
+      });
+    }
+    
+    // Otherwise, create a new one
     const newUserPlayer = new UserPlayer({
       playerId: playerID,
       userId: highestBid.bidder,
       bidValue: highestBid.bidAmount,
       isActive: true,
     });
+    
     await newUserPlayer.save();
 
     // Log the sold bid in the BidHistory schema
