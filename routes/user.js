@@ -345,14 +345,16 @@ router.put('/update-points/:userId', async (req, res) => {
 
 router.get('/points-table', async (req, res) => {
   try {
-    // Fetch all users with a team
+    // Fetch all users who have a valid team name, are active, and are NOT admins
     const users = await User.find({ 
       teamName: { $exists: true, $ne: null, $ne: "NA" }, 
-      isActive: true 
+      isActive: true,
+      isAdmin: false // Exclude admin accounts
     })
     .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage')
     .lean();
-  
+
+    console.log(users);
 
     if (!users.length) {
       return res.status(404).json({ message: 'No teams found' });
@@ -360,13 +362,13 @@ router.get('/points-table', async (req, res) => {
 
     // Transform data to calculate wins, losses, and fairness
     const pointsTable = users.map((user) => {
-      const matchesPlayed = user.matchesPlayed || 0; // Default to 0 if undefined
-      const points = user.points || 0; // Default to 0 if undefined
-      const fairness = user.fairnessPoint || 0; // Default to 0 if undefined
-      const teamImage = user.teamImage || ''; // Default to empty string if undefined
+      const matchesPlayed = user.matchesPlayed || 0;
+      const points = user.points || 0;
+      const fairness = user.fairnessPoint || 0;
+      const teamImage = user.teamImage || '';
 
       // Calculate wins and losses
-      const wins = Math.floor(points / 2); // Each win gives 2 points
+      const wins = Math.floor(points / 2); // each win = 2 points
       const losses = matchesPlayed - wins;
 
       return {
@@ -377,7 +379,7 @@ router.get('/points-table', async (req, res) => {
         wins,
         losses,
         fairness,
-        teamImage, // Add the image field
+        teamImage
       };
     });
 
@@ -387,24 +389,21 @@ router.get('/points-table', async (req, res) => {
       if (b.points !== a.points) {
         return b.points - a.points;
       }
-
-      // Priority 2: Fairness points (descending)
+      // Priority 2: Fairness (descending)
       if (b.fairness !== a.fairness) {
         return b.fairness - a.fairness;
       }
-
-      // Priority 3: Matches played (ascending, fewer matches higher rank)
+      // Priority 3: Matches played (ascending)
       if (a.matchesPlayed !== b.matchesPlayed) {
         return a.matchesPlayed - b.matchesPlayed;
       }
-
-      // Priority 4: Alphabetical order by team name (ascending)
+      // Priority 4: Alphabetical by team name (ascending)
       return a.teamName.localeCompare(b.teamName);
     });
 
     // Add rank to each team
     const rankedPointsTable = sortedPointsTable.map((team, index) => ({
-      rank: index + 1, // Assign rank based on sorted order
+      rank: index + 1,
       ...team,
     }));
 
@@ -414,6 +413,7 @@ router.get('/points-table', async (req, res) => {
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
 
 
 // GET: All Teams Information
