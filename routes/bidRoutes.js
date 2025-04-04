@@ -190,6 +190,22 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     player.currentBidder = bidder;
     await player.save();
 
+    // Determine secondBidder: the bidder in activeBidders that is not the current bidder.
+    let secondBidder = null;
+    if (activeBidders.length >= 1) {
+      secondBidder = activeBidders.find(id => id !== bidder.toString());
+    }
+
+    // ** Emit a real-time notification **
+    const io = req.app.get('io');
+    io.emit('bid_notification', {
+      message: "A new bid has been placed",
+      playername: player.name,
+      currentBid: player.currentBid,
+      currentBidder: user.name,
+      secondBidder,
+      newBid,
+    });
     res.json({
       message: "Bid placed successfully",
       currentBid: player.currentBid,
