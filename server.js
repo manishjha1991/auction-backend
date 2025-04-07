@@ -13,6 +13,7 @@ const playerStatsRoutes = require('./routes/playerStats'); // Adjust path
 const fixtureRoutes = require('./routes/fixture'); // Adjust path
 const app = express();
 const server = http.createServer(app);
+const notificationRoutes = require('./routes/notifications');
 const io = new Server(server, { cors: { origin: '*' } });
 app.set('io', io);
 mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
@@ -29,6 +30,9 @@ app.use('/api/fixtures', fixtureRoutes);
 app.use('/api', playerRoutes);
 app.use('/api/bids', bidRoutes); // Mount bid routes
 app.use('/api/player-stats', playerStatsRoutes);
+// ...
+app.use('/api/notifications', notificationRoutes);
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 

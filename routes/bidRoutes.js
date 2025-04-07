@@ -7,7 +7,7 @@ const BidHistory = require("../models/BidHistory.js");
 const validateUser = require("../config/validation.js")
 const User = require("../models/User.js");
 const mongoose = require("mongoose");
-
+const Notification = require('../models/Notification'); // import the model
 // Place a bid
 router.put("/:playerId/bid", validateUser, async (req, res) => {
   const { playerId } = req.params;
@@ -38,9 +38,9 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     // ============================
     const typeLimit = {
       Sapphire: 2,
-      Gold: 8,
+      Gold: 18,
       Emerald: 4,
-      Silver: 6,
+      Silver: 16,
     };
 
     const boughtPlayersOfThisType = await Player.countDocuments({
@@ -81,17 +81,17 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
         message: `You have reached the maximum combined limit (${combinedESLimit}) for Emerald + Sapphire players.`,
       });
     }
- // Fetch active bids on this player
- const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
+    // Fetch active bids on this player
+    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
 
- // Ensure only two bidders can actively bid on the player
- const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
+    // Ensure only two bidders can actively bid on the player
+    const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
 
- if (activeBidders.length >= 2 && !activeBidders.includes(bidder.toString())) {
-   return res.status(400).json({
-     message: 'Only two bidders can actively bid on a player. Wait for one of the current bidders to exit.',
-   });
- }
+    if (activeBidders.length >= 2 && !activeBidders.includes(bidder.toString())) {
+      return res.status(400).json({
+        message: 'Only two bidders can actively bid on a player. Wait for one of the current bidders to exit.',
+      });
+    }
     // ============================
     // 6. Max 5 Current Bids
     // ============================
@@ -148,9 +148,8 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
       const purseValue = parseFloat(user.purse.toString());
       if (purseValue < incrementalDifference) {
         return res.status(400).json({
-          message: `Insufficient funds in purse. You need at least ₹${
-            incrementalDifference
-          } extra to place this bid. Your current purse is ₹${purseValue}.`,
+          message: `Insufficient funds in purse. You need at least ₹${incrementalDifference
+            } extra to place this bid. Your current purse is ₹${purseValue}.`,
         });
       }
       // Deduct only the incremental difference
@@ -197,15 +196,21 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     }
 
     // ** Emit a real-time notification **
-    const io = req.app.get('io');
-    io.emit('bid_notification', {
+    // Store notification in DB
+    const newNotification = new Notification({
       message: "A new bid has been placed",
       playername: player.name,
       currentBid: player.currentBid,
-      currentBidder: user.name,
+      currentBidder: user.name, // sending bidder's name
       secondBidder,
       newBid,
+      active: true
     });
+    await newNotification.save();
+
+    // Emit real-time notification
+    const io = req.app.get('io');
+    io.emit('bid_notification', newNotification);
     res.json({
       message: "Bid placed successfully",
       currentBid: player.currentBid,
@@ -337,7 +342,19 @@ router.post("/:playerId/exit", async (req, res) => {
       player.currentBidder = null;
     }
     await player.save();
-
+    // Emit exit notification for admin branch
+    const io = req.app.get('io');
+    const notificationData = {
+      message: `Bid exit: ${user.name} (2nd highest) has exited the bid on ${player.name}. Locked amount refunded.`,
+      playername: player.name,
+      currentBid: player.currentBid,
+      currentBidder: player.currentBidder,
+      exitedUser: user.name
+    };
+    // Save notification in DB
+    const newNotification = new Notification(notificationData);
+    await newNotification.save();
+    io.emit('bid_exit_notification', newNotification);
     res.json({
       message: "You have exited the bid successfully. Locked amount refunded.",
       currentBid: player.currentBid,
