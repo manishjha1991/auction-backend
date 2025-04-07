@@ -87,7 +87,7 @@ router.get("/:userId/details", async (req, res) => {
 
     // 2) Fetch sold players for the user
     const soldPlayers = await UserPlayer.find({ userId, isActive: true })
-      .populate("playerId", "name type role basePrice")
+      .populate("playerId", "name type role basePrice over overallScore totalRuns totalWickets")
       .exec();
 
     // 3) Fetch all bids for the user
