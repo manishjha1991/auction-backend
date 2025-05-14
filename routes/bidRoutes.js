@@ -38,9 +38,9 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     // ============================
     const typeLimit = {
       Sapphire: 2,
-      Gold: 18,
+      Gold: 8,
       Emerald: 4,
-      Silver: 16,
+      Silver: 6,
     };
 
     const boughtPlayersOfThisType = await Player.countDocuments({
@@ -377,7 +377,7 @@ router.post("/bid/sold", async (req, res) => {
     // 1) { playerID: "..." } for a single player
     // 2) { playerIDs: ["...", "..."] } for multiple players
     const { playerID, playerIDs } = req.body;
-
+    
     // Determine which IDs to process
     let idsToSell = [];
 
@@ -641,241 +641,377 @@ router.post("/release-player", async (req, res) => {
     res.status(500).json({ message: "Internal server error." });
   }
 });
-
-
-
-
-
-
-
-
 // Add this NEW route alongside your existing routes:
-// router.post("/exit-second-highest/all", async (req, res) => {
-//   try {
-//     const unsoldPlayers = await Player.find({ isSold: false });
-//     let totalExits = 0;
+router.post("/:playerId/exit-second-highest", async (req, res) => {
+  try {
+    const { playerId } = req.params;
 
-//     for (const player of unsoldPlayers) {
-//       // Find active bids sorted descending
-//       const activeBids = await Bid.find({ 
-//         playerId: player._id,
-//         isActive: true
-//       }).sort({ bidAmount: -1 });
+     // Find the player
+     const player = await Player.findById(playerId);
+     if (!player) {
+       return res.status(404).json({ message: "Player not found" });
+     }
+ 
+     // Check if the player is already sold
+     if (player.isSold) {
+       return res.status(400).json({ message: "Cannot exit bid for a sold player." });
+     }
+ 
+     // Fetch all active bids for the player
+     const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
+     
+      if (activeBids.length > 1) {
+        const secondHighestBid = activeBids[1]; // Second-highest bidder
+        const secondHighestBidder = await User.findById(secondHighestBid.bidder);
 
-//       if (activeBids.length > 1) {
-//         // Identify second highest
-//         const secondHighestBid = activeBids[1];
-//         const secondHighestBidderId = secondHighestBid.bidder;
+        if (secondHighestBidder) {
+          const lockedAmount = secondHighestBidder.currentBids.find(
+            (bid) => bid.playerId.toString() === playerId
+          ).amount;
 
-//         // Grab that user
-//         const secondHighestBidder = await User.findById(secondHighestBidderId);
-//         if (!secondHighestBidder) continue;
+          const purse = parseFloat(secondHighestBidder.purse.toString());
+          secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
+            (purse + lockedAmount).toString()
+          );
 
-//         // Refund exactly the secondHighestBid's locked amount
-//         const lockedBid = secondHighestBidder.currentBids.find(
-//           (cb) =>
-//             cb.playerId.toString() === player._id.toString() &&
-//             cb.amount === secondHighestBid.bidAmount
-//         );
-//         if (lockedBid) {
-//           const purse = parseFloat(secondHighestBidder.purse.toString());
-//           secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
-//             (purse + lockedBid.amount).toString()
-//           );
+          // Remove the second-highest bid from their current bids
+          secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
+            (bid) => bid.playerId.toString() !== playerId
+          );
+          await secondHighestBidder.save();
 
-//           // Remove that one doc from user.currentBids
-//           secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
-//             (cb) =>
-//               !(
-//                 cb.playerId.toString() === player._id.toString() &&
-//                 cb.amount === secondHighestBid.bidAmount
-//               )
-//           );
-//           await secondHighestBidder.save();
-//         }
+          // Mark the second-highest bid as inactive
+          await Bid.updateMany(
+            { playerId, bidder: secondHighestBid.bidder },
+            { $set: { isActive: false, isBidOn: false } }
+          );
 
-//         // Now mark only that single secondHighestBid doc as inactive
-//         await Bid.updateOne(
-//           { _id: secondHighestBid._id },
-//           { $set: { isActive: false, isBidOn: false } }
-//         );
+          // Update the player's current bid and bidder
+          const remainingBidders = activeBids.filter((bid) => bid.bidder.toString() !== secondHighestBid.bidder);
+          if (remainingBidders.length > 0) {
+            const newHighestBid = remainingBidders[0];
+            player.currentBid = newHighestBid.bidAmount;
+            player.currentBidder = newHighestBid.bidder;
+          } else {
+            // If no other bidders, reset the player's current bid
+            player.currentBid = null;
+            player.currentBidder = null;
+          }
+          await player.save();
 
-//         // Re-check remaining active bids
-//         const remaining = await Bid.find({
-//           playerId: player._id,
-//           isActive: true,
-//         }).sort({ bidAmount: -1 });
+          return res.json({
+            message: "The second-highest bidder has exited successfully. Locked amount refunded.",
+            currentBid: player.currentBid,
+            currentBidder: player.currentBidder,
+          });
+        }
+      } 
+    }catch (error) {
+    console.error("Error bulk-exiting second-highest bidders:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
 
-//         // If there's still at least 1, set that as highest
-//         if (remaining.length > 0) {
-//           player.currentBid = remaining[0].bidAmount;
-//           player.currentBidder = remaining[0].bidder;
-//         } else {
-//           // Reset if no bidders
-//           player.currentBid = null;
-//           player.currentBidder = null;
-//         }
-//         await player.save();
 
-//         totalExits++;
-//       }
-//     }
 
-//     return res.json({
-//       message: `Removed second-highest bidder for ${totalExits} player(s).`,
-//     });
-//   } catch (error) {
-//     console.error("Error bulk-exiting second-highest bidders:", error);
-//     return res.status(500).json({ message: "Internal server error" });
-//   }
-// });
 
 
 /**
- * POST /bid/sold/single-bid
- * This endpoint finds all unsold players who have EXACTLY one active bid
- * and sells them to that single bidder immediately.
+ * GET /api/players?filter=unsold
+ * 
+ * Query:
+ *  - filter=unsold   → return only players where isSold === false
+ *  - (no filter)     → return all players
  */
-// router.post("/sold/single-bid", async (req, res) => {
-//   try {
-//     // 1. Find all players that are NOT sold
-//     const unsoldPlayers = await Player.find({ isSold: false });
+router.get('/players', async (req, res) => {
+  try {
+    let players;
+    if (req.query.filter === 'unsold') {
+      players = await Player.find({ isSold: false,isActive:true });
+    } else {
+      players = await Player.find();
+    }
 
-//     const results = [];
+    return res.json({
+      count: players.length,
+      players
+    });
+  } catch (error) {
+    console.error("Error fetching players:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
 
-//     // 2. For each unsold player, check how many active bids it has
-//     for (const player of unsoldPlayers) {
-//       const activeBids = await Bid.find({
-//         playerId: player._id,
-//         isActive: true,
-//       }).sort({ bidAmount: -1 });
 
-//       // If exactly ONE active bid, we finalize the sale
-//       if (activeBids.length === 1) {
-//         const singleBid = activeBids[0];
+router.get('/players/:playerId/bidders', async (req, res) => {
+  try {
+    const { playerId } = req.params;
+    
+    const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
+    if (activeBids.length === 0) {
+      // no bids → skip
+      return;
+    }
+    return res.json({
+      count: activeBids.length,
+      activeBids
+    });
+  } catch (error) {
+    console.error("Error fetching players:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
 
-//         // --- FINALIZE THE SALE (similar logic as your single-player “sold” route) ---
-//         try {
-//           // (a) Mark all player’s bids as inactive (though we only have one active)
-//           await Bid.updateMany({ playerId: player._id }, { $set: { isActive: false } });
 
-//           // (b) Create UserPlayer record
-//           const newUserPlayer = new UserPlayer({
-//             playerId: player._id,
-//             userId: singleBid.bidder,
-//             bidValue: singleBid.bidAmount,
-//             isActive: true,
-//           });
-//           await newUserPlayer.save();
 
-//           // (c) Create/update BidHistory
-//           const allBids = await Bid.find({ playerId: player._id }).sort({ bidAmount: -1 });
-//           const bidHistory = await BidHistory.findOne({ playerId: player._id });
-//           if (!bidHistory) {
-//             // If no existing BidHistory, create a new one
-//             await new BidHistory({
-//               playerId: player._id,
-//               bidID: singleBid._id,
-//               bids: allBids.map((bid) => ({
-//                 userID: bid.bidder,
-//                 bidAmount: bid.bidAmount,
-//                 status: bid._id.toString() === singleBid._id.toString(),
-//                 createdAt: bid.createdAt,
-//                 updatedAt: bid.updatedAt,
-//               })),
-//             }).save();
-//           } else {
-//             // If it exists, mark the winning bid’s status as true
-//             bidHistory.bids.forEach((history) => {
-//               if (history._id.toString() === singleBid._id.toString()) {
-//                 history.status = true;
-//               }
-//             });
-//             await bidHistory.save();
-//           }
+router.post("/players/:playerId/soldcrone", async (req, res) => {
+  try {
+    console.log(req.params)
+    // The UI can send either:
+    // 1) { playerID: "..." } for a single player
+    // 2) { playerIDs: ["...", "..."] } for multiple players
+    const { playerID, playerIDs } = req.body;
+    
+    // Determine which IDs to process
+    let idsToSell = [];
 
-//           // (d) Fetch winning user
-//           const winningUser = await User.findById(singleBid.bidder);
-//           if (!winningUser) {
-//             results.push({
-//               playerId: player._id,
-//               status: "error",
-//               message: "Winning bidder not found.",
-//             });
-//             // Move on to the next player
-//             continue;
-//           }
+    if (Array.isArray(playerIDs) && playerIDs.length > 0) {
+      // If user passed an array of IDs
+      idsToSell = playerIDs;
+    } else if (playerID) {
+      // If user passed a single ID
+      idsToSell = [playerID];
+    } else {
+      return res.status(400).json({ message: "No player ID(s) provided." });
+    }
 
-//           // (e) Ensure user still has enough purse
-//           const lockedBid = winningUser.currentBids.find(
-//             (bid) => bid.playerId.toString() === player._id.toString()
-//           );
-//           const lockedAmount = lockedBid ? lockedBid.amount : 0;
-//           const totalPurse = parseFloat(winningUser.purse.toString());
+    // We'll store the result for each player
+    const results = [];
 
-//           if (totalPurse + lockedAmount < singleBid.bidAmount) {
-//             results.push({
-//               playerId: player._id,
-//               status: "error",
-//               message: "Insufficient purse balance for the winning bidder.",
-//             });
-//             continue;
-//           }
+    // Process each player ID with the EXACT same logic as your single "sold" code
+    for (const pid of idsToSell) {
+      try {
+        // 1. Find the player
+        const player = await Player.findById(pid);
+        if (!player) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: "Player not found",
+          });
+          continue;
+        }
 
-//           // (f) Deduct the bid amount
-//           winningUser.purse = mongoose.Types.Decimal128.fromString(
-//             (totalPurse + lockedAmount - singleBid.bidAmount).toString()
-//           );
-//           // Remove from currentBids
-//           winningUser.currentBids = winningUser.currentBids.filter(
-//             (bid) => bid.playerId.toString() !== player._id.toString()
-//           );
-//           // Add to boughtPlayers
-//           winningUser.boughtPlayers.push(player._id);
-//           await winningUser.save();
+        // 2. Check if the player is already sold
+        if (player.isSold) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: "Player is already sold.",
+          });
+          continue;
+        }
 
-//           // (g) Mark the player as sold
-//           player.isSold = true;
-//           player.currentBid = singleBid.bidAmount;
-//           player.currentBidder = singleBid.bidder;
-//           await player.save();
+        // 3. Fetch all bids
+        const bids = await Bid.find({ playerId: pid }).sort({ bidAmount: -1 });
+        if (!bids || bids.length === 0) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: "No bids found for this player.",
+          });
+          continue;
+        }
 
-//           // (h) No other bidders to refund, because we only had one active bidder
-//           // If you consider "inactive" bids not physically removed from DB,
-//           // you could still do a refund for them, but presumably they've been
-//           // made inactive earlier.
+        // 4. Highest bid
+        const highestBid = bids[0];
 
-//           // (i) Record success
-//           results.push({
-//             playerId: player._id,
-//             status: "success",
-//             soldTo: singleBid.bidder.toString(),
-//             bidAmount: singleBid.bidAmount,
-//           });
-//         } catch (err) {
-//           console.error("Error selling single-bid player:", err);
-//           results.push({
-//             playerId: player._id,
-//             status: "error",
-//             message: err.message,
-//           });
-//         }
-//       } else {
-//         // Either no bids or more than one. We skip these.
-//         results.push({
-//           playerId: player._id,
-//           status: "skipped",
-//           reason: `This player has ${activeBids.length} active bids (need exactly 1 to auto-sell).`,
-//         });
-//       }
-//     }
+        // 5. Mark all bids as inactive
+        await Bid.updateMany({ playerId: pid }, { $set: { isActive: false } });
 
-//     // Return summary for all players
-//     return res.status(200).json({ results });
-//   } catch (error) {
-//     console.error("Bulk single-bid sale error:", error);
-//     return res.status(500).json({ message: "Internal server error." });
-//   }
-// });
+        // 6. Check if there's already a UserPlayer doc
+        const existingUserPlayer = await UserPlayer.findOne({
+          playerId: pid,
+          userId: highestBid.bidder,
+          isActive: true,
+        });
+        if (existingUserPlayer) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message:
+              "User already has this player active sold on last click. Stop clicking sold, it's already sold.",
+          });
+          continue;
+        }
+
+        // 7. Otherwise, create a new UserPlayer doc
+        const newUserPlayer = new UserPlayer({
+          playerId: pid,
+          userId: highestBid.bidder,
+          bidValue: highestBid.bidAmount,
+          isActive: true,
+        });
+        await newUserPlayer.save();
+
+        // 8. Log the sold bid in the BidHistory schema
+        const bidHistory = await BidHistory.findOne({ playerId: pid });
+        if (!bidHistory) {
+          await new BidHistory({
+            playerId: pid,
+            bidID: highestBid._id,
+            bids: bids.map((bid) => ({
+              userID: bid.bidder,
+              bidAmount: bid.bidAmount,
+              status: bid._id.toString() === highestBid._id.toString(),
+              createdAt: bid.createdAt,
+              updatedAt: bid.updatedAt,
+            })),
+          }).save();
+        } else {
+          bidHistory.bids.forEach((history) => {
+            if (history._id.toString() === highestBid._id.toString()) {
+              history.status = true;
+            }
+          });
+          await bidHistory.save();
+        }
+
+        // 9. Fetch the winning user
+        const winningUser = await User.findById(highestBid.bidder);
+        if (!winningUser) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: "Winning bidder not found.",
+          });
+          continue;
+        }
+
+        // 10. Ensure user has enough balance
+        const winningBid = winningUser.currentBids.find(
+          (bid) => bid.playerId.toString() === pid
+        );
+        const lockedAmount = winningBid ? winningBid.amount : 0;
+        const totalPurse = parseFloat(winningUser.purse.toString());
+
+        if (totalPurse + lockedAmount < highestBid.bidAmount) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: "Insufficient purse balance for the winning bidder.",
+          });
+          continue;
+        }
+
+        // 11. Deduct the bid amount and update user's current bids
+        winningUser.purse = mongoose.Types.Decimal128.fromString(
+          (totalPurse + lockedAmount - highestBid.bidAmount).toString()
+        );
+        winningUser.currentBids = winningUser.currentBids.filter(
+          (bid) => bid.playerId.toString() !== pid
+        );
+        winningUser.boughtPlayers.push(pid);
+        await winningUser.save();
+
+        // 12. Revert locked amounts for other bidders
+        for (const bid of bids.slice(1)) {
+          const otherBidder = await User.findById(bid.bidder);
+          if (otherBidder) {
+            const lockedBid = otherBidder.currentBids.find(
+              (userBid) => userBid.playerId.toString() === pid
+            );
+            const otherLockedAmount = lockedBid ? lockedBid.amount : 0;
+            const otherPurse = parseFloat(otherBidder.purse.toString());
+
+            // Refund locked amount
+            otherBidder.purse = mongoose.Types.Decimal128.fromString(
+              (otherPurse + otherLockedAmount).toString()
+            );
+            // Remove the bid from user's current bids
+            otherBidder.currentBids = otherBidder.currentBids.filter(
+              (b) => b.playerId.toString() !== pid
+            );
+            await otherBidder.save();
+          }
+        }
+
+        // 13. Mark the player as sold
+        player.isSold = true;
+        player.currentBid = highestBid.bidAmount;
+        player.currentBidder = highestBid.bidder;
+        await player.save();
+
+        results.push({
+          playerID: pid,
+          status: "success",
+          message: "Player sold successfully.",
+          player: player.name,
+          highestBid,
+          soldTo: highestBid.bidder,
+        });
+      } catch (err) {
+        console.error(`Error selling player ${pid}:`, err);
+        results.push({
+          playerID: pid,
+          status: "error",
+          message: err.message || "Internal server error for this player.",
+        });
+      }
+    }
+
+    // Return the array of results for each player
+    res.status(200).json({ results });
+  } catch (error) {
+    console.error("Error marking player(s) as sold:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+
+router.post("/players/:playerId/singlebid", async (req, res) => {
+  try{
+    const { playerId } = req.params;
+    console.log(playerId)
+    const result = await Bid.aggregate([
+      // 1) only consider active bids (or drop this match if you want *all* bids)
+      { $match: { isActive: true } },
+  
+      // 2) group by playerId and collect unique bidder IDs
+      {
+        $group: {
+          _id: '$playerId',
+          uniqueBidders: { $addToSet: '$bidder' }
+        }
+      },
+  
+      // 3) only keep those with exactly one unique bidder
+      {
+        $match: {
+          'uniqueBidders.1': { $exists: false }   // no second element in the array
+        }
+      },
+  
+      // 4) project just the playerId
+      {
+        $project: {
+          _id: 0,
+          playerId: '$_id'
+        }
+      }
+    ]);
+  console.log(result)
+    // result = [ { playerId: ObjectId("…") }, … ]
+    const resultMain =  result.map(r => r.playerId);
+    console.log(resultMain)
+    res.status(200).json({ resultMain });
+  }catch(err){
+    console.log(err)
+  }
+ 
+});
+
+
+ 
 
 module.exports = router;
