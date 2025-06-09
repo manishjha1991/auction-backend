@@ -1044,4 +1044,100 @@ router.post('/exit-second-highest/all', async (req, res) => {
 });
  
 
+
+/**
+ * POST /lock-under-limit/all
+ * Loops through every user and, if they hold FEWER than the
+ * minimum required players of ANY type, flips `isLocked` to true.
+ *
+ * Response  ➜  { totalLocked, details: [ { userId, missing: { Gold: 3 … } } ] }
+ */
+router.post('/lock-under-limit/all', async (_req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // --- business rule: MINIMUM required players by type --------------
+    const MIN_REQUIRED = {
+      Sapphire : 2,
+      Gold     : 8,
+      Emerald  : 4,
+      Silver   : 6,
+    };
+
+    // grab only what we need to keep the query light
+    const users = await User.find({}, { boughtPlayers: 1, currentBids: 1 })
+                            .lean()
+                            .session(session);
+
+    const toLock  = [];          // user _ids that must be locked
+    const details = [];          // per-user deficit report
+
+    for (const user of users) {
+      // collect every playerId the user has *bought* OR is currently *bidding*
+      const playerIds = [
+        ...user.boughtPlayers,
+        ...user.currentBids.map(b => b.playerId),
+      ];
+
+      // shortcut: no players at all  ➜ definitely below every limit
+      if (playerIds.length === 0) {
+        toLock.push(user._id);
+        details.push({ userId: user._id, missing: { all: 'none owned' } });
+        continue;
+      }
+
+      // fetch the types of those players in ONE query
+      const players = await Player.find(
+        { _id: { $in: playerIds } },
+        { type: 1 }
+      ).lean().session(session);
+
+      // tally counts by type
+      const counts = players.reduce((acc, p) => {
+        acc[p.type] = (acc[p.type] || 0) + 1;
+        return acc;
+      }, {});
+
+      // work out which types are below their minima
+      const missing = {};
+      Object.entries(MIN_REQUIRED).forEach(([type, min]) => {
+        const have = counts[type] || 0;
+        if (have < min) missing[type] = min - have;
+      });
+
+      if (Object.keys(missing).length) {
+        toLock.push(user._id);
+        details.push({ userId: user._id, missing });
+      }
+    }
+
+    // perform the bulk update (only users that are under any limit)
+    if (toLock.length) {
+      await User.updateMany(
+        { _id: { $in: toLock } },
+        { $set: { isLocked: true } },
+        { session }
+      );
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    return res.json({
+      message     : `Locked ${toLock.length} user(s) who are below the bid limits.`,
+      totalLocked : toLock.length,
+      details,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error('[lock-under-limit] fatal:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+
+
 module.exports = router;
