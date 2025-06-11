@@ -75,7 +75,7 @@ async function runBulkExit() {
 | second  minute   hour
  
 */
-cron.schedule('0 */15 0-21 * * *', runBulkExit, {
+cron.schedule('0 */15 0-22 * * *', runBulkExit, {
   timezone: 'Asia/Kolkata'
 });
 
