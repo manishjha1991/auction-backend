@@ -1053,89 +1053,94 @@ router.post('/exit-second-highest/all', async (req, res) => {
  * Response  ➜  { totalLocked, details: [ { userId, missing: { Gold: 3 … } } ] }
  */
 router.post('/lock-under-limit/all', async (_req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
   try {
-    // --- business rule: MINIMUM required players by type --------------
-    const MIN_REQUIRED = {
-      Sapphire : 2,
-      Gold     : 8,
-      Emerald  : 4,
-      Silver   : 6,
-    };
+    // ── 1. RULES ─────────────────────────────────────────────────────────────
+    // per-type minimums (your original numbers)
+    // const MIN_REQUIRED = { Sapphire: 1, Gold: 8, Emerald: 3, Silver: 6 };
+    const MIN_REQUIRED = { Sapphire: 1, Emerald: 3 };
+    // const MIN_REQUIRED = { Silver: 6 };
+    // const MIN_REQUIRED = { Gold: 8 };
+    // NEW: max Emerald+Sapphire combined
+    const MAX_ES_COMBINED = 5;
 
-    // grab only what we need to keep the query light
-    const users = await User.find({}, { boughtPlayers: 1, currentBids: 1 })
-                            .lean()
-                            .session(session);
+    // ── 2. SCAN EVERY USER ───────────────────────────────────────────────────
+    const users = await User.find({}, { boughtPlayers: 1, currentBids: 1 }).lean();
 
-    const toLock  = [];          // user _ids that must be locked
-    const details = [];          // per-user deficit report
+    const toLock  = [];     // array of ObjectId
+    const details = [];     // { userId, reason, data }
 
     for (const user of users) {
-      // collect every playerId the user has *bought* OR is currently *bidding*
       const playerIds = [
         ...user.boughtPlayers,
         ...user.currentBids.map(b => b.playerId),
       ];
 
-      // shortcut: no players at all  ➜ definitely below every limit
+      // shortcut: owns nothing → fails the minimum test immediately
       if (playerIds.length === 0) {
         toLock.push(user._id);
-        details.push({ userId: user._id, missing: { all: 'none owned' } });
+        details.push({ userId: user._id, reason: 'noPlayers' });
         continue;
       }
 
-      // fetch the types of those players in ONE query
+      // fetch only the player types once
       const players = await Player.find(
         { _id: { $in: playerIds } },
         { type: 1 }
-      ).lean().session(session);
+      ).lean();
 
-      // tally counts by type
       const counts = players.reduce((acc, p) => {
         acc[p.type] = (acc[p.type] || 0) + 1;
         return acc;
       }, {});
 
-      // work out which types are below their minima
+      // ── 2-a. Check per-type minimums ───────────────────────────────────────
+      let failsMinimum = false;
       const missing = {};
-      Object.entries(MIN_REQUIRED).forEach(([type, min]) => {
+      for (const [type, min] of Object.entries(MIN_REQUIRED)) {
         const have = counts[type] || 0;
-        if (have < min) missing[type] = min - have;
-      });
+        if (have < min) {
+          failsMinimum = true;
+          missing[type] = min - have;
+        }
+      }
 
-      if (Object.keys(missing).length) {
+      // ── 2-b. NEW: Check Emerald+Sapphire maximum ──────────────────────────
+      const esCombined =
+        (counts['Emerald'] || 0) + (counts['Sapphire'] || 0);
+      const exceedsES = esCombined > MAX_ES_COMBINED;
+
+      // ── 2-c. Decide whether to lock this user ─────────────────────────────
+      if (failsMinimum || exceedsES) {
         toLock.push(user._id);
-        details.push({ userId: user._id, missing });
+        details.push({
+          userId : user._id,
+          reason : failsMinimum ? 'belowMinimum' : 'exceedsES',
+          data   : failsMinimum ? missing : { combined: esCombined }
+        });
       }
     }
 
-    // perform the bulk update (only users that are under any limit)
+    // ── 3. BULK UPDATE ───────────────────────────────────────────────────────
     if (toLock.length) {
       await User.updateMany(
         { _id: { $in: toLock } },
-        { $set: { isLocked: true } },
-        { session }
+        { $set: { isLocked: true } }
       );
     }
 
-    await session.commitTransaction();
-    session.endSession();
-
+    // ── 4. RESPONSE ──────────────────────────────────────────────────────────
     return res.json({
-      message     : `Locked ${toLock.length} user(s) who are below the bid limits.`,
+      message     : `Locked ${toLock.length} user(s) (minimums or Emerald+Sapphire > ${MAX_ES_COMBINED}).`,
       totalLocked : toLock.length,
       details,
     });
   } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
     console.error('[lock-under-limit] fatal:', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
+
+
 
 
 
