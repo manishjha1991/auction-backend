@@ -88,18 +88,18 @@ cron.schedule('0 */15 0-22 * * *', runBulkExit, {
 
 
 // ① Every 15 min from 23:00 – 23:45 and 00:00 – 09:45 IST
-cron.schedule(
-  '0 */15 23,0-9 * * *',    // sec  min   hr (23 plus 0–9)
-  runBulkExit,
-  { timezone: 'Asia/Kolkata' }
-);
+// cron.schedule(
+//   '0 */15 23,0-9 * * *',    // sec  min   hr (23 plus 0–9)
+//   runBulkExit,
+//   { timezone: 'Asia/Kolkata' }
+// );
 
 // ② The last three runs at 10:00, 10:15, and 10:30 IST
-cron.schedule(
-  '0 0,15,30 10 * * *',     // sec  min     hr=10
-  runBulkExit,
-  { timezone: 'Asia/Kolkata' }
-);
+// cron.schedule(
+//   '0 0,15,30 10 * * *',     // sec  min     hr=10
+//   runBulkExit,
+//   { timezone: 'Asia/Kolkata' }
+// );
 
 console.log('🕒 bulk-exit runs every 15 min from 23:00 → 10:30 IST');
 
