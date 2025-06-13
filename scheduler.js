@@ -45,11 +45,11 @@ async function sellingSingleBidSinceStarting() {
 // ---------------- cron schedule ------------------
 // second minute hour  day mon dow
 //   0      30    16   *   *   *
-cron.schedule(
-  '0 30 23 * * *',            // 23:30:00 IST every day
-  sellingSingleBidSinceStarting,
-  { timezone: 'Asia/Kolkata' }
-);
+// cron.schedule(
+//   '0 30 23 * * *',            // 23:30:00 IST every day
+//   sellingSingleBidSinceStarting,
+//   { timezone: 'Asia/Kolkata' }
+// );
 
 console.log('🕒 Single-bid finalizer scheduled for 16:30 IST daily.');
 
@@ -79,31 +79,58 @@ cron.schedule('0 */15 0-22 * * *', runBulkExit, {
   timezone: 'Asia/Kolkata'
 });
 
+
+
+//////New////
+
+
+
+
+
+// ① Every 15 min from 23:00 – 23:45 and 00:00 – 09:45 IST
+cron.schedule(
+  '0 */15 23,0-9 * * *',    // sec  min   hr (23 plus 0–9)
+  runBulkExit,
+  { timezone: 'Asia/Kolkata' }
+);
+
+// ② The last three runs at 10:00, 10:15, and 10:30 IST
+cron.schedule(
+  '0 0,15,30 10 * * *',     // sec  min     hr=10
+  runBulkExit,
+  { timezone: 'Asia/Kolkata' }
+);
+
+console.log('🕒 bulk-exit runs every 15 min from 23:00 → 10:30 IST');
+
+
+
+
 /*
 |--------------------------------------------------------------------------
 | 2.  Extra runs at 22:00 and 22:15  (sec  min hour)
 |--------------------------------------------------------------------------
 */
-cron.schedule('0 0,15 22 * * *', runBulkExit, {
-  timezone: 'Asia/Kolkata'
-});
+// cron.schedule('0 0,15 22 * * *', runBulkExit, {
+//   timezone: 'Asia/Kolkata'
+// });
 
-console.log('🕒 Bulk-exit cron active every 15 min until 22 : 15 IST.');
+// console.log('🕒 Bulk-exit cron active every 15 min until 22 : 15 IST.');
 
 
 // ---------------------------------------------------------------------------
 // Lock Account run exact at 22:59:59 IST each night
 // ---------------------------------------------------------------------------
 
-cron.schedule('59 59 22 * * *', async () => {          // 22:59:59 IST each night
-  console.log(`⏱️  [${new Date().toISOString()}] running lock-under-limit/all`);
-  try {
-    const { data } = await axios.post(LOCK_PATH);
-    console.log('   →', data.message);
-  } catch (err) {
-    console.error('   ❌ cron error:', err.response?.data ?? err.message);
-  }
-}, { timezone: 'Asia/Kolkata' });
+// cron.schedule('59 59 22 * * *', async () => {          // 22:59:59 IST each night
+//   console.log(`⏱️  [${new Date().toISOString()}] running lock-under-limit/all`);
+//   try {
+//     const { data } = await axios.post(LOCK_PATH);
+//     console.log('   →', data.message);
+//   } catch (err) {
+//     console.error('   ❌ cron error:', err.response?.data ?? err.message);
+//   }
+// }, { timezone: 'Asia/Kolkata' });
 
 
 
