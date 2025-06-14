@@ -742,21 +742,61 @@ router.get('/players', async (req, res) => {
 router.get('/players/:playerId/bidders', async (req, res) => {
   try {
     const { playerId } = req.params;
-    
-    const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
-    if (activeBids.length === 0) {
-      // no bids → skip
-      return;
+
+    // pull the two newest bids regardless of their active status
+    const recentBids = await Bid
+      .find({ playerId })       // Mongoose will cast playerId → ObjectId
+      .sort({ timestamp: -1 })
+      .limit(2)
+      .lean();
+
+    console.log("→ recentBids:", JSON.stringify(recentBids, null, 2));
+
+    // no bids at all → count as “keep polling”
+    if (recentBids.length === 0) {
+      return res.json({ count: 1 });
     }
-    return res.json({
-      count: activeBids.length,
-      activeBids
-    });
+
+    const [latest, second] = recentBids;
+
+    console.log(
+      "latest:", {
+        isActive: latest.isActive,
+        isBidOn:  latest.isBidOn,
+        timestamp: latest.timestamp
+      }
+    );
+    if (second) {
+      console.log(
+        "second:", {
+          isActive: second.isActive,
+          isBidOn:  second.isBidOn,
+          timestamp: second.timestamp
+        }
+      );
+    }
+
+    const hasLatestActive  = (latest.isActive === true && latest.isBidOn === true);
+    const hasSecondInactive = Boolean(
+      second &&
+      second.isActive === false &&
+      second.isBidOn === false
+    );
+
+    // exactly one new active bid over a previously closed bid?
+    const zeroCounterCondition = hasLatestActive && hasSecondInactive;
+    const count = zeroCounterCondition ? 0 : 1;
+
+    console.log(`→ computed count=${count} for playerId=${playerId}`);
+    return res.json({ count });
+
   } catch (error) {
-    console.error("Error fetching players:", error);
+    console.error("Error fetching bidder count:", error);
     return res.status(500).json({ message: "Internal server error" });
   }
 });
+
+
 
 router.post('/players/:playerId?/soldcrone', async (req, res) => {
   try {
