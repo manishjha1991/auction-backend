@@ -75,53 +75,34 @@ async function runBulkExit() {
 | second  minute   hour
  
 */
-// cron.schedule('0 */15 0-22 * * *', runBulkExit, {
-//   timezone: 'Asia/Kolkata'
-// });
+cron.schedule('0 */15 0-22 * * *', runBulkExit, {
+  timezone: 'Asia/Kolkata'
+});
 
-// //② The last three runs at 10:00, 10:15, and 10:30 IST
-// cron.schedule(
-//   '0 0,15,30 22 * * *',     // sec  min     hr=10
-//   runBulkExit,
-//   { timezone: 'Asia/Kolkata' }
-// );
-
-
-// // 2) 23:30 & 23:45
-// cron.schedule(
-//   '0 30,45 23 * * *',
-//   runBulkExit,
-//   { timezone: 'Asia/Kolkata' }
-// );
-
-// // 3) 00:00, 00:15, 00:30, 01:00, 01:15, 01:30, 02:00, 02:15, 02:30
-// cron.schedule(
-//   '0 0,15,30 0-2 * * *',
-//   runBulkExit,
-//   { timezone: 'Asia/Kolkata' }
-// );
-// console.log('🕒 bulk-exit runs every 15 min from 23:00 → 10:30 IST');
-
-// 1) Single run at 00:45
-schedule(
-  '0 45 0 * * *',
+//② The last three runs at 10:00, 10:15, and 10:30 IST
+cron.schedule(
+  '0 0,15,30 22 * * *',     // sec  min     hr=10
   runBulkExit,
   { timezone: 'Asia/Kolkata' }
 );
 
-// 2) Every 15 min during the 01:00 hour
-schedule(
-  '0 0,15,30,45 1 * * *',
+
+// 2) 23:30 & 23:45
+cron.schedule(
+  '0 30,45 23 * * *',
   runBulkExit,
   { timezone: 'Asia/Kolkata' }
 );
 
-// 3) Final run at 02:00
-schedule(
-  '0 0 2 * * *',
+// 3) 00:00, 00:15, 00:30, 01:00, 01:15, 01:30, 02:00, 02:15, 02:30
+cron.schedule(
+  '0 0,15,30 0-2 * * *',
   runBulkExit,
   { timezone: 'Asia/Kolkata' }
 );
+console.log('🕒 bulk-exit runs every 15 min from 23:00 → 10:30 IST');
+
+
 
 
 
