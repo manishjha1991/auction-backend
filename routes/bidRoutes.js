@@ -974,144 +974,110 @@ router.post("/players/singlebid", async (req, res) => {
  * removes the second-highest bidder and refunds their locked amount.
  * Returns a summary of how many players were processed.
  */
+
+// Helper: encapsulate your existing exit logic into a function
+async function exitBidForUserOnPlayer(userId, playerId, io) {
+  // 1) Load player
+  const player = await Player.findById(playerId);
+  if (!player)   return { playerId, userId, error: "Player not found" };
+  if (player.isSold) return { playerId, userId, error: "Player already sold" };
+
+  // 2) Load user
+  const user = await User.findById(userId);
+  if (!user)     return { playerId, userId, error: "User not found" };
+
+  // 3) Fetch active bids (descending)
+  const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
+  if (!activeBids.length) return { playerId, userId, error: "No active bids" };
+
+  // — Admin branch: remove second-highest bidder only —
+  
+
+  // — Non-admin branch: user exits own bid —
+  const myBid = user.currentBids.find(b => b.playerId.toString() === playerId);
+  if (!myBid) {
+    return { playerId, userId, error: "User has no bid to exit" };
+  }
+  if (activeBids[0].bidder.toString() === userId) {
+    return { playerId, userId, error: "Highest bidder cannot exit" };
+  }
+
+  // Refund user's locked amount
+  const lockedAmt = myBid.amount;
+  const purse1    = parseFloat(user.purse.toString());
+  user.purse      = mongoose.Types.Decimal128.fromString((purse1 + lockedAmt).toString());
+  user.currentBids = user.currentBids.filter(b => b.playerId.toString() !== playerId);
+  await user.save();
+
+  // Deactivate all bids by this user on that player
+  await Bid.updateMany(
+    { playerId, bidder: userId },
+    { $set: { isActive: false, isBidOn: false } }
+  );
+
+  // Recompute player's top bid
+  const others = activeBids.filter(b => b.bidder.toString() !== userId);
+  if (others.length) {
+    player.currentBid    = others[0].bidAmount;
+    player.currentBidder = others[0].bidder;
+  } else {
+    player.currentBid    = null;
+    player.currentBidder = null;
+  }
+  await player.save();
+
+  // Emit notification
+  const note = new Notification({
+    message:      `Bid exit: ${user.name} exited on ${player.name}.`,
+    playername:   player.name,
+    currentBid:   player.currentBid,
+    currentBidder:player.currentBidder,
+    exitedUser:   user.name
+  });
+  await note.save();
+  io.emit('bid_exit_notification', note);
+
+  return {
+    playerId,
+    userId,
+    message:    "User bid exited",
+    currentBid: player.currentBid,
+    currentBidder: player.currentBidder
+  };
+}
+
+// New batch endpoint
 router.post('/exit-second-highest/all', async (req, res) => {
   try {
-    // 1) find all unsold players
-    const unsoldPlayers = await Player.find({ isSold: false }).select('_id');
+    const io    = req.app.get('io');
+    const users = await User.find().select('_id');
+    const players = await Player.find({ isSold: false }).select('_id');
 
-    let totalExits = 0;
-    const details   = [];
-
-    for (const { _id: playerId } of unsoldPlayers) {
-      // 2) fetch active bids for this player
-      const activeBids = await Bid
-        .find({ playerId, isActive: true })
-        .sort({ bidAmount: -1 });
-
-      // only process those with 2 or more active bids
-      if (activeBids.length < 2) continue;
-
-      const second = activeBids[1];
-      const user    = await User.findById(second.bidder);
-      if (!user) {
-        details.push({ playerId, error: 'Second-highest user not found' });
+    const report = [];
+    for (const { _id: userId ,isAdmin} of users) {
+      if (isAdmin) {
+        // skip any admin user entirely
         continue;
       }
-
-      // 3) refund locked amount
-      const lockedEntry = user.currentBids.find(cb => cb.playerId.toString() === playerId.toString() && cb.amount === second.bidAmount);
-      const lockedAmt   = lockedEntry ? lockedEntry.amount : 0;
-      const purse       = parseFloat(user.purse.toString());
-      user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmt).toString());
-
-      // remove that bid from user's currentBids
-      user.currentBids = user.currentBids.filter(cb => cb.playerId.toString() !== playerId.toString());
-      await user.save();
-
-      // 4) mark all bids by that bidder inactive
-      await Bid.updateMany(
-        { playerId, bidder: second.bidder },
-        { $set: { isActive: false, isBidOn: false } }
-      );
-
-      // 5) update player's currentBid/currentBidder to next highest (if any)
-      const remaining = activeBids.filter(b => b.bidder.toString() !== second.bidder.toString());
-      if (remaining.length > 0) {
-        await Player.findByIdAndUpdate(playerId, {
-          currentBid: remaining[0].bidAmount,
-          currentBidder: remaining[0].bidder
-        });
-      } else {
-        await Player.findByIdAndUpdate(playerId, {
-          currentBid: null,
-          currentBidder: null
-        });
+      for (const { _id: playerId } of players) {
+        const result = await exitBidForUserOnPlayer(userId.toString(), playerId.toString(), io);
+        report.push(result);
       }
-
-      totalExits++;
-      details.push({ playerId, refundedTo: second.bidder, refundedAmount: lockedAmt });
     }
 
     return res.json({
-      message: `Removed second-highest bidder for ${totalExits} player(s).`,
-      totalExits,
-      details
+      message: 'Batch exit-all complete',
+      details: report
     });
-  } catch (error) {
-    console.error("Error bulk-exiting second-highest bidders:", error);
-    return res.status(500).json({ message: "Internal server error" });
+  } catch (err) {
+    console.error('Batch exit-all error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
   }
 });
-// router.post('/exit-second-highest/all', async (req, res) => {
-//   try {
-//     const unsoldPlayers = await Player.find({ isSold: false }).select('_id');
 
-//     let totalExits = 0;
-//     const details  = [];
 
-//     for (const { _id: playerId } of unsoldPlayers) {
-//       const activeBids = await Bid
-//         .find({ playerId, isActive: true })
-//         .sort({ bidAmount: -1 });
+// new endpoint: loop through every user, then every player they’ve bid on
 
-//       if (activeBids.length < 2) continue;
-
-//       const second = activeBids[1];
-//       const user   = await User.findById(second.bidder);
-//       if (!user) {
-//         details.push({ playerId, error: 'Second-highest user not found' });
-//         continue;
-//       }
-
-//       // refund locked amount...
-//       // (same as before)
-//       const lockedEntry = user.currentBids.find(
-//         cb => cb.playerId.toString() === playerId.toString()
-//            && cb.amount === second.bidAmount
-//       );
-//       const lockedAmt = lockedEntry ? lockedEntry.amount : 0;
-//       user.purse = mongoose.Types.Decimal128.fromString(
-//         (parseFloat(user.purse.toString()) + lockedAmt).toString()
-//       );
-//       user.currentBids = user.currentBids.filter(
-//         cb => cb.playerId.toString() !== playerId.toString()
-//       );
-//       await user.save();
-
-//       // ── only remove that one bid document ────────────────────────
-//       await Bid.updateOne(
-//         { _id: second._id },
-//         { $set: { isActive: false, isBidOn: false } }
-//       );
-
-//       // update Player.currentBid to the next remaining highest
-//       const remaining = activeBids.filter(b => b._id.toString() !== second._id.toString());
-//       if (remaining.length) {
-//         await Player.findByIdAndUpdate(playerId, {
-//           currentBid:    remaining[0].bidAmount,
-//           currentBidder: remaining[0].bidder
-//         });
-//       } else {
-//         await Player.findByIdAndUpdate(playerId, {
-//           currentBid:    null,
-//           currentBidder: null
-//         });
-//       }
-
-//       totalExits++;
-//       details.push({ playerId, refundedTo: second.bidder, refundedAmount: lockedAmt });
-//     }
-
-//     res.json({
-//       message:    `Removed second-highest bidder for ${totalExits} player(s).`,
-//       totalExits,
-//       details
-//     });
-//   } catch (error) {
-//     console.error("Error bulk-exiting second-highest bidders:", error);
-//     res.status(500).json({ message: "Internal server error" });
-//   }
-// });
 
 
 
