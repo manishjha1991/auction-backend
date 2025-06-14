@@ -1146,6 +1146,7 @@ router.post('/lock-under-limit/all', async (_req, res) => {
     const details = [];     // { userId, reason, data }
 
     for (const user of users) {
+      if (user.isAdmin) continue;
       const playerIds = [
         ...user.boughtPlayers,
         ...user.currentBids.map(b => b.playerId),
