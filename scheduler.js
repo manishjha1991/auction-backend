@@ -45,11 +45,11 @@ async function sellingSingleBidSinceStarting() {
 // ---------------- cron schedule ------------------
 // second minute hour  day mon dow
 //   0      30    16   *   *   *
-// cron.schedule(
-//   '0 30 23 * * *',            // 23:30:00 IST every day
-//   sellingSingleBidSinceStarting,
-//   { timezone: 'Asia/Kolkata' }
-// );
+cron.schedule(
+  '0 30 23 * * *',            // 23:30:00 IST every day
+  sellingSingleBidSinceStarting,
+  { timezone: 'Asia/Kolkata' }
+);
 
 console.log('🕒 Single-bid finalizer scheduled for 23:30 IST daily.');
 
@@ -75,32 +75,32 @@ async function runBulkExit() {
 | second  minute   hour
  
 */
-cron.schedule('0 */15 0-22 * * *', runBulkExit, {
-  timezone: 'Asia/Kolkata'
-});
+// cron.schedule('0 */15 0-22 * * *', runBulkExit, {
+//   timezone: 'Asia/Kolkata'
+// });
 
-//② The last three runs at 10:00, 10:15, and 10:30 IST
-cron.schedule(
-  '0 0,15,30 22 * * *',     // sec  min     hr=10
-  runBulkExit,
-  { timezone: 'Asia/Kolkata' }
-);
+// //② The last three runs at 10:00, 10:15, and 10:30 IST
+// cron.schedule(
+//   '0 0,15,30 22 * * *',     // sec  min     hr=10
+//   runBulkExit,
+//   { timezone: 'Asia/Kolkata' }
+// );
 
 
-// 2) 23:30 & 23:45
-cron.schedule(
-  '0 30,45 23 * * *',
-  runBulkExit,
-  { timezone: 'Asia/Kolkata' }
-);
+// // 2) 23:30 & 23:45
+// cron.schedule(
+//   '0 30,45 23 * * *',
+//   runBulkExit,
+//   { timezone: 'Asia/Kolkata' }
+// );
 
-// 3) 00:00, 00:15, 00:30, 01:00, 01:15, 01:30, 02:00, 02:15, 02:30
-cron.schedule(
-  '0 0,15,30 0-2 * * *',
-  runBulkExit,
-  { timezone: 'Asia/Kolkata' }
-);
-console.log('🕒 bulk-exit runs every 15 min from 23:00 → 10:30 IST');
+// // 3) 00:00, 00:15, 00:30, 01:00, 01:15, 01:30, 02:00, 02:15, 02:30
+// cron.schedule(
+//   '0 0,15,30 0-2 * * *',
+//   runBulkExit,
+//   { timezone: 'Asia/Kolkata' }
+// );
+// console.log('🕒 bulk-exit runs every 15 min from 23:00 → 10:30 IST');
 
 
 
