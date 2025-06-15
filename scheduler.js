@@ -75,32 +75,32 @@ async function runBulkExit() {
 | second  minute   hour
  
 */
-// cron.schedule('0 */15 0-22 * * *', runBulkExit, {
-//   timezone: 'Asia/Kolkata'
-// });
+cron.schedule('0 */15 0-22 * * *', runBulkExit, {
+  timezone: 'Asia/Kolkata'
+});
 
-// //② The last three runs at 10:00, 10:15, and 10:30 IST
-// cron.schedule(
-//   '0 0,15,30 22 * * *',     // sec  min     hr=10
-//   runBulkExit,
-//   { timezone: 'Asia/Kolkata' }
-// );
+//② The last three runs at 10:00, 10:15, and 10:30 IST
+cron.schedule(
+  '0 0,15,30 22 * * *',     // sec  min     hr=10
+  runBulkExit,
+  { timezone: 'Asia/Kolkata' }
+);
 
 
-// // 2) 23:30 & 23:45
-// cron.schedule(
-//   '0 30,45 23 * * *',
-//   runBulkExit,
-//   { timezone: 'Asia/Kolkata' }
-// );
+// 2) 23:30 & 23:45
+cron.schedule(
+  '0 30,45 23 * * *',
+  runBulkExit,
+  { timezone: 'Asia/Kolkata' }
+);
 
-// // 3) 00:00, 00:15, 00:30, 01:00, 01:15, 01:30, 02:00, 02:15, 02:30
-// cron.schedule(
-//   '0 0,15,30 0-2 * * *',
-//   runBulkExit,
-//   { timezone: 'Asia/Kolkata' }
-// );
-// console.log('🕒 bulk-exit runs every 15 min from 23:00 → 10:30 IST');
+// 3) 00:00, 00:15, 00:30, 01:00, 01:15, 01:30, 02:00, 02:15, 02:30
+cron.schedule(
+  '0 0,15,30 0-2 * * *',
+  runBulkExit,
+  { timezone: 'Asia/Kolkata' }
+);
+console.log('🕒 bulk-exit runs every 15 min from 23:00 → 10:30 IST');
 
 
 
@@ -137,49 +137,49 @@ cron.schedule('59 59 22 * * *', async () => {          // 22:59:59 IST each nigh
  * there is exactly one single bid remaining with no counter (count === 0).
  * When that happens, POST to sell that player.
  */
-async function handlePlayerAuctionToSellOneSingleBidRemainingAndNoCounterBid(pid) {
-  console.log(`▶️ [${new Date().toISOString()}] Auction window opened for ${pid}`);
+// async function handlePlayerAuctionToSellOneSingleBidRemainingAndNoCounterBid(pid) {
+//   console.log(`▶️ [${new Date().toISOString()}] Auction window opened for ${pid}`);
 
-  let lastCount = Infinity;
+//   let lastCount = Infinity;
 
-  const step = async () => {
-    try {
-      const res = await axios.get(GET_BID_COUNT(pid));
-      lastCount = res.data.count ?? 0;
-    } catch (e) {
-      console.error(`   ⚠️ bid count error for ${pid}:`, e.message);
-      return false;
-    }
+//   const step = async () => {
+//     try {
+//       const res = await axios.get(GET_BID_COUNT(pid));
+//       lastCount = res.data.count ?? 0;
+//     } catch (e) {
+//       console.error(`   ⚠️ bid count error for ${pid}:`, e.message);
+//       return false;
+//     }
    
 
-    if (lastCount === 0) {
-      // exactly one active bid with no counterbid
-      console.log(`   → exactly one single bid, finalizing sale for ${pid}`);
-      try {
-        await axios.post(SELL_PATH(pid), { playerID: pid });
-        console.log(`   ✅ sold ${pid}`);
-      } catch (e) {
-        console.error(`   ❌ sell error for ${pid}:`, e.message);
-      }
-      return true;   // done polling
-    } else {
+//     if (lastCount === 0) {
+//       // exactly one active bid with no counterbid
+//       console.log(`   → exactly one single bid, finalizing sale for ${pid}`);
+//       try {
+//         await axios.post(SELL_PATH(pid), { playerID: pid });
+//         console.log(`   ✅ sold ${pid}`);
+//       } catch (e) {
+//         console.error(`   ❌ sell error for ${pid}:`, e.message);
+//       }
+//       return true;   // done polling
+//     } else {
       
-      // any other case: still multiple or no proper single bid
-      return false;  // keep polling
-    }
-  };
+//       // any other case: still multiple or no proper single bid
+//       return false;  // keep polling
+//     }
+//   };
 
-  // initial run
-  if (await step() !== true) {
-    // then every minute
-    const interval = setInterval(async () => {
-      if (await step() === true) {
-        clearInterval(interval);
-        console.log(`   🛑 stopped polling for ${pid}`);
-      }
-    }, 60 * 1000);
-  }
-}
+//   // initial run
+//   if (await step() !== true) {
+//     // then every minute
+//     const interval = setInterval(async () => {
+//       if (await step() === true) {
+//         clearInterval(interval);
+//         console.log(`   🛑 stopped polling for ${pid}`);
+//       }
+//     }, 60 * 1000);
+//   }
+// }
 
 // ---------------------------------------------------------------------------
 // CRON • every 30 min from 00:00 → 03:30 IST
@@ -195,41 +195,41 @@ async function handlePlayerAuctionToSellOneSingleBidRemainingAndNoCounterBid(pid
  *  - fetches all unsold players
  *  - for each one kicks off the per-player auction handler
  */
-async function job() {
-  console.log(`⏱️ [${new Date().toISOString()}] Running sold-single-bid check for all unsold players`);
-  try {
-    const { data } = await axios.get(GET_UNSOLD_PLAYERS);
-    const players = data.players || [];
-    console.log(`  • Found ${players.length} unsold player(s)`);
+// async function job() {
+//   console.log(`⏱️ [${new Date().toISOString()}] Running sold-single-bid check for all unsold players`);
+//   try {
+//     const { data } = await axios.get(GET_UNSOLD_PLAYERS);
+//     const players = data.players || [];
+//     console.log(`  • Found ${players.length} unsold player(s)`);
 
-    for (const { _id: pid } of players) {
-      handlePlayerAuctionToSellOneSingleBidRemainingAndNoCounterBid(pid);
-    }
-  } catch (err) {
-    console.error('⚠️ fetchUnsoldPlayers error:', err.message);
-  }
-}
+//     for (const { _id: pid } of players) {
+//       handlePlayerAuctionToSellOneSingleBidRemainingAndNoCounterBid(pid);
+//     }
+//   } catch (err) {
+//     console.error('⚠️ fetchUnsoldPlayers error:', err.message);
+//   }
+// }
 
 // Schedule “job” at 00:30 & 00:45
-cron.schedule(
-  '0 30,45 0 * * *',
-  job,
-  { timezone: 'Asia/Kolkata' }
-);
+// cron.schedule(
+//   '0 30,45 0 * * *',
+//   job,
+//   { timezone: 'Asia/Kolkata' }
+// );
 
-// Schedule “job” every 15 minutes during 01:00–01:45
-cron.schedule(
-  '0 0,15,30,45 1 * * *',
-  job,
-  { timezone: 'Asia/Kolkata' }
-);
+// // Schedule “job” every 15 minutes during 01:00–01:45
+// cron.schedule(
+//   '0 0,15,30,45 1 * * *',
+//   job,
+//   { timezone: 'Asia/Kolkata' }
+// );
 
-// Schedule “job” once at 02:00
-cron.schedule(
-  '0 0 2 * * *',
-  job,
-  { timezone: 'Asia/Kolkata' }
-);
+// // Schedule “job” once at 02:00
+// cron.schedule(
+//   '0 0 2 * * *',
+//   job,
+//   { timezone: 'Asia/Kolkata' }
+// );
 
 console.log('✅ Auction scheduler started: will run at 00:30–02:00 IST every night.');
 
