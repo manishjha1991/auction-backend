@@ -45,11 +45,11 @@ async function sellingSingleBidSinceStarting() {
 // ---------------- cron schedule ------------------
 // second minute hour  day mon dow
 //   0      30    16   *   *   *
-// cron.schedule(
-//   '0 30 23 * * *',            // 23:30:00 IST every day
-//   sellingSingleBidSinceStarting,
-//   { timezone: 'Asia/Kolkata' }
-// );
+cron.schedule(
+  '0 30 23 * * *',            // 23:30:00 IST every day
+  sellingSingleBidSinceStarting,
+  { timezone: 'Asia/Kolkata' }
+);
 
 console.log('🕒 Single-bid finalizer scheduled for 23:30 IST daily.');
 
