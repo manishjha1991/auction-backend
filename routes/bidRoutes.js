@@ -549,6 +549,8 @@ router.post("/bid/sold", async (req, res) => {
         player.isSold = true;
         player.currentBid = highestBid.bidAmount;
         player.currentBidder = highestBid.bidder;
+        // Defensive: remove accidental currentBids field if present
+        if (player.currentBids !== undefined) delete player.currentBids;
         await player.save();
 
         results.push({
@@ -940,6 +942,8 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
         player.isSold = true;
         player.currentBid = highestBid.bidAmount;
         player.currentBidder = highestBid.bidder;
+        // Defensive: remove accidental currentBids field if present
+        if (player.currentBids !== undefined) delete player.currentBids;
         await player.save();
 
         results.push({
@@ -1064,6 +1068,8 @@ async function exitBidForUserOnPlayer(userId, playerId, io) {
     player.currentBid    = null;
     player.currentBidder = null;
   }
+  // Defensive: remove accidental currentBids field if present
+  if (player.currentBids !== undefined) delete player.currentBids;
   await player.save();
 
   // Emit notification
