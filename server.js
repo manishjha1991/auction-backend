@@ -15,7 +15,7 @@ const server = http.createServer(app);
 const notificationRoutes = require('./routes/notifications');
 const io = new Server(server, { cors: { origin: '*' } });
 app.set('io', io);
-mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_12',useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_11',useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB Connected'))
   .catch(err => console.error(err));
 app.use('/uploads', express.static('uploads'));
