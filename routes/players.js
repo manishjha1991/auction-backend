@@ -5,6 +5,7 @@ const upload = require('../config/multerConfig'); // Import Multer configuration
 const Bid = require("../models/Bid");
 const User = require("../models/User");
 const UserPlayer = require("../models/UserPlayer");
+const ReleaseRequest = require("../models/ReleaseRequest");
 const router = express.Router();
 const formatPrice = (value) => {
   if (value >= 10000000) {
@@ -153,7 +154,7 @@ router.get("/:playerId/bids", async (req, res) => {
 
 router.get("/players/data", async (req, res) => {
   try {
-    // Fetch all players
+    // Fetch all active players
     const players = await Player.find({ isActive: true });
     // Map players to the desired format
     const formattedPlayers = await Promise.all(
@@ -277,6 +278,40 @@ router.post('/trade-player', async (req, res) => {
   } catch (error) {
     console.error('Error trading players:', error);
     res.status(500).json({ message: 'Internal server error.' });
+  }
+});
+
+// Admin: release a player immediately
+router.post('/release-player', async (req, res) => {
+  try {
+    const { adminUserId, userId, playerId } = req.body;
+    if (!adminUserId || !userId || !playerId) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+    const admin = await User.findById(adminUserId);
+    if (!admin || !admin.isAdmin) {
+      return res.status(403).json({ message: 'Only admin can release players' });
+    }
+    const up = await UserPlayer.findOne({ userId, playerId, isActive: true });
+    if (!up) {
+      return res.status(404).json({ message: 'Ownership not found or already inactive' });
+    }
+    up.isActive = false;
+    up.updatedAt = new Date();
+    await up.save();
+
+    // If a pending release request exists, mark it approved
+    const rr = await ReleaseRequest.findOne({ user: userId, player: playerId, status: { $in: ['pending', 'admin_pending'] } });
+    if (rr) {
+      rr.status = 'completed';
+      rr.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note: 'Released by admin endpoint' };
+      await rr.save();
+    }
+
+    return res.json({ message: 'Player released successfully' });
+  } catch (e) {
+    console.error('Admin release-player error', e);
+    res.status(500).json({ message: 'Internal server error' });
   }
 });
 

@@ -13,6 +13,7 @@ const PlayerSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
     isSold: { type: Boolean, default: false },
     isActive:{ type: Boolean, default: true },
+    tradeLocked: { type: Boolean, default: false },
       // NEW FIELDS:
     totalRuns: { type: Number, default: 0 },
     totalWickets: { type: Number, default: 0 },

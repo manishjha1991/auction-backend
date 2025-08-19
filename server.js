@@ -13,7 +13,12 @@ const fixtureRoutes = require('./routes/fixture'); // Adjust path
 const app = express();
 const server = http.createServer(app);
 const notificationRoutes = require('./routes/notifications');
+const releaseRoutes = require('./routes/releases');
+const pickRoutes = require('./routes/picks');
+const newsRoutes = require('./routes/news');
+const settingsRoutes = require('./routes/settings');
 const io = new Server(server, { cors: { origin: '*' } });
+const tradeRoutes = require('./routes/trades');
 app.set('io', io);
 mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_12',useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB Connected'))
@@ -31,6 +36,11 @@ app.use('/api/bids', bidRoutes); // Mount bid routes
 app.use('/api/player-stats', playerStatsRoutes);
 // ...
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/releases', releaseRoutes);
+app.use('/api/picks', pickRoutes);
+app.use('/api/news', newsRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/trades', tradeRoutes);
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);

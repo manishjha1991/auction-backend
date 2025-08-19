@@ -15,6 +15,7 @@ const UserSchema = new mongoose.Schema({
     },
   ], // Array to track bids on up to 4 players
   isAdmin: { type: Boolean, default: false },
+  tradesUsed: { type: Number, default: 0 },
   points: { type: Number, default: 0 }, // Store total points
   matchesPlayed: { type: Number, default: 0 }, // Store total matches played
   fairnessPoint:{ type: Number, default: 0 },

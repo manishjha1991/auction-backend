@@ -7,6 +7,8 @@ const Player = require('../models/Player');
 const Bid = require('../models/Bid');
 const Fixture = require('../models/Fixture');
 const UserPlayer = require('../models/UserPlayer');
+const TradeRequest = require('../models/TradeRequest');
+const ReleaseRequest = require('../models/ReleaseRequest');
 const multer = require('multer');
 const path = require('path');
 // Configure Multer for file uploads
@@ -432,6 +434,37 @@ router.get('/teams', async (req, res) => {
 });
 
 
+
+// GET: trade usage for a user (how many trades used out of 4)
+router.get('/:userId/trades-usage', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const user = await User.findById(userId).select('tradesUsed');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    const used = Number(user.tradesUsed || 0);
+    const cap = 4;
+    const remaining = Math.max(0, cap - used);
+    res.json({ tradesUsed: used, cap, remaining });
+  } catch (e) {
+    console.error('Trade usage error', e);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// GET: roster for a team (players owned by a user)
+router.get('/:userId/roster', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const roster = await UserPlayer.find({ userId, isActive: true })
+      .populate('playerId', 'name type role')
+      .lean();
+    const players = roster.map(r => ({ id: r.playerId._id, name: r.playerId.name, type: r.playerId.type, role: r.playerId.role }));
+    res.json({ userId, players });
+  } catch (error) {
+    console.error('Error fetching roster:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 
 module.exports = router;
 
