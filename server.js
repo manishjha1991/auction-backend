@@ -19,6 +19,7 @@ const newsRoutes = require('./routes/news');
 const settingsRoutes = require('./routes/settings');
 const io = new Server(server, { cors: { origin: '*' } });
 const tradeRoutes = require('./routes/trades');
+const liveScoreRoutes = require('./routes/livescores');
 app.set('io', io);
 mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_12',useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB Connected'))
@@ -41,6 +42,7 @@ app.use('/api/picks', pickRoutes);
 app.use('/api/news', newsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/trades', tradeRoutes);
+app.use('/api/live-scores', liveScoreRoutes);
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);

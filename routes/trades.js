@@ -132,7 +132,13 @@ router.post('/', async (req, res) => {
       ]
     });
 
-    res.status(201).json(trade);
+    const populated = await TradeRequest.findById(trade._id)
+      .populate('fromUser', 'name teamName')
+      .populate('toUser', 'name teamName')
+      .populate('offeredPlayer', 'name type role')
+      .populate('requestedPlayer', 'name type role');
+
+    res.status(201).json(populated);
   } catch (err) {
     console.error('Create trade error', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -146,8 +152,11 @@ router.post('/:tradeId/respond', async (req, res) => {
     const { byUserId, decision, message } = req.body; // decision: accept|reject
     const trade = await TradeRequest.findById(tradeId);
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
-    if (String(trade.toUser) !== String(byUserId)) {
-      return res.status(403).json({ message: 'Only the recipient can respond.' });
+    // Allow recipient to respond to initial proposals, and proposer to respond to counters
+    const isRecipientResponding = String(trade.toUser) === String(byUserId) && trade.status === 'pending';
+    const isProposerRespondingToCounter = String(trade.fromUser) === String(byUserId) && trade.status === 'counter';
+    if (!isRecipientResponding && !isProposerRespondingToCounter) {
+      return res.status(403).json({ message: 'Not authorized to respond at this stage.' });
     }
 
     if (decision === 'accept') {
@@ -161,7 +170,12 @@ router.post('/:tradeId/respond', async (req, res) => {
     }
 
     await trade.save();
-    res.json(trade);
+    const populated = await TradeRequest.findById(trade._id)
+      .populate('fromUser', 'name teamName')
+      .populate('toUser', 'name teamName')
+      .populate('offeredPlayer', 'name type role')
+      .populate('requestedPlayer', 'name type role');
+    res.json(populated);
   } catch (err) {
     console.error('Respond trade error', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -169,31 +183,9 @@ router.post('/:tradeId/respond', async (req, res) => {
 });
 
 // POST negotiate (counter) with a counter offered player
-router.post('/:tradeId/negotiate', async (req, res) => {
-  try {
-    const { tradeId } = req.params;
-    const { byUserId, counterOfferedPlayerId } = req.body;
-    const trade = await TradeRequest.findById(tradeId);
-    if (!trade) return res.status(404).json({ message: 'Trade not found' });
-    if (String(trade.toUser) !== String(byUserId)) {
-      return res.status(403).json({ message: 'Only the recipient can negotiate.' });
-    }
-
-    const owner = await getOwnerOfPlayer(counterOfferedPlayerId);
-    if (!owner || String(owner._id) !== String(byUserId)) {
-      return res.status(400).json({ message: 'You do not own the counter offered player.' });
-    }
-
-    trade.status = 'counter';
-    trade.history.push({ byUser: byUserId, action: 'counter', message: 'Counter proposal', offeredPlayer: trade.offeredPlayer, requestedPlayer: counterOfferedPlayerId });
-    // Swap requestedPlayer to the counter request for clarity in UI
-    trade.requestedPlayer = counterOfferedPlayerId;
-    await trade.save();
-    res.json(trade);
-  } catch (err) {
-    console.error('Negotiate trade error', err);
-    res.status(500).json({ message: 'Internal server error' });
-  }
+// Countering is disabled
+router.post('/:tradeId/negotiate', async (_req, res) => {
+  return res.status(400).json({ message: 'Counter offers are disabled.' });
 });
 
 // POST withdraw own trade proposal (only proposer can withdraw if not completed/rejected)
@@ -212,7 +204,12 @@ router.post('/:tradeId/withdraw', async (req, res) => {
     trade.status = 'withdrawn';
     trade.history.push({ byUser: byUserId, action: 'withdraw', message: 'Proposal withdrawn by proposer' });
     await trade.save();
-    res.json(trade);
+    const populated = await TradeRequest.findById(trade._id)
+      .populate('fromUser', 'name teamName')
+      .populate('toUser', 'name teamName')
+      .populate('offeredPlayer', 'name type role')
+      .populate('requestedPlayer', 'name type role');
+    res.json(populated);
   } catch (err) {
     console.error('Withdraw trade error', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -228,6 +225,9 @@ router.get('/user/:userId', async (req, res) => {
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role')
       .populate('requestedPlayer', 'name type role')
+      .populate('history.byUser', 'name teamName')
+      .populate('history.offeredPlayer', 'name type role')
+      .populate('history.requestedPlayer', 'name type role')
       .sort({ createdAt: -1 });
     res.json(trades);
   } catch (err) {

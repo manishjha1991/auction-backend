@@ -38,6 +38,10 @@ router.get('/feed', async (_req, res) => {
 
     // Trades
     for (const t of trades) {
+      const offeredName = t.offeredPlayer?.name || 'Player A';
+      const requestedName = t.requestedPlayer?.name || 'Player B';
+      const fromTeam = t.fromUser?.teamName || 'Team A';
+      const toTeam = t.toUser?.teamName || 'Team B';
       // Try to infer trade value from user-player bid values
       let approxValue = 0;
       try {
@@ -54,17 +58,20 @@ router.get('/feed', async (_req, res) => {
       const priceCr = toCrores(approxValue).toFixed(2);
       const highValue = approxValue >= 100000000; // 10 cr
       if (status === 'completed') {
-        title = `Trade Confirmed: ${t.offeredPlayer?.name} ↔ ${t.requestedPlayer?.name}`;
-        body = `${t.fromUser?.teamName} and ${t.toUser?.teamName} completed a swap${approxValue ? ` (approx ₹${priceCr} Cr)` : ''}.`;
+        title = `Trade Confirmed: ${offeredName} ↔ ${requestedName}`;
+        body = `${fromTeam} and ${toTeam} completed a swap${approxValue ? ` (approx ₹${priceCr} Cr)` : ''}.`;
       } else if (status === 'admin_pending') {
-        title = `Awaiting Approval: ${t.offeredPlayer?.name} ↔ ${t.requestedPlayer?.name}`;
-        body = `Trade sent to admin by ${t.toUser?.teamName}. ${t.fromUser?.teamName} initiated the proposal.`;
+        title = `Awaiting Approval: ${offeredName} ↔ ${requestedName}`;
+        body = `Trade sent to admin by ${toTeam}. ${fromTeam} initiated the proposal.`;
       } else if (status === 'pending' || status === 'counter') {
-        title = `Trade Proposed: ${t.offeredPlayer?.name} ↔ ${t.requestedPlayer?.name}`;
-        body = `${t.fromUser?.teamName} proposed a trade to ${t.toUser?.teamName}.`;
+        title = `Trade Proposed: ${offeredName} ↔ ${requestedName}`;
+        body = `${fromTeam} proposed a trade to ${toTeam}.`;
       } else if (status === 'rejected') {
-        title = `Trade Rejected: ${t.offeredPlayer?.name} ↔ ${t.requestedPlayer?.name}`;
+        title = `Trade Rejected: ${offeredName} ↔ ${requestedName}`;
         body = `Admin/user rejected the proposal.`;
+      } else if (status === 'withdrawn') {
+        title = `Trade Withdrawn: ${offeredName} ↔ ${requestedName}`;
+        body = `${fromTeam} withdrew the proposal.`;
       }
       news.push({
         kind: 'trade',
