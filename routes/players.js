@@ -154,64 +154,123 @@ router.get("/:playerId/bids", async (req, res) => {
 
 router.get("/players/data", async (req, res) => {
   try {
-    // Fetch all active players
-    const players = await Player.find({ isActive: true });
-    // Map players to the desired format
-    const formattedPlayers = await Promise.all(
-      players.map(async (player) => {
-        let currentBidderName = "N/A";
-        let teamName = "N/A";
-        let status = "Unsold";
-        let basePrice = parseFloat(player.basePrice); // Default to player's base price
-
-        if (player.isSold) {
-          // Fetch UserPlayer details if the player is sold
-          const userPlayer = await UserPlayer.findOne({ playerId: player._id, isActive: true }).populate("userId", "name teamName");
-          if (userPlayer) {
-            currentBidderName = userPlayer.userId.name;
-            teamName = userPlayer.userId.teamName || "N/A";
-            status = "Sold";
-
-            // Use bidValue as base price if available
-            if (userPlayer.bidValue) {
-              basePrice = parseFloat(userPlayer.bidValue);
+    // Use aggregation pipeline for better performance
+    const players = await Player.aggregate([
+      { $match: { isActive: true } },
+      {
+        $lookup: {
+          from: 'userplayers',
+          let: { playerId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $and: [{ $eq: ['$playerId', '$$playerId'] }, { $eq: ['$isActive', true] }] } } },
+            { $limit: 1 }
+          ],
+          as: 'userPlayer'
+        }
+      },
+      {
+        $lookup: {
+          from: 'users',
+          let: { userId: { $arrayElemAt: ['$userPlayer.userId', 0] } },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$_id', '$$userId'] } } },
+            { $project: { name: 1, teamName: 1 } }
+          ],
+          as: 'user'
+        }
+      },
+      {
+        $lookup: {
+          from: 'bids',
+          let: { playerId: '$_id' },
+          pipeline: [
+            { $match: { $expr: { $eq: ['$playerId', '$$playerId'] } } },
+            { $sort: { bidAmount: -1 } },
+            { $limit: 1 },
+            {
+              $lookup: {
+                from: 'users',
+                let: { bidderId: '$bidder' },
+                pipeline: [
+                  { $match: { $expr: { $eq: ['$_id', '$$bidderId'] } } },
+                  { $project: { name: 1, teamName: 1 } }
+                ],
+                as: 'bidder'
+              }
             }
-            
-          }
-        } else {
-          // Check for active bids if the player is not sold
-          const highestBid = await Bid.findOne({ playerId: player._id })
-            .populate("bidder", "name teamName")
-            .sort({ bidAmount: -1 }); // Fetch the highest bid
-
-          if (highestBid) {
-            currentBidderName = highestBid.bidder.name || "N/A";
-            teamName = highestBid.bidder.teamName || "N/A";
-            basePrice = parseFloat(highestBid.bidAmount); // Use highest bid amount as base price
+          ],
+          as: 'highestBid'
+        }
+      },
+      {
+        $project: {
+          id: '$_id',
+          name: 1,
+          type: 1,
+          role: 1,
+          basePrice: {
+            $cond: {
+              if: { $gt: [{ $size: '$userPlayer' }, 0] },
+              then: { $toString: { $arrayElemAt: ['$userPlayer.bidValue', 0] } },
+              else: {
+                $cond: {
+                  if: { $gt: [{ $size: '$highestBid' }, 0] },
+                  then: { $toString: { $arrayElemAt: ['$highestBid.bidAmount', 0] } },
+                  else: { $toString: '$basePrice' }
+                }
+              }
+            }
+          },
+          currentBidder: {
+            $cond: {
+              if: { $gt: [{ $size: '$userPlayer' }, 0] },
+              then: { $arrayElemAt: ['$user.name', 0] },
+              else: {
+                $cond: {
+                  if: { $gt: [{ $size: '$highestBid' }, 0] },
+                  then: { $arrayElemAt: ['$highestBid.bidder.name', 0] },
+                  else: 'N/A'
+                }
+              }
+            }
+          },
+          teamName: {
+            $cond: {
+              if: { $gt: [{ $size: '$userPlayer' }, 0] },
+              then: { $arrayElemAt: ['$user.teamName', 0] },
+              else: {
+                $cond: {
+                  if: { $gt: [{ $size: '$highestBid' }, 0] },
+                  then: { $arrayElemAt: ['$highestBid.bidder.teamName', 0] },
+                  else: 'N/A'
+                }
+              }
+            }
+          },
+          status: {
+            $cond: {
+              if: { $gt: [{ $size: '$userPlayer' }, 0] },
+              then: 'Sold',
+              else: 'Unsold'
+            }
           }
         }
+      },
+      {
+        $addFields: {
+          sortOrder: {
+            $cond: {
+              if: { $ne: ['$currentBidder', 'N/A'] },
+              then: 0,
+              else: 1
+            }
+          }
+        }
+      },
+      { $sort: { sortOrder: 1 } }
+    ]);
 
-        return {
-          id: player._id,
-          name: player.name,
-          type: player.type,
-          role: player.role,
-          basePrice: `${basePrice}`, // Use highest bid value if available, otherwise base price
-          currentBidder: currentBidderName,
-          teamName: teamName,
-          status: status,
-        };
-      })
-    );
-
-    // Sort players to prioritize those with currentBidder
-    const sortedPlayers = formattedPlayers.sort((a, b) => {
-      if (a.currentBidder !== "N/A" && b.currentBidder === "N/A") return -1; // a has currentBidder, b does not
-      if (a.currentBidder === "N/A" && b.currentBidder !== "N/A") return 1; // b has currentBidder, a does not
-      return 0; // Keep the original order if both have or don't have currentBidder
-    });
-
-    res.status(200).json(sortedPlayers);
+    res.status(200).json(players);
   } catch (error) {
     console.error("Error fetching player data:", error);
     res.status(500).json({ message: "Internal server error." });

@@ -3,6 +3,8 @@ const router = express.Router();
 const ReleaseRequest = require('../models/ReleaseRequest');
 const UserPlayer = require('../models/UserPlayer');
 const User = require('../models/User');
+const Player = require('../models/Player'); // Add Player model import
+const Bid = require('../models/Bid'); // Add Bid model import for cleanup
 
 // Create release request
 router.post('/', async (req, res) => {
@@ -59,6 +61,7 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
     const { adminUserId, decision, note } = req.body;
     const item = await ReleaseRequest.findById(releaseId);
     if (!item) return res.status(404).json({ message: 'Release request not found' });
+    
     if (decision === 'approve') {
       // deactivate ownership
       const up = await UserPlayer.findOne({ userId: item.user, playerId: item.player, isActive: true });
@@ -76,6 +79,36 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
             });
           } catch {}
         }
+        
+        // CRITICAL FIX: Update the Player model to mark as unsold
+        try {
+          await Player.findByIdAndUpdate(item.player, {
+            $set: {
+              isSold: false,
+              currentBid: null,
+              currentBidder: null,
+              tradeLocked: false // Reset trade lock when player is released
+            }
+          });
+        } catch (playerUpdateError) {
+          console.error('Error updating player status:', playerUpdateError);
+        }
+        
+        // Remove player from user's boughtPlayers array
+        try {
+          await User.findByIdAndUpdate(item.user, {
+            $pull: { boughtPlayers: item.player }
+          });
+        } catch (userUpdateError) {
+          console.error('Error removing player from boughtPlayers:', userUpdateError);
+        }
+        
+        // Clean up any remaining bid data for this player
+        try {
+          await Bid.deleteMany({ playerId: item.player });
+        } catch (bidCleanupError) {
+          console.error('Error cleaning up bid data:', bidCleanupError);
+        }
       }
       
       item.status = 'completed';
@@ -85,6 +118,7 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
       try {
         await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: 1 } });
       } catch {}
+      
     } else if (decision === 'reject') {
       item.status = 'rejected';
       item.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
@@ -94,8 +128,15 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
     } else {
       return res.status(400).json({ message: 'Invalid decision' });
     }
+    
     await item.save();
-    res.json(item);
+    
+    // Return populated release request
+    const populatedItem = await ReleaseRequest.findById(releaseId)
+      .populate('player', 'name type role')
+      .populate('user', 'name teamName');
+    
+    res.json(populatedItem);
   } catch (e) {
     console.error('Release decide error', e);
     res.status(500).json({ message: 'Internal server error' });

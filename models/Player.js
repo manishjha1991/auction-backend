@@ -19,4 +19,9 @@ const PlayerSchema = new mongoose.Schema({
     totalWickets: { type: Number, default: 0 },
 });
 
+// Add indexes for better performance
+PlayerSchema.index({ isActive: 1 });
+PlayerSchema.index({ isSold: 1 });
+PlayerSchema.index({ type: 1 });
+
 module.exports = mongoose.model('Player', PlayerSchema);

@@ -9,4 +9,9 @@ const UserPlayerSchema = new mongoose.Schema({
   isActive: { type: Boolean, default: true }, // Admin field added
 });
 
+// Add compound indexes for better performance
+UserPlayerSchema.index({ playerId: 1, isActive: 1 });
+UserPlayerSchema.index({ userId: 1, isActive: 1 });
+UserPlayerSchema.index({ isActive: 1 });
+
 module.exports = mongoose.model("UserPlayer", UserPlayerSchema);
