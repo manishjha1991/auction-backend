@@ -3,6 +3,7 @@ const Fixture = require('../models/Fixture');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
+
 const router = express.Router();
 
 
@@ -161,8 +162,45 @@ router.post('/save', async (req, res) => {
     }
 
     await fixture.save();
+    
+    // Automatically update points for both teams after fixture is saved
+    if (fixture.winner) {
+      try {
+        // Find both teams by teamName
+        const team1User = await User.findOne({ teamName: fixture.team1 });
+        const team2User = await User.findOne({ teamName: fixture.team2 });
+        
+        if (team1User && team2User) {
+          // Update team1: winner gets +2 points, loser gets +0 points
+          if (fixture.winner === fixture.team1) {
+            team1User.points = (team1User.points || 0) + 2;
+            team2User.points = (team2User.points || 0) + 0;
+          } else {
+            team1User.points = (team1User.points || 0) + 0;
+            team2User.points = (team2User.points || 0) + 2;
+          }
+          
+          // Add fairness points to both teams
+          team1User.fairnessPoint = (team1User.fairnessPoint || 0) + (fixture.team1Fairness || 0);
+          team2User.fairnessPoint = (team2User.fairnessPoint || 0) + (fixture.team2Fairness || 0);
+          
+          // Increment matches played for both teams
+          team1User.matchesPlayed = (team1User.matchesPlayed || 0) + 1;
+          team2User.matchesPlayed = (team2User.matchesPlayed || 0) + 1;
+          
+          // Save both users
+          await Promise.all([team1User.save(), team2User.save()]);
+          
+          console.log(`✅ Points updated: ${fixture.team1} (${fixture.winner === fixture.team1 ? 'WIN +2' : 'LOSS +0'}) vs ${fixture.team2} (${fixture.winner === fixture.team2 ? 'WIN +2' : 'LOSS +0'})`);
+        }
+      } catch (pointsError) {
+        console.error('Error updating points:', pointsError);
+        // Don't fail the fixture save if points update fails
+      }
+    }
+    
     res.status(200).json({
-      message: 'Fixture result saved successfully!',
+      message: 'Fixture result saved successfully! Points updated automatically.',
       fixture,
     });
   } catch (error) {

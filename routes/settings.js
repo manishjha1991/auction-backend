@@ -12,20 +12,21 @@ async function getSettingsDoc() {
 router.get('/', async (_req, res) => {
   try {
     const doc = await getSettingsDoc();
-    res.json({ enableTradeCenter: doc.enableTradeCenter, enableUnsoldPlayers: doc.enableUnsoldPlayers });
+    res.json({ enableTradeCenter: doc.enableTradeCenter, enableUnsoldPlayers: doc.enableUnsoldPlayers, enablePickButton: doc.enablePickButton });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });
 
 router.post('/', async (req, res) => {
   try {
-    const { adminUserId, enableTradeCenter, enableUnsoldPlayers } = req.body;
+    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton } = req.body;
     const admin = await User.findById(adminUserId);
     if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update settings' });
     const doc = await getSettingsDoc();
     if (typeof enableTradeCenter === 'boolean') doc.enableTradeCenter = enableTradeCenter;
     if (typeof enableUnsoldPlayers === 'boolean') doc.enableUnsoldPlayers = enableUnsoldPlayers;
+    if (typeof enablePickButton === 'boolean') doc.enablePickButton = enablePickButton;
     await doc.save();
-    res.json({ enableTradeCenter: doc.enableTradeCenter, enableUnsoldPlayers: doc.enableUnsoldPlayers });
+    res.json({ enableTradeCenter: doc.enableTradeCenter, enableUnsoldPlayers: doc.enableUnsoldPlayers, enablePickButton: doc.enablePickButton });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });
 

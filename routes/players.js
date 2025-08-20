@@ -296,6 +296,16 @@ router.post('/release-player', async (req, res) => {
     if (!up) {
       return res.status(404).json({ message: 'Ownership not found or already inactive' });
     }
+    // Refund the player's bid value back to the user's purse
+    const bidValue = Number(up.bidValue || 0);
+    if (bidValue > 0) {
+      try {
+        await User.findByIdAndUpdate(userId, { 
+          $inc: { purse: bidValue }
+        });
+      } catch {}
+    }
+    
     up.isActive = false;
     up.updatedAt = new Date();
     await up.save();

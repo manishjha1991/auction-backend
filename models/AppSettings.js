@@ -4,6 +4,7 @@ const AppSettingsSchema = new mongoose.Schema(
   {
     enableTradeCenter: { type: Boolean, default: true },
     enableUnsoldPlayers: { type: Boolean, default: true },
+    enablePickButton: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

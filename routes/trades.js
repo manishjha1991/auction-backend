@@ -50,7 +50,8 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'Trade limit reached: You can have at most 4 active trade requests.' });
     }
 
-    // Enforce total trade usage cap (no more than 4 trades overall for the proposer)
+    // Enforce total trade usage cap (no more than 4 COMPLETED trades overall for the proposer)
+    // Only count trades that were actually completed, not pending ones
     const proposer = await User.findById(fromUserId).select('tradesUsed');
     if (proposer && Number(proposer.tradesUsed || 0) >= 4) {
       return res.status(400).json({ message: 'You have used all 4 trades.' });
@@ -289,13 +290,39 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       const team1 = offeredUP.userId;
       const team2 = requestedUP.userId;
 
+      // Calculate purse adjustments
+      const offeredValue = Number(offeredUP.bidValue || 0);
+      const requestedValue = Number(requestedUP.bidValue || 0);
+      
+      // Update user purses
+      const team1Purse = Number(team1.purse || 0);
+      const team2Purse = Number(team2.purse || 0);
+      
+      const newTeam1Purse = team1Purse + offeredValue - requestedValue;
+      const newTeam2Purse = team2Purse + requestedValue - offeredValue;
+      
+      // Validate purse adjustments
+      if (newTeam1Purse < 0 || newTeam2Purse < 0) {
+        return res.status(400).json({ message: 'Trade would result in negative purse balance' });
+      }
+
       // Swap owners
       offeredUP.userId = team2._id;
       requestedUP.userId = team1._id;
       offeredUP.updatedAt = new Date();
       requestedUP.updatedAt = new Date();
 
-      await Promise.all([offeredUP.save(), requestedUP.save()]);
+      // Update purses
+      team1.purse = newTeam1Purse;
+      team2.purse = newTeam2Purse;
+
+      // Save all updates
+      await Promise.all([
+        offeredUP.save(),
+        requestedUP.save(),
+        team1.save(),
+        team2.save()
+      ]);
 
       // Lock both players from further trading
       await Promise.all([
@@ -306,9 +333,12 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       trade.status = 'completed';
       trade.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
 
-      // Increment trader's used trades counter
+      // Increment BOTH teams' used trades counter when trade is actually completed
       try {
-        await User.findByIdAndUpdate(trade.fromUser, { $inc: { tradesUsed: 1 } });
+        await Promise.all([
+          User.findByIdAndUpdate(trade.fromUser, { $inc: { tradesUsed: 1 } }),
+          User.findByIdAndUpdate(trade.toUser, { $inc: { tradesUsed: 1 } })
+        ]);
       } catch {}
 
       // Auto-reject any other active trades involving either of these players
@@ -329,6 +359,9 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
     } else if (decision === 'reject') {
       trade.status = 'rejected';
       trade.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
+      
+      // Admin rejection does NOT affect trade count - only completed trades count
+      // No need to revert anything since tradesUsed is only incremented on approval
     } else {
       return res.status(400).json({ message: 'Invalid decision' });
     }

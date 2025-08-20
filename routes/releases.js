@@ -62,16 +62,35 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
     if (decision === 'approve') {
       // deactivate ownership
       const up = await UserPlayer.findOne({ userId: item.user, playerId: item.player, isActive: true });
-      if (up) { up.isActive = false; up.updatedAt = new Date(); await up.save(); }
+      if (up) { 
+        up.isActive = false; 
+        up.updatedAt = new Date(); 
+        await up.save(); 
+        
+        // Refund the player's bid value back to the user's purse
+        const bidValue = Number(up.bidValue || 0);
+        if (bidValue > 0) {
+          try {
+            await User.findByIdAndUpdate(item.user, { 
+              $inc: { purse: bidValue }
+            });
+          } catch {}
+        }
+      }
+      
       item.status = 'completed';
       item.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
-      // Increment user's trade usage as release+pick or standalone should count as a trade
+      
+      // Increment user's trade usage ONLY when admin approves (completed)
       try {
         await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: 1 } });
       } catch {}
     } else if (decision === 'reject') {
       item.status = 'rejected';
       item.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
+      
+      // Admin rejection does NOT affect trade count - no increment/decrement
+      // The release request was pending, so it doesn't count towards tradesUsed
     } else {
       return res.status(400).json({ message: 'Invalid decision' });
     }
@@ -79,6 +98,50 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
     res.json(item);
   } catch (e) {
     console.error('Release decide error', e);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Withdraw release request
+router.post('/:releaseId/withdraw', async (req, res) => {
+  try {
+    const { releaseId } = req.params;
+    const { byUserId } = req.body;
+    
+    const item = await ReleaseRequest.findById(releaseId);
+    if (!item) {
+      return res.status(404).json({ message: 'Release request not found' });
+    }
+    
+    // Only the user who created the request can withdraw it
+    if (String(item.user) !== String(byUserId)) {
+      return res.status(403).json({ message: 'You can only withdraw your own release requests' });
+    }
+    
+    // Only pending requests can be withdrawn
+    if (!['pending', 'admin_pending'].includes(item.status)) {
+      return res.status(400).json({ message: 'Only pending requests can be withdrawn' });
+    }
+    
+    // Update status and add to history
+    item.status = 'withdrawn';
+    item.history.push({ 
+      byUser: byUserId, 
+      action: 'withdraw', 
+      message: 'Request withdrawn by user',
+      timestamp: new Date()
+    });
+    
+    await item.save();
+    
+    // Return populated release request
+    const populatedItem = await ReleaseRequest.findById(releaseId)
+      .populate('player', 'name type role')
+      .populate('user', 'name teamName');
+    
+    res.json(populatedItem);
+  } catch (e) {
+    console.error('Release withdraw error', e);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

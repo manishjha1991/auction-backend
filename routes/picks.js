@@ -8,17 +8,24 @@ const Bid = require('../models/Bid');
 const BidHistory = require('../models/BidHistory');
 const mongoose = require('mongoose');
 const axios = require('axios');
+const Notification = require('../models/Notification');
 
-// Get unsold players list (isSold:false and isActive:false) with pagination and type filter
+// Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
 router.get('/unsold', async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 10));
     const type = req.query.type; // optional: Sapphire|Gold|Emerald|Silver
+    const search = req.query.search; // optional: search by player name
 
     const filter = { isSold: false, isActive: false };
     if (type) {
       filter.type = type;
+    }
+    
+    // Add search functionality for player names
+    if (search && search.trim()) {
+      filter.name = { $regex: search.trim(), $options: 'i' }; // Case-insensitive search
     }
 
     const total = await Player.countDocuments(filter);
@@ -129,8 +136,56 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       item.status = 'completed';
       item.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
     } else if (decision === 'reject') {
+      // Free the locked money back to user's purse when rejecting pick
+      const user = await User.findById(item.user);
+      if (user) {
+        // Find the locked amount for this player
+        const userBid = user.currentBids.find(bid => bid.playerId.toString() === item.player.toString());
+        if (userBid) {
+          const lockedAmount = userBid.amount;
+          const purse = parseFloat(user.purse.toString());
+          user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
+          
+          // Remove the bid from user's current bids
+          user.currentBids = user.currentBids.filter(bid => bid.playerId.toString() !== item.player.toString());
+          await user.save();
+        }
+      }
+      
+      // Mark the bid as inactive
+      await Bid.updateMany(
+        { playerId: item.player, bidder: item.user }, 
+        { $set: { isActive: false, isBidOn: false } }
+      );
+      
+      // Reset player's current bid if this was the only bid
+      const player = await Player.findById(item.player);
+      if (player && player.currentBidder && player.currentBidder.toString() === item.user.toString()) {
+        player.currentBid = null;
+        player.currentBidder = null;
+        await player.save();
+      }
+      
       item.status = 'rejected';
       item.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
+      
+      // Emit rejection notification for admin branch
+      try {
+        const io = req.app.get('io');
+        const notificationData = {
+          message: `Pick rejected: ${user?.name || 'User'} had their pick request for ${player?.name || 'Player'} rejected by admin. Locked amount refunded.`,
+          playername: player?.name,
+          currentBid: player?.currentBid,
+          currentBidder: player?.currentBidder,
+          rejectedUser: user?.name
+        };
+        // Save notification in DB
+        const newNotification = new Notification(notificationData);
+        await newNotification.save();
+        io.emit('pick_rejection_notification', newNotification);
+      } catch (notificationError) {
+        console.error('Notification error:', notificationError);
+      }
     } else {
       return res.status(400).json({ message: 'Invalid decision' });
     }
