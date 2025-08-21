@@ -67,6 +67,8 @@ router.post('/', async (req, res) => {
       return res.status(404).json({ message: 'User or players not found.' });
     }
 
+    // BASIC VALIDATION ONLY (for proposal creation)
+    // Heavy validation (type limits, purse, etc.) happens at admin approval
     if (String(offeredOwner._id) !== String(fromUser._id)) {
       return res.status(403).json({ message: 'You do not own the offered player.' });
     }
@@ -86,41 +88,9 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'One or both players are not available for trade.' });
     }
 
-    // Removed tradeLocked guard per updated requirement; a newly traded player can be traded again later
-
-    // Purse validation: ensure both teams would not go negative after swap
-    const offeredValue = Number(offeredUP.bidValue || 0);
-    const requestedValue = Number(requestedUP.bidValue || 0);
-    const fromPurse = Number(fromUser.purse || 0);
-    const toPurse = Number(requestedOwner.purse || 0);
-
-    const newFromPurse = fromPurse + offeredValue - requestedValue;
-    const newToPurse = toPurse + requestedValue - offeredValue;
-    if (Number.isNaN(newFromPurse) || Number.isNaN(newToPurse)) {
-      return res.status(400).json({ message: 'Invalid purse or bid values for trade validation.' });
-    }
-    if (newFromPurse < 0 || newToPurse < 0) {
-      return res.status(400).json({
-        message: 'Trade not allowed: purse balance would go negative for one or both teams.'
-      });
-    }
-
-    // Type limits validation: simulate post-trade counts
-    const [fromCounts, toCounts] = await Promise.all([
-      getUserTypeCounts(fromUser._id),
-      getUserTypeCounts(requestedOwner._id)
-    ]);
-    if (offeredPlayer?.type) fromCounts[offeredPlayer.type] = Math.max(0, (fromCounts[offeredPlayer.type] || 0) - 1);
-    if (requestedPlayer?.type) fromCounts[requestedPlayer.type] = (fromCounts[requestedPlayer.type] || 0) + 1;
-    if (requestedPlayer?.type) toCounts[requestedPlayer.type] = Math.max(0, (toCounts[requestedPlayer.type] || 0) - 1);
-    if (offeredPlayer?.type) toCounts[offeredPlayer.type] = (toCounts[offeredPlayer.type] || 0) + 1;
-
-    if (wouldExceedTypeLimits(fromCounts)) {
-      return res.status(400).json({ message: 'Trade violates your team type limits (Emerald/Sapphire caps).' });
-    }
-    if (wouldExceedTypeLimits(toCounts)) {
-      return res.status(400).json({ message: "Trade violates recipient's team type limits." });
-    }
+    // REMOVED: Heavy validation (type limits, purse validation) - moved to admin approval
+    // Only basic validation remains for proposal creation
+    // This allows users to propose trades that might be invalid, but admin will catch them
 
     const trade = await TradeRequest.create({
       fromUser: fromUser._id,
@@ -279,7 +249,7 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
 
     if (decision === 'approve') {
-      // Perform the swap same as players trade in players route
+      // COMPREHENSIVE VALIDATION: Check all trade violations before approval
       const [offeredUP, requestedUP] = await Promise.all([
         UserPlayer.findOne({ playerId: trade.offeredPlayer, isActive: true }).populate('userId'),
         UserPlayer.findOne({ playerId: trade.requestedPlayer, isActive: true }).populate('userId')
@@ -287,26 +257,73 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       if (!offeredUP || !requestedUP) {
         return res.status(400).json({ message: 'Players not available for trade' });
       }
+      
       const team1 = offeredUP.userId;
       const team2 = requestedUP.userId;
 
-      // Calculate purse adjustments
+      // 1. PURSE VALIDATION: Ensure both teams would not go negative after swap
       const offeredValue = Number(offeredUP.bidValue || 0);
       const requestedValue = Number(requestedUP.bidValue || 0);
-      
-      // Update user purses
       const team1Purse = Number(team1.purse || 0);
       const team2Purse = Number(team2.purse || 0);
       
       const newTeam1Purse = team1Purse + offeredValue - requestedValue;
       const newTeam2Purse = team2Purse + requestedValue - offeredValue;
       
-      // Validate purse adjustments
+      if (Number.isNaN(newTeam1Purse) || Number.isNaN(newTeam2Purse)) {
+        return res.status(400).json({ message: 'Invalid purse or bid values for trade validation.' });
+      }
       if (newTeam1Purse < 0 || newTeam2Purse < 0) {
-        return res.status(400).json({ message: 'Trade would result in negative purse balance' });
+        return res.status(400).json({ 
+          message: 'Trade would result in negative purse balance for one or both teams.' 
+        });
       }
 
-      // Swap owners
+      // 2. TYPE LIMITS VALIDATION: Check if trade violates team composition rules
+      const [team1Counts, team2Counts] = await Promise.all([
+        getUserTypeCounts(team1._id),
+        getUserTypeCounts(team2._id)
+      ]);
+      
+      // Get player types for validation
+      const [offeredPlayer, requestedPlayer] = await Promise.all([
+        Player.findById(trade.offeredPlayer),
+        Player.findById(trade.requestedPlayer)
+      ]);
+      
+      // Simulate post-trade counts
+      if (offeredPlayer?.type) team1Counts[offeredPlayer.type] = Math.max(0, (team1Counts[offeredPlayer.type] || 0) - 1);
+      if (requestedPlayer?.type) team1Counts[requestedPlayer.type] = (team1Counts[requestedPlayer.type] || 0) + 1;
+      if (requestedPlayer?.type) team2Counts[requestedPlayer.type] = Math.max(0, (team2Counts[requestedPlayer.type] || 0) - 1);
+      if (offeredPlayer?.type) team2Counts[offeredPlayer.type] = (team2Counts[offeredPlayer.type] || 0) + 1;
+
+      if (wouldExceedTypeLimits(team1Counts)) {
+        return res.status(400).json({ 
+          message: `Trade violates ${team1.teamName || 'Team 1'} type limits (Emerald/Sapphire caps).` 
+        });
+      }
+      if (wouldExceedTypeLimits(team2Counts)) {
+        return res.status(400).json({ 
+          message: `Trade violates ${team2.teamName || 'Team 2'} type limits (Emerald/Sapphire caps).` 
+        });
+      }
+
+      // 3. TRADE USAGE VALIDATION: Check if teams have trades remaining
+      if (Number(team1.tradesUsed || 0) >= 4) {
+        return res.status(400).json({ 
+          message: `${team1.teamName || 'Team 1'} has already used all 4 trades.` 
+        });
+      }
+      if (Number(team2.tradesUsed || 0) >= 4) {
+        return res.status(400).json({ 
+          message: `${team2.teamName || 'Team 2'} has already used all 4 trades.` 
+        });
+      }
+
+      // ALL VALIDATIONS PASSED - Proceed with trade execution
+      console.log('✅ Trade validation passed - executing trade...');
+
+      // Perform the swap same as players trade in players route
       offeredUP.userId = team2._id;
       requestedUP.userId = team1._id;
       offeredUP.updatedAt = new Date();
