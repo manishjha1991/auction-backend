@@ -22,6 +22,7 @@ const UserSchema = new mongoose.Schema({
   isActive:{ type: Boolean, default: true },
   abbreviation: { type: String, default: null },
   isLocked: { type: Boolean, default: false },
+  isTournamentReady: { type: Boolean, default: false }, // NEW: Only true when user is ready for tournament
 });
 
 module.exports = mongoose.model('User', UserSchema);

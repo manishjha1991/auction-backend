@@ -146,9 +146,20 @@ router.get("/:userId/details", async (req, res) => {
       .limit(5)
       .exec();
 
+    // Filter out fixtures where the opponent is not tournament ready
+    const filteredFixtures = [];
+    for (const fx of fixtures) {
+      const opponentTeamName = fx.team1 === user.teamName ? fx.team2 : fx.team1;
+      const opponentUser = await User.findOne({ teamName: opponentTeamName });
+      
+      // Only include fixtures where both teams are tournament ready
+      if (opponentUser && opponentUser.isTournamentReady) {
+        filteredFixtures.push(fx);
+      }
+    }
 
     // Transform fixture data into a simpler "score/fairness/result/opponentTeam" format
-    const lastFiveMatches = fixtures.map((fx) => {
+    const lastFiveMatches = filteredFixtures.map((fx) => {
       // Determine if user is team1 or team2 in this fixture
       const isTeam1 = (fx.team1 === user.teamName);
 
@@ -347,11 +358,12 @@ router.put('/update-points/:userId', async (req, res) => {
 
 router.get('/points-table', async (req, res) => {
   try {
-    // Fetch all users who have a valid team name, are active, and are NOT admins
+    // Fetch all users who have a valid team name, are active, are NOT admins, and are tournament ready
     const users = await User.find({ 
       teamName: { $exists: true, $ne: null, $ne: "NA" }, 
       isActive: true,
-      isAdmin: false // Exclude admin accounts
+      isAdmin: false, // Exclude admin accounts
+      isTournamentReady: true // NEW: Only include users who are tournament ready
     })
     .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage')
     .lean();

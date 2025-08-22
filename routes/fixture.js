@@ -10,10 +10,11 @@ const router = express.Router();
 
 router.get('/', async (req, res) => {
   try {
-    // 1) Fetch teams (users) that have a valid teamName and are active.
+    // 1) Fetch teams (users) that have a valid teamName, are active, and are tournament ready.
     const teams = await User.find({
       teamName: { $exists: true, $ne: null, $ne: 'NA' },
       isActive: true,
+      isTournamentReady: true // NEW: Only include users who are tournament ready
     })
       .populate('boughtPlayers')
       .select('teamName teamImage boughtPlayers'); 

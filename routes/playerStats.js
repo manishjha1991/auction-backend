@@ -22,6 +22,11 @@ router.get('/list', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
+    // Skip if user is not tournament ready
+    if (!user.isTournamentReady) {
+      return res.status(403).json({ message: 'User is not tournament ready' });
+    }
+
     const isAdmin = user.isAdmin;
     let playersToSend = [];
 
@@ -336,13 +341,20 @@ router.get('/stats-overview', async (req, res) => {
       .populate({
         path: 'userId',
         model: User,
-        select: 'name teamName isActive',
+        select: 'name teamName isActive isTournamentReady',
       })
       .populate({
         path: 'opponentUserId',
         model: User,
-        select: 'name teamName isActive',
+        select: 'name teamName isActive isTournamentReady',
       });
+
+    // Filter out stats from users who aren't tournament ready
+    const filteredStats = allStats.filter(stat => {
+      const userReady = stat.userId?.isTournamentReady;
+      const opponentReady = stat.opponentUserId?.isTournamentReady;
+      return userReady && opponentReady;
+    });
 
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
@@ -381,7 +393,7 @@ router.get('/stats-overview', async (req, res) => {
     const halfCenturies = [];
 
     // 5) Iterate over every stats doc, compute the relevant info
-    allStats.forEach((statDoc) => {
+    filteredStats.forEach((statDoc) => {
       const {
         playerId,
         userId,
@@ -519,7 +531,7 @@ router.get('/stats-overview', async (req, res) => {
     let leadingRunScorer = null;
     let maxRuns = 0;
 
-    for (let playerStat of allStats) {
+    for (let playerStat of filteredStats) {
       console.log(playerStat)
       const pid = String(playerStat.playerId._id);
       const playerName = playerStat.playerId?.name ?? 'Unknown Player';
@@ -545,7 +557,7 @@ router.get('/stats-overview', async (req, res) => {
 
     // Build map of player info
     const playerInfoMap = {};
-    allStats.forEach((statDoc) => {
+    filteredStats.forEach((statDoc) => {
       const pid = String(statDoc.playerId._id);
       if (!playerInfoMap[pid]) {
         playerInfoMap[pid] = {
