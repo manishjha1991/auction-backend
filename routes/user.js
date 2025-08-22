@@ -229,7 +229,6 @@ router.get("/purses", async (req, res) => {
           .sort({ bidAmount: -1 }) // Sort by highest bid amount
           .exec();
 
-
         // Group bids by playerId and select the highest bid for each player
         const highestBidsByPlayer = activeBids.reduce((acc, bid) => {
           if (!acc[bid.playerId._id] || acc[bid.playerId._id].bidAmount < bid.bidAmount) {
@@ -259,6 +258,7 @@ router.get("/purses", async (req, res) => {
         }));
 
         return {
+          id: user._id, // Add user ID for frontend reference
           userName: user.name,
           purseValue: parseFloat(user.purse.toString()), // Convert Decimal128 to Number
           players: [...soldPlayers, ...biddingPlayers], // Combine sold and bidding players
@@ -266,7 +266,65 @@ router.get("/purses", async (req, res) => {
       })
     );
 
-    res.status(200).json(userData);
+    // Now add bidding status information for each player
+    const enhancedUserData = userData.map((user) => {
+      console.log(`Processing user: ${user.userName} (ID: ${user.id})`);
+      
+      const enhancedPlayers = user.players.map((player) => {
+        if (!player.isBidOn) {
+          // Sold players don't need bidding status
+          return player;
+        }
+
+        console.log(`Processing bidding player: ${player.name} for user: ${user.userName}`);
+
+        // Find all users bidding on this player
+        const allBidders = userData
+          .filter(u => u.players.some(p => p.name === player.name && p.isBidOn))
+          .map(u => ({
+            userId: u.id,
+            userName: u.userName,
+            bidAmount: u.players.find(p => p.name === player.name && p.isBidOn)?.biddingPrice || 0
+          }))
+          .sort((a, b) => b.bidAmount - a.bidAmount); // Sort by bid amount (highest first)
+
+        console.log(`All bidders for ${player.name}:`, allBidders);
+
+        // Find current user's position
+        const currentUserIndex = allBidders.findIndex(bidder => bidder.userId === user.id);
+        const isHighest = currentUserIndex === 0;
+        const isSecondHighest = currentUserIndex === 1;
+
+        console.log(`User ${user.userName} position for ${player.name}: ${currentUserIndex + 1}, isHighest: ${isHighest}, isSecondHighest: ${isSecondHighest}`);
+
+        return {
+          ...player,
+          biddingStatus: {
+            isHighest,
+            isSecondHighest,
+            position: currentUserIndex + 1,
+            totalBidders: allBidders.length
+          }
+        };
+      });
+
+      return {
+        ...user,
+        players: enhancedPlayers
+      };
+    });
+
+    console.log('Final enhanced user data structure:');
+    enhancedUserData.forEach(user => {
+      console.log(`User: ${user.userName}`);
+      user.players.forEach(player => {
+        if (player.isBidOn) {
+          console.log(`  - ${player.name}: ${JSON.stringify(player.biddingStatus)}`);
+        }
+      });
+    });
+
+    res.status(200).json(enhancedUserData);
   } catch (error) {
     console.error("Error fetching user purse data:", error);
     res.status(500).json({ message: "Internal server error." });
