@@ -28,8 +28,16 @@ router.get('/feed', async (_req, res) => {
   try {
     const [trades, releases, picks, recentStats, fixtures] = await Promise.all([
       TradeRequest.find({})
-        .populate('fromUser', 'name teamName')
-        .populate('toUser', 'name teamName')
+        .populate({
+          path: 'fromUser',
+          select: 'name teamName isTournamentReady',
+          match: { isTournamentReady: true }
+        })
+        .populate({
+          path: 'toUser',
+          select: 'name teamName isTournamentReady',
+          match: { isTournamentReady: true }
+        })
         .populate('offeredPlayer', 'name type role')
         .populate('requestedPlayer', 'name type role')
         .sort({ updatedAt: -1 })
@@ -37,8 +45,9 @@ router.get('/feed', async (_req, res) => {
       ReleaseRequest.find({})
         .populate({
           path: 'user',
-          select: 'teamName',
-          model: 'User'
+          select: 'teamName isTournamentReady',
+          model: 'User',
+          match: { isTournamentReady: true }
         })
         .populate({
           path: 'player',
@@ -48,11 +57,19 @@ router.get('/feed', async (_req, res) => {
         .sort({ updatedAt: -1 })
         .limit(30),
       PickRequest.find({})
-        .populate('user', 'teamName')
+        .populate({
+          path: 'user',
+          select: 'teamName isTournamentReady',
+          match: { isTournamentReady: true }
+        })
         .populate('player', 'name type basePrice')
         .sort({ updatedAt: -1 })
         .limit(30),
-      PlayerStats.find({}).sort({ createdAt: -1 }).limit(50).lean(),
+      PlayerStats.find({}).populate({
+        path: 'userId',
+        select: 'isTournamentReady',
+        match: { isTournamentReady: true }
+      }).sort({ createdAt: -1 }).limit(50).lean(),
       Fixture.find({ isActive: true, winner: { $ne: null } }).sort({ createdAt: -1 }).limit(20).lean()
     ]);
 
@@ -82,6 +99,11 @@ router.get('/feed', async (_req, res) => {
 
     // Trades
     for (const t of trades) {
+      // Skip trades from non-tournament-ready users
+      if (!t.fromUser || !t.toUser) {
+        continue;
+      }
+      
       // Debug individual trade
       console.log('🔍 Processing trade:', {
         id: t._id,
@@ -204,6 +226,11 @@ router.get('/feed', async (_req, res) => {
 
     // Releases
     for (const r of releases) {
+      // Skip releases from non-tournament-ready users
+      if (!r.user) {
+        continue;
+      }
+      
       // Debug individual release with full object
       console.log('🔍 Processing release - FULL OBJECT:', JSON.stringify(r, null, 2));
       console.log('🔍 Processing release - ID:', r._id);
@@ -324,6 +351,11 @@ router.get('/feed', async (_req, res) => {
 
     // Picks
     for (const p of picks) {
+      // Skip picks from non-tournament-ready users
+      if (!p.user) {
+        continue;
+      }
+      
       // Debug individual pick
       console.log('🔍 Processing pick:', {
         id: p._id,
@@ -395,12 +427,17 @@ router.get('/feed', async (_req, res) => {
 
     // Stats highlights (centuries, 50+, 4-fers, all-round)
     for (const s of recentStats) {
+      // Skip stats from non-tournament-ready users
+      if (!s.userId || !s.userId.isTournamentReady) {
+        continue;
+      }
+      
       const runs = s.battingStats?.runs || 0;
       const wickets = s.bowlingStats?.wickets || 0;
       const ballsBowled = s.bowlingStats?.ballsBowled || 0;
       const [player, user, opp] = await Promise.all([
         Player.findById(s.playerId).select('name type').lean(),
-        User.findById(s.userId).select('teamName').lean(),
+        User.findById(s.userId._id || s.userId).select('teamName').lean(),
         s.opponentUserId ? User.findById(s.opponentUserId).select('teamName').lean() : Promise.resolve(null),
       ]);
 
@@ -496,9 +533,28 @@ router.get('/feed', async (_req, res) => {
 
     // Fixtures: generate result statements and praise MoM
     // ENHANCED: Now includes ALL fixtures (upcoming, live, completed) with sexy content
-    const allFixtures = await Fixture.find({ isActive: true }).sort({ createdAt: -1 }).limit(50).lean();
+    // Only include fixtures with tournament-ready teams
+    const allFixtures = await Fixture.find({ isActive: true })
+      .populate({
+        path: 'team1',
+        select: 'isTournamentReady',
+        match: { isTournamentReady: true }
+      })
+      .populate({
+        path: 'team2',
+        select: 'isTournamentReady',
+        match: { isTournamentReady: true }
+      })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
     
     for (const f of allFixtures) {
+      // Skip fixtures with non-tournament-ready teams
+      if (!f.team1 || !f.team2 || !f.team1.isTournamentReady || !f.team2.isTournamentReady) {
+        continue;
+      }
+      
       const now = new Date();
       const matchTime = new Date(f.matchTime);
       const isUpcoming = matchTime > now;
