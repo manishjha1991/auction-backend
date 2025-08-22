@@ -70,7 +70,7 @@ router.get('/feed', async (_req, res) => {
         select: 'isTournamentReady',
         match: { isTournamentReady: true }
       }).sort({ createdAt: -1 }).limit(50).lean(),
-      Fixture.find({ isActive: true, winner: { $ne: null } }).sort({ createdAt: -1 }).limit(20).lean()
+      Fixture.find({ isActive: true }).sort({ createdAt: -1 }).limit(20).lean()
     ]);
 
     // Test query to see raw data
@@ -533,28 +533,21 @@ router.get('/feed', async (_req, res) => {
 
     // Fixtures: generate result statements and praise MoM
     // ENHANCED: Now includes ALL fixtures (upcoming, live, completed) with sexy content
+    // Get all tournament-ready teams first
+    const tournamentReadyTeams = await User.find({ isTournamentReady: true }).select('teamName').lean();
+    const readyTeamNames = tournamentReadyTeams.map(u => u.teamName);
+    
     // Only include fixtures with tournament-ready teams
-    const allFixtures = await Fixture.find({ isActive: true })
-      .populate({
-        path: 'team1',
-        select: 'isTournamentReady',
-        match: { isTournamentReady: true }
-      })
-      .populate({
-        path: 'team2',
-        select: 'isTournamentReady',
-        match: { isTournamentReady: true }
-      })
+    const allFixtures = await Fixture.find({ 
+      isActive: true,
+      team1: { $in: readyTeamNames },
+      team2: { $in: readyTeamNames }
+    })
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
     
     for (const f of allFixtures) {
-      // Skip fixtures with non-tournament-ready teams
-      if (!f.team1 || !f.team2 || !f.team1.isTournamentReady || !f.team2.isTournamentReady) {
-        continue;
-      }
-      
       const now = new Date();
       const matchTime = new Date(f.matchTime);
       const isUpcoming = matchTime > now;
@@ -568,21 +561,21 @@ router.get('/feed', async (_req, res) => {
       
       if (isCompleted) {
         // COMPLETED MATCHES - Generate sexy result content with 100+ unique variations
-        const thriller = (() => {
-          if (!f.margin) return false;
-          const text = String(f.margin).toLowerCase();
-          return text.includes('wicket') && /\b(1|2)\b/.test(text) || text.includes('run') && /\b(1|2|3|4|5)\b/.test(text);
-        })();
-        const oneSided = (() => {
-          if (!f.margin) return false;
-          const text = String(f.margin).toLowerCase();
-          return text.includes('wicket') && /\b(8|9|10)\b/.test(text) || text.includes('run') && /\b(40|50|60|70|80|90|100)\b/.test(text);
-        })();
+      const thriller = (() => {
+        if (!f.margin) return false;
+        const text = String(f.margin).toLowerCase();
+        return text.includes('wicket') && /\b(1|2)\b/.test(text) || text.includes('run') && /\b(1|2|3|4|5)\b/.test(text);
+      })();
+      const oneSided = (() => {
+        if (!f.margin) return false;
+        const text = String(f.margin).toLowerCase();
+        return text.includes('wicket') && /\b(8|9|10)\b/.test(text) || text.includes('run') && /\b(40|50|60|70|80|90|100)\b/.test(text);
+      })();
         
-        const opponent = f.team1 === f.winner ? f.team2 : f.team1;
+      const opponent = f.team1 === f.winner ? f.team2 : f.team1;
         
         // 50+ UNIQUE THRILLER HEADLINES - No repetition, genuine sports journalism style
-        const titleVariantsThriller = [
+      const titleVariantsThriller = [
           `🔥 ${f.winner} edge past ${opponent} in a last-over thriller!`,
           `⚡ ${f.winner} clinch a nail-biter against ${opponent}!`,
           `💥 ${f.winner} prevail by a whisker vs ${opponent}!`,
@@ -641,7 +634,7 @@ router.get('/feed', async (_req, res) => {
         ];
         
         // 50+ UNIQUE ONE-SIDED HEADLINES - No repetition, genuine sports journalism style
-        const titleVariantsOneSided = [
+      const titleVariantsOneSided = [
           `💪 ${f.winner} crush ${opponent} in a one-sided affair!`,
           `🚀 ${f.winner} dominate ${opponent} from start to finish!`,
           `⚡ ${f.winner} steamroll ${opponent} with authority!`,
@@ -704,7 +697,7 @@ router.get('/feed', async (_req, res) => {
         ];
         
         // 50+ UNIQUE REGULAR WIN HEADLINES - No repetition, genuine sports journalism style
-        const titleVariantsRegular = [
+      const titleVariantsRegular = [
           `🏆 ${f.winner} beat ${opponent} in style!`,
           `⭐ ${f.winner} outplay ${opponent} convincingly!`,
           `🎉 ${f.winner} record solid win over ${opponent}!`,
@@ -765,10 +758,10 @@ router.get('/feed', async (_req, res) => {
         const scoreLine = (f.team1Score && f.team2Score) ? ` 📊 ${f.team1} ${f.team1Score} vs ${f.team2} ${f.team2Score}.` : '';
         
         // 30+ UNIQUE BODY VARIATIONS - No repetition, genuine sports journalism style
-        const bodyVariants = [
+      const bodyVariants = [
           `${f.margin ? `🏆 Won by ${f.margin}.` : ''}${scoreLine}${momText}`.trim(),
           `${scoreLine}${f.margin ? ` 🎯 Victory margin: ${f.margin}.` : ''}${momText}`.trim(),
-          `${momText}${scoreLine}${f.margin ? ` (${f.margin}).` : ''}`.trim(),
+        `${momText}${scoreLine}${f.margin ? ` (${f.margin}).` : ''}`.trim(),
           `${f.margin ? `🎉 Triumph by ${f.margin}!` : ''}${scoreLine}${momText}`.trim(),
           `${scoreLine}${f.margin ? ` 🏆 Winning margin: ${f.margin}.` : ''}${momText}`.trim(),
           `${momText}${scoreLine}${f.margin ? ` Final result: ${f.margin}.` : ''}`.trim(),
