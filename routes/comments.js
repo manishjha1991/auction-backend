@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Comment = require('../models/Comment');
-const PostLike = require('../models/PostLike');
+
 const User = require('../models/User');
 
 // Middleware to verify user authentication
