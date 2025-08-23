@@ -1,10 +1,15 @@
 require('dotenv').config();
+console.log("postLikeRoutes");
 const express = require('express');
+
 const mongoose = require('mongoose');
+
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
+
 const authRoutes = require('./routes/auth');
+
 const playerRoutes = require('./routes/players'); // Adjust the path as needed
 const userRoutes = require('./routes/user'); // Adjust the path
 const bidRoutes = require('./routes/bidRoutes'); // Import bid routes
@@ -20,6 +25,9 @@ const settingsRoutes = require('./routes/settings');
 const io = new Server(server, { cors: { origin: '*' } });
 const tradeRoutes = require('./routes/trades');
 const liveScoreRoutes = require('./routes/livescores');
+const commentRoutes = require('./routes/comments');
+const postLikeRoutes = require('./routes/postLikes');
+
 app.set('io', io);
 mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_12',useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB Connected'))
@@ -43,6 +51,8 @@ app.use('/api/news', newsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/trades', tradeRoutes);
 app.use('/api/live-scores', liveScoreRoutes);
+app.use('/api/comments', commentRoutes);
+app.use('/api/post-likes', postLikeRoutes);
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);

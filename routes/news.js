@@ -8,6 +8,8 @@ const Player = require('../models/Player');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
 const Fixture = require('../models/Fixture');
+const Comment = require('../models/Comment');
+const PostLike = require('../models/PostLike');
 
 function toCrores(amount) {
   const n = Number(amount || 0);
@@ -21,6 +23,72 @@ function pickVariant(seed, options) {
     return options[sum % options.length];
   } catch {
     return options[0];
+  }
+}
+
+// Function to get social data for news items
+async function getSocialData(newsItems) {
+  try {
+    const newsIds = newsItems.map(item => item.id);
+    
+    // Get likes and comments for all news items
+    const [likes, comments] = await Promise.all([
+      PostLike.find({ newsId: { $in: newsIds } }).populate('userId', 'name avatar'),
+      Comment.find({ newsId: { $in: newsIds } })
+        .populate('userId', 'name avatar')
+        .populate('replies.userId', 'name avatar')
+        .sort({ createdAt: -1 })
+    ]);
+    
+    // Group likes and comments by newsId
+    const likesByNewsId = {};
+    const commentsByNewsId = {};
+    
+    likes.forEach(like => {
+      if (!likesByNewsId[like.newsId]) {
+        likesByNewsId[like.newsId] = [];
+      }
+      likesByNewsId[like.newsId].push(like);
+    });
+    
+    comments.forEach(comment => {
+      if (!commentsByNewsId[comment.newsId]) {
+        commentsByNewsId[comment.newsId] = [];
+      }
+      commentsByNewsId[comment.newsId].push(comment);
+    });
+    
+    // Add social data to news items
+    return newsItems.map(item => {
+      const itemLikes = likesByNewsId[item.id] || [];
+      const itemComments = commentsByNewsId[item.id] || [];
+      
+      // Calculate like counts by type
+      const likeCounts = {
+        like: 0,
+        love: 0,
+        haha: 0,
+        wow: 0,
+        sad: 0,
+        angry: 0
+      };
+      
+      itemLikes.forEach(like => {
+        likeCounts[like.likeType]++;
+      });
+      
+      return {
+        ...item,
+        likes: itemLikes,
+        likeCount: itemLikes.length,
+        likeCounts,
+        comments: itemComments,
+        commentCount: itemComments.length
+      };
+    });
+  } catch (error) {
+    console.error('Error getting social data:', error);
+    return newsItems; // Return original items if social data fails
   }
 }
 
@@ -215,6 +283,7 @@ router.get('/feed', async (_req, res) => {
         body = pickVariant(`${fromTeam}-${toTeam}-withdrawn`, withdrawnBodyVariants);
       }
       news.push({
+        id: t._id, // Add the original trade document ID
         kind: 'trade',
         status,
         title,
@@ -337,6 +406,7 @@ router.get('/feed', async (_req, res) => {
       // Only add to news if we have a valid title and body
       if (title && body) {
         news.push({ 
+          id: r._id, // Add the original release document ID
           kind: 'release', 
           status: r.status, 
           title, 
@@ -416,6 +486,7 @@ router.get('/feed', async (_req, res) => {
       console.log('🔍 Pick title/body:', { title, body });
       
       news.push({ 
+        id: p._id, // Add the original pick document ID
         kind: 'pick', 
         status: p.status, 
         title, 
@@ -450,6 +521,7 @@ router.get('/feed', async (_req, res) => {
           `🚀 ${player?.name} - the ultimate all-rounder! ${runs} runs + ${wickets} wickets = game changer!`,
         ];
         news.push({
+          id: s._id, // Add the original stats document ID
           kind: 'stats',
           status: 'all_round',
           title: pickVariant(player?.name + runs + wickets, allRoundPhrases),
@@ -470,6 +542,7 @@ router.get('/feed', async (_req, res) => {
           `🏆 ${player?.name} - CENTURY MAKER! ${runs} runs of pure brilliance!`,
         ];
         news.push({
+          id: s._id, // Add the original stats document ID
           kind: 'stats',
           status: 'century',
           title: pickVariant(player?.name + runs, centuryPhrases),
@@ -486,6 +559,7 @@ router.get('/feed', async (_req, res) => {
           `⭐ ${player?.name} - HALF CENTURY HERO! ${runs} runs of quality!`,
         ];
         news.push({
+          id: s._id, // Add the original stats document ID
           kind: 'stats',
           status: 'fifty',
           title: pickVariant(player?.name + runs, fiftyPhrases),
@@ -505,6 +579,7 @@ router.get('/feed', async (_req, res) => {
           `🏆 ${player?.name} shows why they're the BOWLING KING! ${wickets} wickets!`,
         ];
         news.push({
+          id: s._id, // Add the original stats document ID
           kind: 'stats',
           status: 'fifer',
           title: pickVariant(player?.name + wickets, fiferPhrases),
@@ -521,6 +596,7 @@ router.get('/feed', async (_req, res) => {
           `⭐ ${player?.name} shows bowling mastery with ${wickets} wickets!`,
         ];
         news.push({
+          id: s._id, // Add the original stats document ID
           kind: 'stats',
           status: 'four_wkt',
           title: pickVariant(player?.name + wickets, fourWktPhrases),
@@ -1024,6 +1100,7 @@ router.get('/feed', async (_req, res) => {
       }
       
       news.push({
+        id: f._id, // Add the original fixture document ID
         kind: 'fixture',
         status,
         title,
@@ -1046,6 +1123,9 @@ router.get('/feed', async (_req, res) => {
     // Sort by timestamp desc and cap
     news.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     
+    // Get social data for news items
+    const newsWithSocialData = await getSocialData(news.slice(0, 100));
+    
     // Summary logging
     const tradeCount = news.filter(n => n.kind === 'trade').length;
     const releaseCount = news.filter(n => n.kind === 'release').length;
@@ -1062,7 +1142,7 @@ router.get('/feed', async (_req, res) => {
       fixtures: fixtureCount
     });
     
-    res.json({ items: news.slice(0, 100) });
+    res.json({ items: newsWithSocialData });
   } catch (e) {
     console.error('Error building news feed', e);
     res.status(500).json({ message: 'Internal server error' });
