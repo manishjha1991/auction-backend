@@ -46,14 +46,14 @@ router.post('/', async (req, res) => {
       fromUser: fromUserId,
       status: { $in: ['pending', 'counter', 'admin_pending'] }
     });
-    if (activeCount >= 4) {
+    if (activeCount >= 6) {
       return res.status(400).json({ message: 'Trade limit reached: You can have at most 4 active trade requests.' });
     }
 
     // Enforce total trade usage cap (no more than 4 COMPLETED trades overall for the proposer)
     // Only count trades that were actually completed, not pending ones
     const proposer = await User.findById(fromUserId).select('tradesUsed');
-    if (proposer && Number(proposer.tradesUsed || 0) >= 4) {
+    if (proposer && Number(proposer.tradesUsed || 0) >= 6) {
       return res.status(400).json({ message: 'You have used all 4 trades.' });
     }
 
@@ -309,12 +309,12 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       }
 
       // 3. TRADE USAGE VALIDATION: Check if teams have trades remaining
-      if (Number(team1.tradesUsed || 0) >= 4) {
+      if (Number(team1.tradesUsed || 0) >= 6) {
         return res.status(400).json({ 
           message: `${team1.teamName || 'Team 1'} has already used all 4 trades.` 
         });
       }
-      if (Number(team2.tradesUsed || 0) >= 4) {
+      if (Number(team2.tradesUsed || 0) >= 6) {
         return res.status(400).json({ 
           message: `${team2.teamName || 'Team 2'} has already used all 4 trades.` 
         });

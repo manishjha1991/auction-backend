@@ -13,7 +13,7 @@ router.post('/', async (req, res) => {
     if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
     // Guard: user cannot exceed 4 total trades (trade + release combined)
     const u = await (await require('../models/User')).findById(userId).select('tradesUsed');
-    if (u && Number(u.tradesUsed || 0) >= 4) {
+    if (u && Number(u.tradesUsed || 0) >= 6) {
       return res.status(400).json({ message: 'You have used all 4 trades.' });
     }
     const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true });
