@@ -304,9 +304,9 @@ router.post('/trade-player', async (req, res) => {
     }
 
     // Validate purse sufficiency
-    if (Number(team2.purse) < player1.bidValue || Number(team1.purse) < player2.bidValue) {
-      return res.status(400).json({ message: 'Insufficient purse for the trade.' });
-    }
+    // if (Number(team2.purse) < player1.bidValue || Number(team1.purse) < player2.bidValue) {
+    //   return res.status(400).json({ message: 'Insufficient purse for the trade.' });
+    // }
 
     // Update players
     player1.userId = team2._id;
