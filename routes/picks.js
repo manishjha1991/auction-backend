@@ -133,6 +133,11 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       if (soldResp.status >= 400) {
         return res.status(400).json({ message: 'Failed to finalize sale via sold API' });
       }
+      
+      // Ensure the player's isActive field is set to true when approved
+      // This makes the player active in the system after approval
+      await Player.findByIdAndUpdate(item.player, { isActive: true });
+      
       item.status = 'completed';
       item.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
     } else if (decision === 'reject') {
@@ -163,6 +168,8 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       if (player && player.currentBidder && player.currentBidder.toString() === item.user.toString()) {
         player.currentBid = null;
         player.currentBidder = null;
+        // Ensure player is available for future picks by setting isActive to false
+        player.isActive = false;
         await player.save();
       }
       
