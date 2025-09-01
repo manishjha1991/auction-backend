@@ -21,6 +21,7 @@ const UserSchema = new mongoose.Schema({
   fairnessPoint:{ type: Number, default: 0 },
   isActive:{ type: Boolean, default: true },
   abbreviation: { type: String, default: null },
+  group: { type: String, enum: ['A', 'B', null], default: null },
   isLocked: { type: Boolean, default: false },
   isTournamentReady: { type: Boolean, default: false }, // NEW: Only true when user is ready for tournament
 });

@@ -3,6 +3,7 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const router = express.Router();
 const User = require('../models/User'); // Adjust the path based on your project structure
+const AppSettings = require('../models/AppSettings');
 const Player = require('../models/Player');
 const Bid = require('../models/Bid');
 const Fixture = require('../models/Fixture');
@@ -486,6 +487,68 @@ router.get('/points-table', async (req, res) => {
   }
 });
 
+// GET: Points table grouped by user.group when AppSettings.pointsMode = 'groups'
+router.get('/points-table-grouped', async (_req, res) => {
+  try {
+    const settings = await AppSettings.findOne().lean();
+    const mode = settings?.pointsMode || 'overall';
+
+    // Always return grouped data shape, but if mode is overall, still compute groups by existing assignments
+    const users = await User.find({
+      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isActive: true,
+      isAdmin: false,
+      isTournamentReady: true
+    })
+      .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage group')
+      .lean();
+
+    const toRow = (u) => {
+      const matchesPlayed = u.matchesPlayed || 0;
+      const points = u.points || 0;
+      const fairness = u.fairnessPoint || 0;
+      const wins = Math.floor(points / 2);
+      const losses = matchesPlayed - wins;
+      return {
+        _id: u._id,
+        teamName: u.abbreviation,
+        matchesPlayed,
+        points,
+        wins,
+        losses,
+        fairness,
+        teamImage: u.teamImage || ''
+      };
+    };
+
+    const byGroup = { A: [], B: [] };
+    users.forEach((u) => {
+      if (u.group === 'A') byGroup.A.push(toRow(u));
+      else if (u.group === 'B') byGroup.B.push(toRow(u));
+      else {
+        // If unassigned, place into smaller group for balance
+        const target = byGroup.A.length <= byGroup.B.length ? 'A' : 'B';
+        byGroup[target].push(toRow(u));
+      }
+    });
+
+    const sortFn = (a, b) => {
+      if (b.points !== a.points) return b.points - a.points;
+      if (b.fairness !== a.fairness) return b.fairness - a.fairness;
+      if (a.matchesPlayed !== b.matchesPlayed) return a.matchesPlayed - b.matchesPlayed;
+      return a.teamName.localeCompare(b.teamName);
+    };
+
+    const rankify = (arr) => arr.sort(sortFn).map((t, i) => ({ rank: i + 1, ...t }));
+
+    const response = { mode, groups: { A: rankify(byGroup.A), B: rankify(byGroup.B) } };
+    res.json(response);
+  } catch (e) {
+    console.error('Error fetching grouped points table:', e);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 
 
 // GET: All Teams Information
@@ -493,12 +556,44 @@ router.get('/teams', async (req, res) => {
   try {
     // Fetch all users that have a team name.
     const teams = await User.find({ teamName: { $exists: true, $ne: null } })
-      .select('_id name email teamName teamImage purse isAdmin points matchesPlayed fairnessPoint')
+      .select('_id name email teamName teamImage purse isAdmin points matchesPlayed fairnessPoint group abbreviation')
       .lean();
 
     res.status(200).json({ teams });
   } catch (error) {
     console.error('Error fetching teams:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// GET: list teams with group assignments (admin helper)
+router.get('/groups', async (_req, res) => {
+  try {
+    const teams = await User.find({ teamName: { $exists: true, $ne: null }, isAdmin: false })
+      .select('_id teamName abbreviation group teamImage')
+      .lean();
+    res.json({ teams });
+  } catch (e) {
+    console.error('Error fetching groups list:', e);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// POST: set a team's group (A or B) - admin only via adminUserId
+router.post('/:userId/group', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { group, adminUserId } = req.body;
+    if (!['A', 'B', null].includes(group)) return res.status(400).json({ message: 'Invalid group' });
+    const admin = await User.findById(adminUserId);
+    if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update group' });
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    user.group = group;
+    await user.save();
+    res.json({ message: 'Group updated', userId, group });
+  } catch (e) {
+    console.error('Error updating group:', e);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
