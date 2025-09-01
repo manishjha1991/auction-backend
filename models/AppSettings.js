@@ -7,6 +7,8 @@ const AppSettingsSchema = new mongoose.Schema(
     enablePickButton: { type: Boolean, default: true },
     // overall: default single table; groups: split standings by groups
     pointsMode: { type: String, enum: ['overall', 'groups'], default: 'overall' },
+    // Number of games required before playoffs can be initialized
+    requiredGames: { type: Number, default: 12 },
   },
   { timestamps: true }
 );
