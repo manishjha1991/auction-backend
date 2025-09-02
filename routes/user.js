@@ -70,6 +70,8 @@ router.post('/login', async (req, res) => {
       teamName: user.teamName,
       playStationId: user.playStationId,
       isAdmin: user.isAdmin,
+      timezone: user.timezone,
+      streamLink: user.streamLink,
     });
   } catch (err) {
     console.error('Error logging in:', err);
@@ -87,6 +89,8 @@ router.get("/:userId/details", async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
+    
+    console.log('Fetched user timezone from database:', user.timezone);
 
     // 2) Fetch sold players for the user
     const soldPlayers = await UserPlayer.find({ userId, isActive: true })
@@ -194,6 +198,9 @@ router.get("/:userId/details", async (req, res) => {
         image: user.teamImage,
         teamName: user.teamName,
         purse: user.purse,
+        timezone: user.timezone,
+        streamLink: user.streamLink,
+        abbreviation: user.abbreviation,
       },
       soldPlayers: soldPlayers.map((sp) => ({
         player: sp.playerId,
@@ -340,7 +347,9 @@ router.get("/purses", async (req, res) => {
 router.put('/:id', upload.single('teamImage'), async (req, res) => {
   try {
     const userId = req.params.id;
-    const { name, teamName } = req.body;
+    const { name, teamName, timezone, streamLink, abbreviation } = req.body;
+    
+    console.log('Profile update request:', { userId, name, teamName, timezone, streamLink });
 
     // Validate inputs
     if (!name || !teamName) {
@@ -356,6 +365,26 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
     // Update user fields
     user.name = name;
     user.teamName = teamName;
+    
+    // Always update timezone if provided, even if it's an empty string
+    if (timezone !== undefined) {
+      user.timezone = timezone;
+      console.log('Updated timezone to:', timezone);
+    } else {
+      console.log('No timezone provided in request');
+    }
+
+    // Update streamLink if provided
+    if (streamLink !== undefined) {
+      user.streamLink = streamLink;
+      console.log('Updated streamLink to:', streamLink);
+    }
+
+    // Update abbreviation if provided
+    if (abbreviation !== undefined) {
+      user.abbreviation = abbreviation;
+      console.log('Updated abbreviation to:', abbreviation);
+    }
 
     // Update teamImage if provided
     if (req.file) {
@@ -364,6 +393,12 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
     }
 
     await user.save();
+    
+    console.log('User saved with timezone:', user.timezone);
+    
+    // Verify the timezone was actually saved by fetching from database
+    const savedUser = await User.findById(userId);
+    console.log('Verified timezone in database:', savedUser.timezone);
 
     res.status(200).json({
       message: 'Profile updated successfully.',
@@ -371,6 +406,9 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
         name: user.name,
         teamName: user.teamName,
         teamImage: user.teamImage,
+        timezone: user.timezone,
+        streamLink: user.streamLink,
+        abbreviation: user.abbreviation,
       },
     });
   } catch (error) {
@@ -379,6 +417,68 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
   }
 });
 
+// Admin route to update user timezone and streamLink
+router.put('/:userId/admin-update', async (req, res) => {
+  try {
+    const { timezone, streamLink, abbreviation } = req.body;
+    const userId = req.params.userId;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    // Update fields
+    if (timezone !== undefined) {
+      user.timezone = timezone;
+    }
+    if (streamLink !== undefined) {
+      user.streamLink = streamLink;
+    }
+    if (abbreviation !== undefined) {
+      user.abbreviation = abbreviation;
+    }
+
+    await user.save();
+
+    res.status(200).json({
+      message: 'User updated successfully.',
+      user: {
+        _id: user._id,
+        name: user.name,
+        teamName: user.teamName,
+        timezone: user.timezone,
+        streamLink: user.streamLink,
+        abbreviation: user.abbreviation
+      }
+    });
+  } catch (error) {
+    console.error('Error updating user:', error);
+    res.status(500).json({ message: 'An error occurred while updating the user.' });
+  }
+});
+
+// Get all users for admin
+router.get('/all', async (req, res) => {
+  try {
+    const users = await User.find({}, 'name email teamName timezone streamLink abbreviation isAdmin');
+    res.status(200).json(users);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ message: 'An error occurred while fetching users.' });
+  }
+});
+
+// Get teams for team directory
+router.get('/teams', async (req, res) => {
+  try {
+    const teams = await User.find({}, 'name teamName timezone streamLink abbreviation');
+    res.status(200).json(teams);
+  } catch (error) {
+    console.error('Error fetching teams:', error);
+    res.status(500).json({ message: 'An error occurred while fetching teams.' });
+  }
+});
 
 router.put('/update-points/:userId', async (req, res) => {
   const { userId } = req.params;

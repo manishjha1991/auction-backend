@@ -24,6 +24,8 @@ const UserSchema = new mongoose.Schema({
   group: { type: String, enum: ['A', 'B', null], default: null },
   isLocked: { type: Boolean, default: false },
   isTournamentReady: { type: Boolean, default: false }, // NEW: Only true when user is ready for tournament
+  timezone: { type: String, default: 'Asia/Kolkata' }, // User's preferred timezone
+  streamLink: { type: String, default: null }, // User's streaming URL
 });
 
 module.exports = mongoose.model('User', UserSchema);
