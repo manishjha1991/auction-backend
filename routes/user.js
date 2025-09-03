@@ -472,7 +472,12 @@ router.get('/all', async (req, res) => {
 // Get teams for team directory
 router.get('/teams', async (req, res) => {
   try {
-    const teams = await User.find({}, 'name teamName timezone streamLink abbreviation');
+    const teams = await User.find({ 
+      teamName: { $exists: true, $ne: null, $ne: "NA" }, 
+      isActive: true,
+      isAdmin: false, // Exclude admin accounts
+      isTournamentReady: true // Only include users who are tournament ready
+    }, 'name teamName timezone streamLink abbreviation teamImage');
     res.status(200).json(teams);
   } catch (error) {
     console.error('Error fetching teams:', error);
@@ -651,8 +656,8 @@ router.get('/points-table-grouped', async (_req, res) => {
 
 
 
-// GET: All Teams Information
-router.get('/teams', async (req, res) => {
+// GET: All Teams Information (Enhanced version with more data)
+router.get('/teams-detailed', async (req, res) => {
   try {
     // Fetch all users that have a team name.
     const teams = await User.find({ teamName: { $exists: true, $ne: null } })
