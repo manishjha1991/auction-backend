@@ -1,31 +1,59 @@
-// Database health check middleware
+// 🚀 Enhanced Database Health Check with Connection Pooling
 const mongoose = require('mongoose');
 
-// Connection health check
+// Connection health check with pool monitoring
 const checkDBHealth = (req, res, next) => {
   const connectionState = mongoose.connection.readyState;
+  const pool = mongoose.connection.db?.s?.topology?.s?.pool;
   
   // Connection states: 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
   if (connectionState !== 1) {
     console.warn(`⚠️ Database connection issue. State: ${connectionState}`);
     
-    // If connection is lost, try to reconnect
+    // If connection is lost, try to reconnect with optimized settings
     if (connectionState === 0) {
-      console.log('🔄 Attempting to reconnect to MongoDB...');
+      console.log('🔄 Attempting to reconnect to MongoDB with optimized pooling...');
       mongoose.connect(process.env.MONGO_URI, {
         dbName: 'cpl_12',
         useNewUrlParser: true,
         useUnifiedTopology: true,
-        serverSelectionTimeoutMS: 10000,
-        socketTimeoutMS: 45000,
-        connectTimeoutMS: 10000,
-        maxPoolSize: 10,
-        minPoolSize: 5,
-        bufferMaxEntries: 0,
-        bufferCommands: false
+        maxPoolSize: 20,
+        minPoolSize: 8,
+        maxIdleTimeMS: 60000,
+        maxConnecting: 5,
+        serverSelectionTimeoutMS: 15000,
+        socketTimeoutMS: 30000,
+        connectTimeoutMS: 15000,
+        retryWrites: true,
+        retryReads: true,
+        heartbeatFrequencyMS: 5000,
+        compressors: ['zlib'],
+        zlibCompressionLevel: 6,
+        directConnection: false,
+        monitorCommands: true,
+        maxStalenessSeconds: 90,
+        readPreference: 'primaryPreferred',
+        readConcern: { level: 'local' },
+        writeConcern: { w: 1, j: true }
       }).catch(err => {
         console.error('❌ Reconnection failed:', err.message);
       });
+    }
+  }
+  
+  // Monitor connection pool health
+  if (pool && connectionState === 1) {
+    const utilization = pool.totalConnectionCount > 0 ? 
+      (pool.checkedOutConnections / pool.totalConnectionCount) * 100 : 0;
+    
+    // Warn if pool utilization is high
+    if (utilization > 80) {
+      console.warn(`⚠️ High connection pool utilization: ${utilization.toFixed(1)}%`);
+    }
+    
+    // Warn if wait queue is growing
+    if (pool.waitQueueLength > 5) {
+      console.warn(`⚠️ Connection pool wait queue: ${pool.waitQueueLength} requests waiting`);
     }
   }
   

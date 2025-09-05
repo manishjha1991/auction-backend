@@ -29,53 +29,116 @@ const postLikeRoutes = require('./routes/postLikes');
 const playoffFixtureRoutes = require('./routes/playoffFixtures');
 const scheduleRoutes = require('./routes/schedules');
 const indexRoutes = require('./routes/indexes');
+const connectionPoolRoutes = require('./routes/connectionPool');
 
 app.set('io', io);
-// Enhanced MongoDB connection with timeout and retry settings
+// 🚀 OPTIMIZED MongoDB Connection Pooling Configuration
 const mongooseOptions = {
   dbName: 'cpl_12',
   useNewUrlParser: true,
   useUnifiedTopology: true,
-  // Connection timeout settings
-  serverSelectionTimeoutMS: 30000, // 30 seconds
-  socketTimeoutMS: 45000, // 45 seconds
-  connectTimeoutMS: 30000, // 30 seconds
-  // Retry settings
-  maxPoolSize: 10, // Maintain up to 10 socket connections
-  minPoolSize: 5, // Maintain a minimum of 5 socket connections
-  maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
-  // Heartbeat settings
-  heartbeatFrequencyMS: 10000, // Send a ping every 10 seconds
-  // Additional stability settings
+  
+  // ⚡ CONNECTION POOLING - Core Performance Settings
+  maxPoolSize: 20,        // Increased from 10 - Handle more concurrent users
+  minPoolSize: 8,         // Increased from 5 - Keep more connections ready
+  maxIdleTimeMS: 60000,   // Increased from 30s - Keep connections alive longer
+  maxConnecting: 5,       // Allow 5 simultaneous connection attempts
+  
+  // 🕐 TIMEOUT SETTINGS - Optimized for Performance
+  serverSelectionTimeoutMS: 15000,  // Reduced from 30s - Faster failover
+  socketTimeoutMS: 30000,           // Reduced from 45s - Faster response
+  connectTimeoutMS: 15000,          // Reduced from 30s - Faster connection
+  
+  // 🔄 RETRY & STABILITY
   retryWrites: true,
   retryReads: true,
-  // Compression
+  heartbeatFrequencyMS: 5000,       // Increased from 10s - More frequent health checks
+  
+  // 📊 PERFORMANCE OPTIMIZATIONS
   compressors: ['zlib'],
-  zlibCompressionLevel: 6
+  zlibCompressionLevel: 6,
+  directConnection: false,          // Use replica set for better performance
+  
+  // 🛡️ CONNECTION MONITORING
+  monitorCommands: true,            // Enable command monitoring for debugging
+  maxStalenessSeconds: 90,         // Read from secondary if primary is stale
+  
+  // ⚙️ ADVANCED SETTINGS
+  readPreference: 'primaryPreferred', // Read from primary, fallback to secondary
+  readConcern: { level: 'local' },    // Fastest read concern
+  writeConcern: { w: 1, j: true },    // Acknowledge writes, journaled
 };
 
 mongoose.connect(process.env.MONGO_URI, mongooseOptions)
   .then(() => {
     console.log('✅ MongoDB Connected Successfully');
     console.log('📊 Connection State:', mongoose.connection.readyState);
+    console.log('🏠 Host:', mongoose.connection.host);
+    console.log('🗄️ Database:', mongoose.connection.name);
+    console.log('⚡ Pool Size:', mongoose.connection.db?.s?.topology?.s?.pool?.totalConnectionCount || 'N/A');
   })
   .catch(err => {
     console.error('❌ MongoDB Connection Error:', err.message);
     console.error('🔧 Connection Options:', mongooseOptions);
   });
 
-// Handle connection events
+// 📊 CONNECTION MONITORING & METRICS
+let connectionStats = {
+  connected: 0,
+  disconnected: 0,
+  errors: 0,
+  queries: 0,
+  startTime: Date.now()
+};
+
 mongoose.connection.on('connected', () => {
+  connectionStats.connected++;
   console.log('🟢 Mongoose connected to MongoDB');
+  console.log('📈 Connection Stats:', connectionStats);
 });
 
 mongoose.connection.on('error', (err) => {
-  console.error('🔴 Mongoose connection error:', err);
+  connectionStats.errors++;
+  console.error('🔴 Mongoose connection error:', err.message);
+  console.log('📈 Connection Stats:', connectionStats);
 });
 
 mongoose.connection.on('disconnected', () => {
+  connectionStats.disconnected++;
   console.log('🟡 Mongoose disconnected from MongoDB');
+  console.log('📈 Connection Stats:', connectionStats);
 });
+
+// 🔍 QUERY MONITORING
+mongoose.connection.on('commandStarted', (event) => {
+  connectionStats.queries++;
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`🔍 Query: ${event.commandName} - ${event.databaseName}.${event.command.collection || 'unknown'}`);
+  }
+});
+
+mongoose.connection.on('commandSucceeded', (event) => {
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`✅ Query Success: ${event.commandName} - ${event.duration}ms`);
+  }
+});
+
+mongoose.connection.on('commandFailed', (event) => {
+  console.error(`❌ Query Failed: ${event.commandName} - ${event.failure.message}`);
+});
+
+// 📊 CONNECTION POOL MONITORING
+setInterval(() => {
+  const pool = mongoose.connection.db?.s?.topology?.s?.pool;
+  if (pool) {
+    console.log('🏊 Connection Pool Status:', {
+      totalConnections: pool.totalConnectionCount,
+      availableConnections: pool.availableConnectionCount,
+      checkedOutConnections: pool.checkedOutConnections,
+      waitQueueLength: pool.waitQueueLength
+    });
+  }
+}, 30000); // Every 30 seconds
 
 // Handle application termination
 process.on('SIGINT', async () => {
@@ -113,6 +176,7 @@ app.use('/api/playoff-fixtures', playoffFixtureRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/indexes', indexRoutes);
+app.use('/api/connection-pool', connectionPoolRoutes);
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
