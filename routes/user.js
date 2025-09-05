@@ -1,6 +1,7 @@
 const express = require('express');
 // Adjust the path based on your project structure
 const bcrypt = require('bcrypt');
+const mongoose = require('mongoose');
 const router = express.Router();
 const User = require('../models/User'); // Adjust the path based on your project structure
 const AppSettings = require('../models/AppSettings');
@@ -738,6 +739,321 @@ router.get('/:userId/roster', async (req, res) => {
   } catch (error) {
     console.error('Error fetching roster:', error);
     res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Cleanup boughtPlayers arrays endpoint
+router.post('/cleanup-bought-players', async (req, res) => {
+  try {
+    console.log('🔍 Starting boughtPlayers cleanup via API...\n');
+
+    // Get all users with boughtPlayers
+    const users = await User.find({ 
+      boughtPlayers: { $exists: true, $not: { $size: 0 } } 
+    }).select('_id teamName boughtPlayers');
+
+    console.log(`📊 Found ${users.length} users with boughtPlayers arrays`);
+
+    const cleanupResults = [];
+    let totalRemoved = 0;
+    let totalAdded = 0;
+    let totalFixed = 0;
+
+    for (const user of users) {
+      console.log(`\n👤 Processing ${user.teamName || 'Unknown'} (${user._id})`);
+      console.log(`   Current boughtPlayers: ${user.boughtPlayers.length} players`);
+
+      // Get all active players for this user from UserPlayer collection
+      const activeUserPlayers = await UserPlayer.find({ 
+        userId: user._id, 
+        isActive: true 
+      }).select('playerId').populate('playerId', 'name type role');
+
+      const activePlayerIds = activeUserPlayers.map(up => up.playerId._id.toString());
+      console.log(`   Active players from UserPlayer: ${activePlayerIds.length} players`);
+
+      // Find players that are in boughtPlayers but not in active UserPlayer entries
+      const invalidPlayerIds = user.boughtPlayers.filter(playerId => 
+        !activePlayerIds.includes(playerId.toString())
+      );
+
+      // Get details of invalid players for logging
+      const invalidPlayers = await Player.find({ 
+        _id: { $in: invalidPlayerIds } 
+      }).select('name type role');
+
+      // Find players that should be in boughtPlayers but aren't
+      const missingPlayerIds = activePlayerIds.filter(playerId => 
+        !user.boughtPlayers.some(bp => bp.toString() === playerId)
+      );
+
+      // Get details of missing players for logging
+      const missingPlayers = await Player.find({ 
+        _id: { $in: missingPlayerIds } 
+      }).select('name type role');
+
+      const userResult = {
+        userId: user._id,
+        teamName: user.teamName || 'Unknown',
+        beforeCleanup: {
+          boughtPlayersCount: user.boughtPlayers.length,
+          activePlayersCount: activePlayerIds.length,
+          invalidPlayers: invalidPlayers.map(p => ({
+            id: p._id,
+            name: p.name,
+            type: p.type,
+            role: p.role
+          })),
+          missingPlayers: missingPlayers.map(p => ({
+            id: p._id,
+            name: p.name,
+            type: p.type,
+            role: p.role
+          }))
+        },
+        afterCleanup: null,
+        changes: {
+          removed: 0,
+          added: 0,
+          needsCleanup: false
+        }
+      };
+
+      if (invalidPlayerIds.length > 0 || missingPlayerIds.length > 0) {
+        console.log(`   ❌ Found ${invalidPlayerIds.length} invalid players in boughtPlayers:`);
+        invalidPlayers.forEach(player => {
+          console.log(`      - ${player.name} (${player.type})`);
+        });
+
+        if (missingPlayerIds.length > 0) {
+          console.log(`   ⚠️  Found ${missingPlayerIds.length} active players missing from boughtPlayers:`);
+          missingPlayers.forEach(player => {
+            console.log(`      + ${player.name} (${player.type})`);
+          });
+        }
+
+        // Remove invalid players from boughtPlayers array
+        user.boughtPlayers = user.boughtPlayers.filter(playerId => 
+          activePlayerIds.includes(playerId.toString())
+        );
+
+        // Add missing players to boughtPlayers array
+        if (missingPlayerIds.length > 0) {
+          user.boughtPlayers.push(...missingPlayerIds.map(id => new mongoose.Types.ObjectId(id)));
+        }
+
+        await user.save();
+        
+        totalRemoved += invalidPlayerIds.length;
+        totalAdded += missingPlayerIds.length;
+        totalFixed++;
+        
+        console.log(`   ✅ Cleaned up ${invalidPlayerIds.length} invalid players`);
+        console.log(`   ✅ Added ${missingPlayerIds.length} missing players`);
+        console.log(`   📊 Updated boughtPlayers: ${user.boughtPlayers.length} players`);
+
+        userResult.afterCleanup = {
+          boughtPlayersCount: user.boughtPlayers.length,
+          activePlayersCount: activePlayerIds.length
+        };
+        userResult.changes.removed = invalidPlayerIds.length;
+        userResult.changes.added = missingPlayerIds.length;
+        userResult.changes.needsCleanup = true;
+      } else {
+        console.log(`   ✅ No cleanup needed - all players are valid`);
+        userResult.afterCleanup = {
+          boughtPlayersCount: user.boughtPlayers.length,
+          activePlayersCount: activePlayerIds.length
+        };
+        userResult.changes.needsCleanup = false;
+      }
+
+      cleanupResults.push(userResult);
+    }
+
+    // Final verification
+    console.log('\n🔍 Final verification...');
+    const finalUsers = await User.find({ 
+      boughtPlayers: { $exists: true, $not: { $size: 0 } } 
+    }).select('_id teamName boughtPlayers');
+
+    let allValid = true;
+    const verificationResults = [];
+
+    for (const user of finalUsers) {
+      const activeUserPlayers = await UserPlayer.find({ 
+        userId: user._id, 
+        isActive: true 
+      }).select('playerId');
+      
+      const activePlayerIds = activeUserPlayers.map(up => up.playerId.toString());
+      const boughtPlayerIds = user.boughtPlayers.map(bp => bp.toString());
+      
+      const invalidCount = boughtPlayerIds.filter(id => !activePlayerIds.includes(id)).length;
+      const missingCount = activePlayerIds.filter(id => !boughtPlayerIds.includes(id)).length;
+      
+      verificationResults.push({
+        teamName: user.teamName || 'Unknown',
+        invalidPlayers: invalidCount,
+        missingPlayers: missingCount,
+        isConsistent: invalidCount === 0 && missingCount === 0
+      });
+
+      if (invalidCount > 0 || missingCount > 0) {
+        console.log(`❌ ${user.teamName} still has ${invalidCount} invalid players and ${missingCount} missing players`);
+        allValid = false;
+      }
+    }
+
+    console.log('\n🎉 Cleanup completed!');
+    console.log(`📊 Summary:`);
+    console.log(`   - Users processed: ${users.length}`);
+    console.log(`   - Users fixed: ${totalFixed}`);
+    console.log(`   - Invalid players removed: ${totalRemoved}`);
+    console.log(`   - Missing players added: ${totalAdded}`);
+
+    if (allValid) {
+      console.log('✅ All boughtPlayers arrays are now consistent with UserPlayer data!');
+    } else {
+      console.log('⚠️  Some inconsistencies remain - manual review may be needed');
+    }
+
+    res.json({
+      success: true,
+      message: 'Cleanup completed successfully',
+      summary: {
+        usersProcessed: users.length,
+        usersFixed: totalFixed,
+        invalidPlayersRemoved: totalRemoved,
+        missingPlayersAdded: totalAdded,
+        allConsistent: allValid
+      },
+      results: cleanupResults,
+      verification: verificationResults
+    });
+
+  } catch (error) {
+    console.error('❌ Cleanup error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error during cleanup',
+      error: error.message 
+    });
+  }
+});
+
+// Check boughtPlayers status endpoint (read-only)
+router.get('/check-bought-players-status', async (req, res) => {
+  try {
+    console.log('🔍 Checking boughtPlayers status...\n');
+
+    const users = await User.find({ 
+      boughtPlayers: { $exists: true, $not: { $size: 0 } } 
+    }).select('_id teamName boughtPlayers');
+
+    const statusResults = [];
+    let totalUsers = 0;
+    let inconsistentUsers = 0;
+    let totalInvalidPlayers = 0;
+    let totalMissingPlayers = 0;
+
+    for (const user of users) {
+      totalUsers++;
+      
+      // Get active players for this user
+      const activeUserPlayers = await UserPlayer.find({ 
+        userId: user._id, 
+        isActive: true 
+      }).select('playerId').populate('playerId', 'name type role');
+      
+      const activePlayerIds = activeUserPlayers.map(up => up.playerId._id.toString());
+      
+      // Check for inconsistencies
+      const invalidPlayerIds = user.boughtPlayers.filter(playerId => 
+        !activePlayerIds.includes(playerId.toString())
+      );
+      
+      const missingPlayerIds = activePlayerIds.filter(playerId => 
+        !user.boughtPlayers.some(bp => bp.toString() === playerId)
+      );
+
+      // Get player details for invalid players
+      const invalidPlayers = await Player.find({ 
+        _id: { $in: invalidPlayerIds } 
+      }).select('name type role');
+
+      // Get player details for missing players
+      const missingPlayers = await Player.find({ 
+        _id: { $in: missingPlayerIds } 
+      }).select('name type role');
+
+      const userStatus = {
+        userId: user._id,
+        teamName: user.teamName || 'Unknown',
+        boughtPlayersCount: user.boughtPlayers.length,
+        activePlayersCount: activePlayerIds.length,
+        invalidPlayers: invalidPlayers.map(p => ({
+          id: p._id,
+          name: p.name,
+          type: p.type,
+          role: p.role
+        })),
+        missingPlayers: missingPlayers.map(p => ({
+          id: p._id,
+          name: p.name,
+          type: p.type,
+          role: p.role
+        })),
+        isConsistent: invalidPlayerIds.length === 0 && missingPlayerIds.length === 0
+      };
+
+      if (invalidPlayerIds.length > 0 || missingPlayerIds.length > 0) {
+        inconsistentUsers++;
+        totalInvalidPlayers += invalidPlayerIds.length;
+        totalMissingPlayers += missingPlayerIds.length;
+        
+        console.log(`❌ ${user.teamName || 'Unknown'}:`);
+        console.log(`   - Invalid players in boughtPlayers: ${invalidPlayerIds.length}`);
+        console.log(`   - Missing players from boughtPlayers: ${missingPlayerIds.length}`);
+        console.log(`   - Total boughtPlayers: ${user.boughtPlayers.length}`);
+        console.log(`   - Active UserPlayers: ${activePlayerIds.length}`);
+      }
+
+      statusResults.push(userStatus);
+    }
+
+    console.log(`\n📊 Summary:`);
+    console.log(`   - Total users with boughtPlayers: ${totalUsers}`);
+    console.log(`   - Users with inconsistencies: ${inconsistentUsers}`);
+    console.log(`   - Total invalid players: ${totalInvalidPlayers}`);
+    console.log(`   - Total missing players: ${totalMissingPlayers}`);
+
+    if (inconsistentUsers === 0) {
+      console.log(`\n✅ All boughtPlayers arrays are consistent!`);
+    } else {
+      console.log(`\n⚠️  ${inconsistentUsers} users need cleanup. Use /cleanup-bought-players endpoint to fix.`);
+    }
+
+    res.json({
+      success: true,
+      message: 'Status check completed',
+      summary: {
+        totalUsers,
+        inconsistentUsers,
+        totalInvalidPlayers,
+        totalMissingPlayers,
+        allConsistent: inconsistentUsers === 0
+      },
+      results: statusResults
+    });
+
+  } catch (error) {
+    console.error('❌ Status check error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error during status check',
+      error: error.message 
+    });
   }
 });
 
