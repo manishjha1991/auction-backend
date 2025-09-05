@@ -28,6 +28,7 @@ const commentRoutes = require('./routes/comments');
 const postLikeRoutes = require('./routes/postLikes');
 const playoffFixtureRoutes = require('./routes/playoffFixtures');
 const scheduleRoutes = require('./routes/schedules');
+const indexRoutes = require('./routes/indexes');
 
 app.set('io', io);
 mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_12',useNewUrlParser: true, useUnifiedTopology: true })
@@ -57,6 +58,7 @@ app.use('/api/post-likes', postLikeRoutes);
 app.use('/api/playoff-fixtures', playoffFixtureRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/indexes', indexRoutes);
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);

@@ -1,0 +1,760 @@
+const express = require('express');
+const mongoose = require('mongoose');
+const router = express.Router();
+
+// Import all models
+const User = require('../models/User');
+const Player = require('../models/Player');
+const Bid = require('../models/Bid');
+const BidHistory = require('../models/BidHistory');
+const Fixture = require('../models/Fixture');
+const PlayerStats = require('../models/PlayerStats');
+const TradeRequest = require('../models/TradeRequest');
+const ReleaseRequest = require('../models/ReleaseRequest');
+const PickRequest = require('../models/PickRequest');
+const Comment = require('../models/Comment');
+const PostLike = require('../models/PostLike');
+const Notification = require('../models/Notification');
+const Schedule = require('../models/Schedule');
+const UserPlayer = require('../models/UserPlayer');
+const PlayoffFixture = require('../models/PlayoffFixture');
+const AppSettings = require('../models/AppSettings');
+
+// Create all indexes for maximum performance
+router.post('/create-all', async (req, res) => {
+  try {
+    console.log('🚀 Starting comprehensive index creation...');
+    const results = {};
+
+    // 1. USER COLLECTION INDEXES
+    console.log('📊 Creating User indexes...');
+    results.users = await createUserIndexes();
+
+    // 2. PLAYER COLLECTION INDEXES
+    console.log('👥 Creating Player indexes...');
+    results.players = await createPlayerIndexes();
+
+    // 3. BID COLLECTION INDEXES
+    console.log('💰 Creating Bid indexes...');
+    results.bids = await createBidIndexes();
+
+    // 4. BID HISTORY COLLECTION INDEXES
+    console.log('📈 Creating BidHistory indexes...');
+    results.bidHistory = await createBidHistoryIndexes();
+
+    // 5. FIXTURE COLLECTION INDEXES
+    console.log('🏆 Creating Fixture indexes...');
+    results.fixtures = await createFixtureIndexes();
+
+    // 6. PLAYER STATS COLLECTION INDEXES
+    console.log('📊 Creating PlayerStats indexes...');
+    results.playerStats = await createPlayerStatsIndexes();
+
+    // 7. TRADE REQUEST COLLECTION INDEXES
+    console.log('🔄 Creating TradeRequest indexes...');
+    results.tradeRequests = await createTradeRequestIndexes();
+
+    // 8. RELEASE REQUEST COLLECTION INDEXES
+    console.log('🔓 Creating ReleaseRequest indexes...');
+    results.releaseRequests = await createReleaseRequestIndexes();
+
+    // 9. PICK REQUEST COLLECTION INDEXES
+    console.log('✋ Creating PickRequest indexes...');
+    results.pickRequests = await createPickRequestIndexes();
+
+    // 10. COMMENT COLLECTION INDEXES
+    console.log('💬 Creating Comment indexes...');
+    results.comments = await createCommentIndexes();
+
+    // 11. POST LIKE COLLECTION INDEXES
+    console.log('👍 Creating PostLike indexes...');
+    results.postLikes = await createPostLikeIndexes();
+
+    // 12. NOTIFICATION COLLECTION INDEXES
+    console.log('🔔 Creating Notification indexes...');
+    results.notifications = await createNotificationIndexes();
+
+    // 13. SCHEDULE COLLECTION INDEXES
+    console.log('📅 Creating Schedule indexes...');
+    results.schedules = await createScheduleIndexes();
+
+    // 14. USER PLAYER COLLECTION INDEXES
+    console.log('👤 Creating UserPlayer indexes...');
+    results.userPlayers = await createUserPlayerIndexes();
+
+    // 15. PLAYOFF FIXTURE COLLECTION INDEXES
+    console.log('🏆 Creating PlayoffFixture indexes...');
+    results.playoffFixtures = await createPlayoffFixtureIndexes();
+
+    // 16. APP SETTINGS COLLECTION INDEXES
+    console.log('⚙️ Creating AppSettings indexes...');
+    results.appSettings = await createAppSettingsIndexes();
+
+    console.log('✅ All indexes created successfully!');
+    res.status(200).json({
+      success: true,
+      message: 'All indexes created successfully!',
+      results
+    });
+
+  } catch (error) {
+    console.error('❌ Error creating indexes:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error creating indexes',
+      error: error.message
+    });
+  }
+});
+
+// USER COLLECTION INDEXES
+async function createUserIndexes() {
+  const indexes = [
+    // Basic indexes
+    { email: 1 }, // Unique index already exists
+    { teamName: 1 },
+    { isActive: 1 },
+    { isTournamentReady: 1 },
+    { isAdmin: 1 },
+    { group: 1 },
+    
+    // Compound indexes for common queries
+    { isActive: 1, isTournamentReady: 1 },
+    { isActive: 1, group: 1 },
+    { isTournamentReady: 1, group: 1 },
+    { isActive: 1, isTournamentReady: 1, group: 1 },
+    
+    // Points table queries
+    { points: -1, fairnessPoint: -1 },
+    { points: -1, matchesPlayed: 1 },
+    { group: 1, points: -1 },
+    { group: 1, points: -1, fairnessPoint: -1 },
+    
+    // Search and filtering
+    { teamName: 1, isActive: 1 },
+    { name: 1, isActive: 1 },
+    
+    // Admin queries
+    { isAdmin: 1, isActive: 1 },
+    { isLocked: 1, isActive: 1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await User.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// PLAYER COLLECTION INDEXES
+async function createPlayerIndexes() {
+  const indexes = [
+    // Basic indexes
+    { playerID: 1 }, // Unique index already exists
+    { isActive: 1 },
+    { isSold: 1 },
+    { type: 1 },
+    { role: 1 },
+    { tradeLocked: 1 },
+    
+    // Compound indexes for common queries
+    { isActive: 1, isSold: 1 },
+    { isActive: 1, type: 1 },
+    { isSold: 1, type: 1 },
+    { isActive: 1, isSold: 1, type: 1 },
+    
+    // Search queries
+    { name: 1, isActive: 1 },
+    { name: 1, isSold: 1 },
+    
+    // Sorting queries
+    { basePrice: 1 },
+    { overallScore: -1 },
+    { totalRuns: -1 },
+    { totalWickets: -1 },
+    
+    // Complex filtering
+    { isActive: 1, isSold: 1, type: 1, role: 1 },
+    { isActive: 1, tradeLocked: 1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await Player.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// BID COLLECTION INDEXES
+async function createBidIndexes() {
+  const indexes = [
+    // Basic indexes (some already exist)
+    { playerId: 1 },
+    { bidder: 1 },
+    { bidAmount: -1 },
+    { isActive: 1 },
+    { isBidOn: 1 },
+    { timestamp: -1 },
+    
+    // Compound indexes for common queries
+    { playerId: 1, isActive: 1 },
+    { playerId: 1, isBidOn: 1 },
+    { bidder: 1, isActive: 1 },
+    { bidder: 1, isBidOn: 1 },
+    { playerId: 1, bidAmount: -1 },
+    { bidder: 1, timestamp: -1 },
+    
+    // Complex queries
+    { playerId: 1, isActive: 1, isBidOn: 1 },
+    { bidder: 1, isActive: 1, isBidOn: 1 },
+    { playerId: 1, bidAmount: -1, isActive: 1 },
+    
+    // Sorting and filtering
+    { timestamp: -1, isActive: 1 },
+    { bidAmount: -1, timestamp: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await Bid.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// BID HISTORY COLLECTION INDEXES
+async function createBidHistoryIndexes() {
+  const indexes = [
+    { playerId: 1 },
+    { bidID: 1 },
+    { 'bids.userID': 1 },
+    { 'bids.createdAt': -1 },
+    { 'bids.status': 1 },
+    { playerId: 1, 'bids.createdAt': -1 },
+    { playerId: 1, 'bids.userID': 1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await BidHistory.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// FIXTURE COLLECTION INDEXES
+async function createFixtureIndexes() {
+  const indexes = [
+    // Basic indexes
+    { isActive: 1 },
+    { team1: 1 },
+    { team2: 1 },
+    { winner: 1 },
+    { group: 1 },
+    { matchType: 1 },
+    { createdAt: -1 },
+    
+    // Compound indexes for common queries
+    { isActive: 1, group: 1 },
+    { isActive: 1, matchType: 1 },
+    { group: 1, matchType: 1 },
+    { isActive: 1, group: 1, matchType: 1 },
+    
+    // Team-based queries
+    { team1: 1, isActive: 1 },
+    { team2: 1, isActive: 1 },
+    { team1: 1, team2: 1 },
+    { team1: 1, team2: 1, isActive: 1 },
+    
+    // Winner queries
+    { winner: 1, isActive: 1 },
+    { winner: 1, group: 1 },
+    
+    // Sorting queries
+    { createdAt: 1, isActive: 1 },
+    { createdAt: -1, isActive: 1 },
+    
+    // Complex filtering
+    { isActive: 1, group: 1, matchType: 1, createdAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await Fixture.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// PLAYER STATS COLLECTION INDEXES
+async function createPlayerStatsIndexes() {
+  const indexes = [
+    { playerId: 1 },
+    { userId: 1 },
+    { opponentUserId: 1 },
+    { createdAt: -1 },
+    { isMom: 1 },
+    
+    // Compound indexes
+    { playerId: 1, userId: 1 },
+    { playerId: 1, opponentUserId: 1 },
+    { userId: 1, opponentUserId: 1 },
+    { playerId: 1, createdAt: -1 },
+    { userId: 1, createdAt: -1 },
+    { isMom: 1, createdAt: -1 },
+    
+    // Complex queries
+    { playerId: 1, userId: 1, createdAt: -1 },
+    { userId: 1, isMom: 1, createdAt: -1 },
+    { playerId: 1, isMom: 1, createdAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await PlayerStats.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// TRADE REQUEST COLLECTION INDEXES
+async function createTradeRequestIndexes() {
+  const indexes = [
+    { fromUser: 1 },
+    { toUser: 1 },
+    { status: 1 },
+    { offeredPlayer: 1 },
+    { requestedPlayer: 1 },
+    { createdAt: -1 },
+    { updatedAt: -1 },
+    
+    // Compound indexes
+    { fromUser: 1, status: 1 },
+    { toUser: 1, status: 1 },
+    { fromUser: 1, toUser: 1 },
+    { status: 1, createdAt: -1 },
+    { fromUser: 1, createdAt: -1 },
+    { toUser: 1, createdAt: -1 },
+    
+    // Complex queries
+    { fromUser: 1, status: 1, createdAt: -1 },
+    { toUser: 1, status: 1, createdAt: -1 },
+    { status: 1, updatedAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await TradeRequest.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// RELEASE REQUEST COLLECTION INDEXES
+async function createReleaseRequestIndexes() {
+  const indexes = [
+    { user: 1 },
+    { player: 1 },
+    { status: 1 },
+    { createdAt: -1 },
+    { updatedAt: -1 },
+    
+    // Compound indexes
+    { user: 1, status: 1 },
+    { player: 1, status: 1 },
+    { user: 1, player: 1 },
+    { status: 1, createdAt: -1 },
+    { user: 1, createdAt: -1 },
+    { player: 1, createdAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await ReleaseRequest.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// PICK REQUEST COLLECTION INDEXES
+async function createPickRequestIndexes() {
+  const indexes = [
+    { user: 1 },
+    { player: 1 },
+    { status: 1 },
+    { createdAt: -1 },
+    { updatedAt: -1 },
+    
+    // Compound indexes
+    { user: 1, status: 1 },
+    { player: 1, status: 1 },
+    { user: 1, player: 1 },
+    { status: 1, createdAt: -1 },
+    { user: 1, createdAt: -1 },
+    { player: 1, createdAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await PickRequest.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// COMMENT COLLECTION INDEXES
+async function createCommentIndexes() {
+  const indexes = [
+    // Basic indexes (some already exist)
+    { newsId: 1, createdAt: -1 },
+    { userId: 1 },
+    
+    // Additional indexes
+    { newsId: 1 },
+    { createdAt: -1 },
+    { isEdited: 1 },
+    { 'replies.createdAt': -1 },
+    { 'replies.userId': 1 },
+    
+    // Compound indexes
+    { newsId: 1, userId: 1 },
+    { newsId: 1, isEdited: 1 },
+    { userId: 1, createdAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await Comment.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// POST LIKE COLLECTION INDEXES
+async function createPostLikeIndexes() {
+  const indexes = [
+    // Basic indexes (unique compound index already exists)
+    { newsId: 1, userId: 1 }, // Unique compound index
+    
+    // Additional indexes
+    { newsId: 1 },
+    { userId: 1 },
+    { likeType: 1 },
+    { createdAt: -1 },
+    
+    // Compound indexes
+    { newsId: 1, likeType: 1 },
+    { userId: 1, likeType: 1 },
+    { newsId: 1, createdAt: -1 },
+    { userId: 1, createdAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await PostLike.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// NOTIFICATION COLLECTION INDEXES
+async function createNotificationIndexes() {
+  const indexes = [
+    { recipient: 1 },
+    { sender: 1 },
+    { type: 1 },
+    { isRead: 1 },
+    { isActive: 1 },
+    { createdAt: -1 },
+    { scheduleId: 1 },
+    
+    // Compound indexes
+    { recipient: 1, isRead: 1 },
+    { recipient: 1, isActive: 1 },
+    { recipient: 1, type: 1 },
+    { recipient: 1, createdAt: -1 },
+    { isRead: 1, createdAt: -1 },
+    { isActive: 1, createdAt: -1 },
+    
+    // Complex queries
+    { recipient: 1, isRead: 1, createdAt: -1 },
+    { recipient: 1, isActive: 1, createdAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await Notification.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// SCHEDULE COLLECTION INDEXES
+async function createScheduleIndexes() {
+  const indexes = [
+    { requester: 1 },
+    { opponent: 1 },
+    { status: 1 },
+    { date: 1 },
+    { createdAt: -1 },
+    { updatedAt: -1 },
+    
+    // Compound indexes
+    { requester: 1, status: 1 },
+    { opponent: 1, status: 1 },
+    { requester: 1, opponent: 1 },
+    { status: 1, date: 1 },
+    { requester: 1, date: 1 },
+    { opponent: 1, date: 1 },
+    
+    // Complex queries
+    { requester: 1, status: 1, date: 1 },
+    { opponent: 1, status: 1, date: 1 },
+    { status: 1, createdAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await Schedule.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// USER PLAYER COLLECTION INDEXES
+async function createUserPlayerIndexes() {
+  const indexes = [
+    // Basic indexes (some already exist)
+    { playerId: 1, isActive: 1 },
+    { userId: 1, isActive: 1 },
+    { isActive: 1 },
+    
+    // Additional indexes
+    { playerId: 1 },
+    { userId: 1 },
+    { bidValue: -1 },
+    { createdAt: -1 },
+    { updatedAt: -1 },
+    
+    // Compound indexes
+    { playerId: 1, userId: 1 },
+    { userId: 1, bidValue: -1 },
+    { playerId: 1, bidValue: -1 },
+    { userId: 1, createdAt: -1 },
+    { playerId: 1, createdAt: -1 },
+    
+    // Complex queries
+    { userId: 1, isActive: 1, bidValue: -1 },
+    { playerId: 1, isActive: 1, bidValue: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await UserPlayer.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// PLAYOFF FIXTURE COLLECTION INDEXES
+async function createPlayoffFixtureIndexes() {
+  const indexes = [
+    { matchId: 1 },
+    { stage: 1 },
+    { team1: 1 },
+    { team2: 1 },
+    { isCompleted: 1 },
+    { date: -1 },
+    { createdAt: -1 },
+    
+    // Compound indexes
+    { stage: 1, isCompleted: 1 },
+    { team1: 1, team2: 1 },
+    { isCompleted: 1, date: -1 },
+    { stage: 1, date: -1 },
+    { matchId: 1, stage: 1 },
+    
+    // Complex queries
+    { stage: 1, isCompleted: 1, date: -1 },
+    { team1: 1, isCompleted: 1 },
+    { team2: 1, isCompleted: 1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await PlayoffFixture.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// APP SETTINGS COLLECTION INDEXES
+async function createAppSettingsIndexes() {
+  const indexes = [
+    { pointsMode: 1 },
+    { enableTradeCenter: 1 },
+    { enableUnsoldPlayers: 1 },
+    { enablePickButton: 1 },
+    { requiredGames: 1 },
+    { createdAt: -1 },
+    { updatedAt: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await AppSettings.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// Get index statistics
+router.get('/stats', async (req, res) => {
+  try {
+    const collections = [
+      'users', 'players', 'bids', 'bidhistories', 'fixtures', 
+      'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
+      'comments', 'postlikes', 'notifications', 'schedules', 
+      'userplayers', 'playofffixtures', 'appsettings'
+    ];
+
+    const stats = {};
+    
+    for (const collectionName of collections) {
+      try {
+        const collection = mongoose.connection.db.collection(collectionName);
+        const indexes = await collection.indexes();
+        stats[collectionName] = {
+          count: indexes.length,
+          indexes: indexes.map(idx => ({
+            name: idx.name,
+            key: idx.key,
+            unique: idx.unique || false,
+            sparse: idx.sparse || false
+          }))
+        };
+      } catch (error) {
+        stats[collectionName] = { error: error.message };
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      stats
+    });
+
+  } catch (error) {
+    console.error('Error getting index stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error getting index statistics',
+      error: error.message
+    });
+  }
+});
+
+// Drop all indexes (use with caution!)
+router.post('/drop-all', async (req, res) => {
+  try {
+    const collections = [
+      'users', 'players', 'bids', 'bidhistories', 'fixtures', 
+      'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
+      'comments', 'postlikes', 'notifications', 'schedules', 
+      'userplayers', 'playofffixtures', 'appsettings'
+    ];
+
+    const results = {};
+    
+    for (const collectionName of collections) {
+      try {
+        const collection = mongoose.connection.db.collection(collectionName);
+        const result = await collection.dropIndexes();
+        results[collectionName] = { status: 'dropped', result };
+      } catch (error) {
+        results[collectionName] = { status: 'error', error: error.message };
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'All indexes dropped successfully!',
+      results
+    });
+
+  } catch (error) {
+    console.error('Error dropping indexes:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error dropping indexes',
+      error: error.message
+    });
+  }
+});
+
+module.exports = router;
