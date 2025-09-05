@@ -7,7 +7,7 @@ const BidHistory = require("../models/BidHistory.js");
 const validateUser = require("../config/validation.js")
 const User = require("../models/User.js");
 const mongoose = require("mongoose");
-const Notification = require('../models/Notification'); // import the model
+const BidNotification = require('../models/BidNotification');
 // Place a bid
 router.put("/:playerId/bid", validateUser, async (req, res) => {
   const { playerId } = req.params;
@@ -202,22 +202,24 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
       secondBidder = activeBidders.find(id => id !== bidder.toString());
     }
 
-    // ** Emit a real-time notification **
-    // Store notification in DB
-    const newNotification = new Notification({
+    // ** Create and save bid notification **
+    const notificationData = {
       message: "A new bid has been placed",
       playername: player.name,
       currentBid: player.currentBid,
       currentBidder: user.name, // sending bidder's name
       secondBidder,
-      newBid,
+      newBid: bidAmount, // Use the bid amount instead of the entire bid object
       active: true
-    });
+    };
+
+    // Save notification to database
+    const newNotification = new BidNotification(notificationData);
     await newNotification.save();
 
     // Emit real-time notification
     const io = req.app.get('io');
-    io.emit('bid_notification', newNotification);
+    io.emit('bid_notification', notificationData);
     res.json({
       message: "Bid placed successfully",
       currentBid: player.currentBid,
@@ -358,10 +360,12 @@ router.post("/:playerId/exit", async (req, res) => {
       currentBidder: player.currentBidder,
       exitedUser: user.name
     };
-    // Save notification in DB
-    const newNotification = new Notification(notificationData);
+    // Save notification to database
+    const newNotification = new BidNotification(notificationData);
     await newNotification.save();
-    io.emit('bid_exit_notification', newNotification);
+
+    // Emit real-time notification
+    io.emit('bid_exit_notification', notificationData);
     res.json({
       message: "You have exited the bid successfully. Locked amount refunded.",
       currentBid: player.currentBid,
@@ -1072,16 +1076,19 @@ async function exitBidForUserOnPlayer(userId, playerId, io) {
   if (player.currentBids !== undefined) delete player.currentBids;
   await player.save();
 
-  // Emit notification
-  const note = new Notification({
+  // Create and save notification
+  const notificationData = {
     message:      `Bid exit: ${user.name} exited on ${player.name}.`,
     playername:   player.name,
     currentBid:   player.currentBid,
     currentBidder:player.currentBidder,
     exitedUser:   user.name
-  });
-  await note.save();
-  io.emit('bid_exit_notification', note);
+  };
+  
+  const newNotification = new BidNotification(notificationData);
+  await newNotification.save();
+  
+  io.emit('bid_exit_notification', notificationData);
 
   return {
     playerId,

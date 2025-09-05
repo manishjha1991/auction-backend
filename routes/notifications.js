@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Notification = require('../models/Notification');
+const BidNotification = require('../models/BidNotification');
 const Schedule = require('../models/Schedule');
 const { checkDBHealth, safeQuery } = require('../middleware/dbHealth');
 
@@ -55,9 +56,12 @@ router.get('/pending', async (req, res) => {
 // Get all notifications for a user
 router.get('/', async (req, res) => {
   try {
-    // For now, return empty array since we don't have auth middleware
-    const notifications = [];
-    res.json(notifications);
+    // Fetch bid notifications
+    const bidNotifications = await safeQuery(async () => {
+      return await BidNotification.find({ active: true }).sort({ createdAt: -1 });
+    }, []);
+    
+    res.json(bidNotifications);
   } catch (error) {
     console.error('Error fetching notifications:', error);
     res.status(500).json({ message: 'Server error' });
@@ -213,6 +217,17 @@ router.put('/:id/read', async (req, res) => {
     res.json({ message: 'Notification marked as read' });
   } catch (error) {
     console.error('Error marking notification as read:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Clear all bid notifications
+router.post('/clear', async (req, res) => {
+  try {
+    await BidNotification.updateMany({ active: true }, { active: false });
+    res.json({ message: 'All bid notifications cleared successfully' });
+  } catch (error) {
+    console.error('Error clearing bid notifications:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
