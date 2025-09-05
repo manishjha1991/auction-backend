@@ -14,6 +14,8 @@ const PlayerSchema = new mongoose.Schema({
     isSold: { type: Boolean, default: false },
     isActive:{ type: Boolean, default: true },
     tradeLocked: { type: Boolean, default: false },
+    currentTeam: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    teamOrder: { type: Number, default: 0 }, // Order within team for showcase
       // NEW FIELDS:
     totalRuns: { type: Number, default: 0 },
     totalWickets: { type: Number, default: 0 },

@@ -28,6 +28,7 @@ const commentRoutes = require('./routes/comments');
 const postLikeRoutes = require('./routes/postLikes');
 const playoffFixtureRoutes = require('./routes/playoffFixtures');
 const scheduleRoutes = require('./routes/schedules');
+const teamShowcaseRoutes = require('./routes/teamShowcase');
 const indexRoutes = require('./routes/indexes');
 
 
@@ -105,6 +106,7 @@ app.use('/api/comments', commentRoutes);
 app.use('/api/post-likes', postLikeRoutes);
 app.use('/api/playoff-fixtures', playoffFixtureRoutes);
 app.use('/api/schedules', scheduleRoutes);
+app.use('/api/team-showcase', teamShowcaseRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/indexes', indexRoutes);
 

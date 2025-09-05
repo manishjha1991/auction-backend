@@ -348,7 +348,7 @@ router.get("/purses", async (req, res) => {
 router.put('/:id', upload.single('teamImage'), async (req, res) => {
   try {
     const userId = req.params.id;
-    const { name, teamName, timezone, streamLink, abbreviation } = req.body;
+    const { name, teamName, timezone, streamLink, abbreviation, captain, viceCaptain, teamColor, teamBrief, trophiesWon, teamMotto } = req.body;
     
     console.log('Profile update request:', { userId, name, teamName, timezone, streamLink });
 
@@ -387,6 +387,26 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
       console.log('Updated abbreviation to:', abbreviation);
     }
 
+    // Update team showcase fields
+    if (captain !== undefined) {
+      user.captain = captain;
+    }
+    if (viceCaptain !== undefined) {
+      user.viceCaptain = viceCaptain;
+    }
+    if (teamColor !== undefined) {
+      user.teamColor = teamColor;
+    }
+    if (teamBrief !== undefined) {
+      user.teamBrief = teamBrief;
+    }
+    if (trophiesWon !== undefined) {
+      user.trophiesWon = parseInt(trophiesWon) || 0;
+    }
+    if (teamMotto !== undefined) {
+      user.teamMotto = teamMotto;
+    }
+
     // Update teamImage if provided
     if (req.file) {
       const teamImagePath = `/uploads/${req.file.filename}`; // Update with proper file storage path
@@ -418,10 +438,20 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
   }
 });
 
-// Admin route to update user timezone and streamLink
+// Admin route to update user timezone, streamLink, and team showcase fields
 router.put('/:userId/admin-update', async (req, res) => {
   try {
-    const { timezone, streamLink, abbreviation } = req.body;
+    const { 
+      timezone, 
+      streamLink, 
+      abbreviation, 
+      captain, 
+      viceCaptain, 
+      teamColor, 
+      teamBrief, 
+      trophiesWon, 
+      teamMotto 
+    } = req.body;
     const userId = req.params.userId;
 
     const user = await User.findById(userId);
@@ -429,7 +459,7 @@ router.put('/:userId/admin-update', async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Update fields
+    // Update basic fields
     if (timezone !== undefined) {
       user.timezone = timezone;
     }
@@ -438,6 +468,26 @@ router.put('/:userId/admin-update', async (req, res) => {
     }
     if (abbreviation !== undefined) {
       user.abbreviation = abbreviation;
+    }
+
+    // Update team showcase fields
+    if (captain !== undefined) {
+      user.captain = captain;
+    }
+    if (viceCaptain !== undefined) {
+      user.viceCaptain = viceCaptain;
+    }
+    if (teamColor !== undefined) {
+      user.teamColor = teamColor;
+    }
+    if (teamBrief !== undefined) {
+      user.teamBrief = teamBrief;
+    }
+    if (trophiesWon !== undefined) {
+      user.trophiesWon = parseInt(trophiesWon) || 0;
+    }
+    if (teamMotto !== undefined) {
+      user.teamMotto = teamMotto;
     }
 
     await user.save();
@@ -450,7 +500,13 @@ router.put('/:userId/admin-update', async (req, res) => {
         teamName: user.teamName,
         timezone: user.timezone,
         streamLink: user.streamLink,
-        abbreviation: user.abbreviation
+        abbreviation: user.abbreviation,
+        captain: user.captain,
+        viceCaptain: user.viceCaptain,
+        teamColor: user.teamColor,
+        teamBrief: user.teamBrief,
+        trophiesWon: user.trophiesWon,
+        teamMotto: user.teamMotto
       }
     });
   } catch (error) {
@@ -462,7 +518,7 @@ router.put('/:userId/admin-update', async (req, res) => {
 // Get all users for admin
 router.get('/all', async (req, res) => {
   try {
-    const users = await User.find({}, 'name email teamName timezone streamLink abbreviation isAdmin');
+    const users = await User.find({}, 'name email teamName timezone streamLink abbreviation isAdmin captain viceCaptain teamColor teamBrief trophiesWon teamMotto');
     res.status(200).json(users);
   } catch (error) {
     console.error('Error fetching users:', error);

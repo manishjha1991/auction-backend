@@ -4,6 +4,7 @@ const UserPlayerSchema = new mongoose.Schema({
   playerId: { type: mongoose.Schema.Types.ObjectId, ref: "Player", required: true },
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   bidValue: { type: Number, required: true },
+  teamOrder: { type: Number, default: 0 }, // Order within team for showcase
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
   isActive: { type: Boolean, default: true }, // Admin field added

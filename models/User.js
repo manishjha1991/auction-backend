@@ -26,6 +26,14 @@ const UserSchema = new mongoose.Schema({
   isTournamentReady: { type: Boolean, default: false }, // NEW: Only true when user is ready for tournament
   timezone: { type: String, default: 'Asia/Kolkata' }, // User's preferred timezone
   streamLink: { type: String, default: null }, // User's streaming URL
+  
+  // Team showcase fields
+  captain: { type: String, default: null }, // Captain player name
+  viceCaptain: { type: String, default: null }, // Vice-captain player name
+  teamColor: { type: String, default: '#3B82F6' }, // Team primary color
+  teamBrief: { type: String, default: 'A formidable team ready to conquer the tournament!' }, // 2-line team description
+  trophiesWon: { type: Number, default: 0 }, // Number of trophies won
+  teamMotto: { type: String, default: 'Victory through Unity' }, // Team motto
 });
 
 module.exports = mongoose.model('User', UserSchema);
