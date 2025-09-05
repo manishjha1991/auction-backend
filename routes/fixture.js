@@ -3,6 +3,7 @@ const Fixture = require('../models/Fixture');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
+// Cache middleware removed for simplicity
 
 const router = express.Router();
 

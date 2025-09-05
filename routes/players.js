@@ -6,6 +6,7 @@ const Bid = require("../models/Bid");
 const User = require("../models/User");
 const UserPlayer = require("../models/UserPlayer");
 const ReleaseRequest = require("../models/ReleaseRequest");
+// Cache middleware removed for simplicity
 const router = express.Router();
 const formatPrice = (value) => {
   if (value >= 10000000) {
@@ -45,6 +46,8 @@ router.post('/player', upload.single('profilePicture'), async (req, res) => {
 
     await newPlayer.save();
 
+    // Cache invalidation removed
+
     res.status(201).json({ message: 'Player created successfully', player: newPlayer });
   } catch (error) {
     console.error(error);
@@ -73,6 +76,8 @@ router.put('/player/:playerID', upload.single('profilePicture'), async (req, res
       return res.status(404).json({ message: 'Player not found' });
     }
 
+    // Cache invalidation removed
+
     res.status(200).json({ message: 'Player updated successfully', player: updatedPlayer });
   } catch (error) {
     console.error(error);
@@ -90,6 +95,8 @@ router.delete('/player/:playerID', async (req, res) => {
     if (!deletedPlayer) {
       return res.status(404).json({ message: 'Player not found' });
     }
+
+    // Cache invalidation removed
 
     res.status(200).json({ message: 'Player deleted successfully' });
   } catch (error) {
@@ -333,6 +340,8 @@ router.post('/trade-player', async (req, res) => {
       team2.save()
     ]);
 
+    // Cache invalidation removed
+
     res.json({ message: 'Trade completed successfully.' });
   } catch (error) {
     console.error('Error trading players:', error);
@@ -385,6 +394,8 @@ router.post('/release-player', async (req, res) => {
       rr.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note: 'Released by admin endpoint' };
       await rr.save();
     }
+
+    // Cache invalidation removed
 
     return res.json({ message: 'Player released successfully' });
   } catch (e) {

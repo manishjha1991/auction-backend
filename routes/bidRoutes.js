@@ -8,6 +8,7 @@ const validateUser = require("../config/validation.js")
 const User = require("../models/User.js");
 const mongoose = require("mongoose");
 const Notification = require('../models/Notification'); // import the model
+// Cache middleware removed for simplicity
 // Place a bid
 router.put("/:playerId/bid", validateUser, async (req, res) => {
   const { playerId } = req.params;
@@ -181,6 +182,8 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     });
     await newBid.save();
 
+    // Cache invalidation removed
+
     // 12. Update the user's currentBids
     if (currentBidOnPlayer) {
       // They previously had locked X for this same player
@@ -337,6 +340,8 @@ router.post("/:playerId/exit", async (req, res) => {
     // Mark the user's bid for this player as inactive
     await Bid.updateMany({ playerId, bidder: userId }, { $set: { isActive: false, isBidOn: false } });
 
+    // Cache invalidation removed
+
     // Update the player's current bid and bidder
     const otherBidders = activeBids.filter((bid) => bid.bidder.toString() !== userId);
     if (otherBidders.length > 0) {
@@ -462,6 +467,8 @@ router.post("/bid/sold", async (req, res) => {
           isActive: true,
         });
         await newUserPlayer.save();
+
+        // Cache invalidation removed
 
         // 8. Log the sold bid in the BidHistory schema
         const bidHistory = await BidHistory.findOne({ playerId: pid });
@@ -630,6 +637,8 @@ router.post("/release-player", async (req, res) => {
     player.currentBid = player.basePrice; // Reset bidding to start from the base price
     player.currentBidder = null; // Clear the current bidder
     await player.save();
+
+    // Cache invalidation removed
 
     // Mark the UserPlayer entry as inactive
     userPlayerEntry.isActive = false;
