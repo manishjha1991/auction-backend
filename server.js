@@ -30,7 +30,7 @@ const playoffFixtureRoutes = require('./routes/playoffFixtures');
 const scheduleRoutes = require('./routes/schedules');
 
 app.set('io', io);
-mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_13',useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_12',useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB Connected'))
   .catch(err => console.error(err));
 app.use('/uploads', express.static('uploads'));
