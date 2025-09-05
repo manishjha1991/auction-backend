@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const Notification = require('../models/Notification');
 const Schedule = require('../models/Schedule');
+const { checkDBHealth, safeQuery } = require('../middleware/dbHealth');
+
+// Apply database health check to all routes
+router.use(checkDBHealth);
 
 // Get pending notifications for a user
 router.get('/pending', async (req, res) => {
@@ -13,11 +17,13 @@ router.get('/pending', async (req, res) => {
       return res.status(400).json({ message: 'Team name is required' });
     }
 
-    const notifications = await Notification.find({
-      recipient: teamName,
-      isActive: true,
-      isRead: false
-    }).populate('scheduleId').sort({ createdAt: -1 });
+    const notifications = await safeQuery(async () => {
+      return await Notification.find({
+        recipient: teamName,
+        isActive: true,
+        isRead: false
+      }).populate('scheduleId').sort({ createdAt: -1 });
+    }, []);
     
     // Ensure scheduleId is populated or use metadata as fallback
     const processedNotifications = notifications.map(notification => {

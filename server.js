@@ -31,9 +31,63 @@ const scheduleRoutes = require('./routes/schedules');
 const indexRoutes = require('./routes/indexes');
 
 app.set('io', io);
-mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_12',useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log('MongoDB Connected'))
-  .catch(err => console.error(err));
+// Enhanced MongoDB connection with timeout and retry settings
+const mongooseOptions = {
+  dbName: 'cpl_12',
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  // Connection timeout settings
+  serverSelectionTimeoutMS: 30000, // 30 seconds
+  socketTimeoutMS: 45000, // 45 seconds
+  connectTimeoutMS: 30000, // 30 seconds
+  // Retry settings
+  maxPoolSize: 10, // Maintain up to 10 socket connections
+  minPoolSize: 5, // Maintain a minimum of 5 socket connections
+  maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
+  // Heartbeat settings
+  heartbeatFrequencyMS: 10000, // Send a ping every 10 seconds
+  // Additional stability settings
+  retryWrites: true,
+  retryReads: true,
+  // Compression
+  compressors: ['zlib'],
+  zlibCompressionLevel: 6
+};
+
+mongoose.connect(process.env.MONGO_URI, mongooseOptions)
+  .then(() => {
+    console.log('✅ MongoDB Connected Successfully');
+    console.log('📊 Connection State:', mongoose.connection.readyState);
+  })
+  .catch(err => {
+    console.error('❌ MongoDB Connection Error:', err.message);
+    console.error('🔧 Connection Options:', mongooseOptions);
+  });
+
+// Handle connection events
+mongoose.connection.on('connected', () => {
+  console.log('🟢 Mongoose connected to MongoDB');
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('🔴 Mongoose connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('🟡 Mongoose disconnected from MongoDB');
+});
+
+// Handle application termination
+process.on('SIGINT', async () => {
+  try {
+    await mongoose.connection.close();
+    console.log('🔌 MongoDB connection closed through app termination');
+    process.exit(0);
+  } catch (err) {
+    console.error('❌ Error closing MongoDB connection:', err);
+    process.exit(1);
+  }
+});
 app.use('/uploads', express.static('uploads'));
 app.use(cors());
 app.use(express.json());
