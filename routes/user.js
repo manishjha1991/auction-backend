@@ -551,7 +551,7 @@ router.get('/points-table', async (req, res) => {
 
       return {
         _id: user._id,
-        teamName: user.abbreviation,
+        teamName: user.abbreviation || user.teamName || 'Unknown', // Fallback to teamName if abbreviation is null
         matchesPlayed,
         points,
         wins,
@@ -576,7 +576,9 @@ router.get('/points-table', async (req, res) => {
         return a.matchesPlayed - b.matchesPlayed;
       }
       // Priority 4: Alphabetical by team name (ascending)
-      return a.teamName.localeCompare(b.teamName);
+      const teamNameA = a.teamName || '';
+      const teamNameB = b.teamName || '';
+      return teamNameA.localeCompare(teamNameB);
     });
 
     // Add rank to each team
@@ -616,7 +618,7 @@ router.get('/points-table-grouped', async (_req, res) => {
       const losses = matchesPlayed - wins;
       return {
         _id: u._id,
-        teamName: u.abbreviation,
+        teamName: u.abbreviation || u.teamName || 'Unknown', // Fallback to teamName if abbreviation is null
         matchesPlayed,
         points,
         wins,
@@ -641,7 +643,10 @@ router.get('/points-table-grouped', async (_req, res) => {
       if (b.points !== a.points) return b.points - a.points;
       if (b.fairness !== a.fairness) return b.fairness - a.fairness;
       if (a.matchesPlayed !== b.matchesPlayed) return a.matchesPlayed - b.matchesPlayed;
-      return a.teamName.localeCompare(b.teamName);
+      // Add null checks for teamName comparison
+      const teamNameA = a.teamName || '';
+      const teamNameB = b.teamName || '';
+      return teamNameA.localeCompare(teamNameB);
     };
 
     const rankify = (arr) => arr.sort(sortFn).map((t, i) => ({ rank: i + 1, ...t }));

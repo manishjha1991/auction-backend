@@ -333,6 +333,15 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       team1.purse = newTeam1Purse;
       team2.purse = newTeam2Purse;
 
+      // CRITICAL FIX: Update boughtPlayers arrays
+      // Remove offered player from team1 and add requested player
+      team1.boughtPlayers = team1.boughtPlayers.filter(id => !id.equals(trade.offeredPlayer));
+      team1.boughtPlayers.push(trade.requestedPlayer);
+      
+      // Remove requested player from team2 and add offered player
+      team2.boughtPlayers = team2.boughtPlayers.filter(id => !id.equals(trade.requestedPlayer));
+      team2.boughtPlayers.push(trade.offeredPlayer);
+
       // Save all updates
       await Promise.all([
         offeredUP.save(),

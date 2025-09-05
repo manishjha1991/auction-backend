@@ -369,6 +369,15 @@ router.post('/release-player', async (req, res) => {
     up.updatedAt = new Date();
     await up.save();
 
+    // CRITICAL FIX: Remove player from user's boughtPlayers array
+    try {
+      await User.findByIdAndUpdate(userId, {
+        $pull: { boughtPlayers: playerId }
+      });
+    } catch (userUpdateError) {
+      console.error('Error removing player from boughtPlayers:', userUpdateError);
+    }
+
     // If a pending release request exists, mark it approved
     const rr = await ReleaseRequest.findOne({ user: userId, player: playerId, status: { $in: ['pending', 'admin_pending'] } });
     if (rr) {
