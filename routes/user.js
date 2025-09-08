@@ -83,10 +83,15 @@ router.post('/login', async (req, res) => {
 // routes/user.js (example)
 router.get("/:userId/details", async (req, res) => {
   const { userId } = req.params;
+  const startTime = Date.now();
 
   try {
+    console.log(`🚀 Starting user details API for user: ${userId}`);
+    
     // 1) Fetch user data
+    const userStart = Date.now();
     const user = await User.findById(userId);
+    console.log(`⏱️ User fetch took: ${Date.now() - userStart}ms`);
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
@@ -94,19 +99,46 @@ router.get("/:userId/details", async (req, res) => {
     console.log('Fetched user timezone from database:', user.timezone);
 
     // 2) Fetch sold players for the user
+    const soldPlayersStart = Date.now();
     const soldPlayers = await UserPlayer.find({ userId, isActive: true })
       .populate("playerId", "name type role basePrice over overallScore totalRuns totalWickets")
       .exec();
+    console.log(`⏱️ Sold players fetch took: ${Date.now() - soldPlayersStart}ms`);
 
     // 3) Fetch all bids for the user
+    const bidsStart = Date.now();
     const userBids = await Bid.find({ bidder: userId })
       .populate("playerId", "name type role basePrice")
       .sort({ timestamp: -1 })
       .exec();
+    console.log(`⏱️ User bids fetch took: ${Date.now() - bidsStart}ms`);
 
     // Separate active and past bids
     const activeBids = [];
     const pastBids = [];
+
+    // OPTIMIZATION: Get all past bid player IDs first
+    const pastBidPlayerIds = userBids
+      .filter(bid => !(bid.isBidOn && bid.isActive))
+      .map(bid => bid.playerId._id);
+
+    // OPTIMIZATION: Get all highest bids in ONE query instead of N queries
+    const highestBidsStart = Date.now();
+    const highestBids = await Bid.aggregate([
+      { $match: { playerId: { $in: pastBidPlayerIds } } },
+      { $sort: { playerId: 1, bidAmount: -1 } },
+      { $group: {
+        _id: "$playerId",
+        highestBid: { $first: "$$ROOT" }
+      }}
+    ]);
+    console.log(`⏱️ Highest bids aggregation took: ${Date.now() - highestBidsStart}ms`);
+
+    // Create a map for O(1) lookup
+    const highestBidMap = new Map();
+    highestBids.forEach(item => {
+      highestBidMap.set(item._id.toString(), item.highestBid);
+    });
 
     for (const bid of userBids) {
       if (bid.isBidOn && bid.isActive) {
@@ -117,15 +149,11 @@ router.get("/:userId/details", async (req, res) => {
           status: "Active",
         });
       } else {
-        // Past bids: Check if the user is the highest bidder
-        const highestBid = await Bid.findOne({ playerId: bid.playerId._id })
-          .sort({ bidAmount: -1 })
-          .exec();
-
-        const status =
-          highestBid && highestBid.bidder.toString() === userId.toString()
-            ? "Won"
-            : "Lost";
+        // Past bids: Use the pre-fetched highest bid data
+        const highestBid = highestBidMap.get(bid.playerId._id.toString());
+        const status = highestBid && highestBid.bidder.toString() === userId.toString()
+          ? "Won"
+          : "Lost";
 
         pastBids.push({
           player: bid.playerId,
@@ -141,6 +169,7 @@ router.get("/:userId/details", async (req, res) => {
     // 4) Fetch last 5 fixtures (matches) for this user's team
     //    We assume user.teamName matches fixture.team1 or fixture.team2
     // In your route or controller:
+    const fixturesStart = Date.now();
     let fixtures = await Fixture.find({
       $or: [
         { team1: user.teamName },
@@ -151,18 +180,29 @@ router.get("/:userId/details", async (req, res) => {
       .sort({ createdAt: 1 })
       .limit(5)
       .exec();
+    console.log(`⏱️ Fixtures fetch took: ${Date.now() - fixturesStart}ms`);
+
+    // OPTIMIZATION: Get all opponent team names first
+    const opponentTeamNames = fixtures.map(fx => 
+      fx.team1 === user.teamName ? fx.team2 : fx.team1
+    );
+
+    // OPTIMIZATION: Get all opponent users in ONE query instead of N queries
+    const opponentUsersStart = Date.now();
+    const opponentUsers = await User.find({ 
+      teamName: { $in: opponentTeamNames },
+      isTournamentReady: true 
+    }).select('teamName');
+    console.log(`⏱️ Opponent users fetch took: ${Date.now() - opponentUsersStart}ms`);
+
+    // Create a set for O(1) lookup
+    const tournamentReadyTeams = new Set(opponentUsers.map(u => u.teamName));
 
     // Filter out fixtures where the opponent is not tournament ready
-    const filteredFixtures = [];
-    for (const fx of fixtures) {
+    const filteredFixtures = fixtures.filter(fx => {
       const opponentTeamName = fx.team1 === user.teamName ? fx.team2 : fx.team1;
-      const opponentUser = await User.findOne({ teamName: opponentTeamName });
-      
-      // Only include fixtures where both teams are tournament ready
-      if (opponentUser && opponentUser.isTournamentReady) {
-        filteredFixtures.push(fx);
-      }
-    }
+      return tournamentReadyTeams.has(opponentTeamName);
+    });
 
     // Transform fixture data into a simpler "score/fairness/result/opponentTeam" format
     const lastFiveMatches = filteredFixtures.map((fx) => {
@@ -190,7 +230,10 @@ router.get("/:userId/details", async (req, res) => {
       };
     });
 
-    // 5) Return everything, including the new lastFiveMatches
+    // 5) Return everything, including the new lastFiveMatches and allPlayersReleased from user document
+    const totalTime = Date.now() - startTime;
+    console.log(`✅ User details API completed in ${totalTime}ms for user: ${userId}`);
+    
     res.status(200).json({
       user: {
         id: user._id,
@@ -202,6 +245,8 @@ router.get("/:userId/details", async (req, res) => {
         timezone: user.timezone,
         streamLink: user.streamLink,
         abbreviation: user.abbreviation,
+        isRetentionLocked: user.isRetentionLocked,
+        allPlayersReleased: user.allPlayersReleased || false,
       },
       soldPlayers: soldPlayers.map((sp) => ({
         player: sp.playerId,
@@ -220,23 +265,48 @@ router.get("/:userId/details", async (req, res) => {
 
 
 router.get("/purses", async (req, res) => {
+  const startTime = Date.now();
   try {
-    // Fetch all users
-    const users = await User.find().select("name purse");
+    console.log('🚀 Starting purses API optimization...');
+    
+    // OPTIMIZATION: Fetch all data in parallel with single queries
+    const [users, allUserPlayers, allActiveBids] = await Promise.all([
+      User.find().select("name purse _id").lean(),
+      UserPlayer.find({ isActive: true }).populate("playerId", "name type").lean(),
+      Bid.find({ isActive: true, isBidOn: true })
+        .populate("playerId", "name type")
+        .populate("bidder", "name _id")
+        .sort({ bidAmount: -1 })
+        .lean()
+    ]);
+    
+    console.log(`⏱️ Data fetch took: ${Date.now() - startTime}ms`);
+    console.log(`📊 Fetched ${users.length} users, ${allUserPlayers.length} user players, ${allActiveBids.length} active bids`);
 
-    const userData = await Promise.all(
-      users.map(async (user) => {
-        // Fetch players owned by the user (from UserPlayer)
-        const userPlayers = await UserPlayer.find({ userId: user._id, isActive: true }).populate(
-          "playerId",
-          "name type"
-        );
+    // OPTIMIZATION: Create lookup maps for O(1) access
+    const userPlayersMap = new Map();
+    const activeBidsMap = new Map();
+    
+    // Group user players by userId
+    allUserPlayers.forEach(up => {
+      if (!userPlayersMap.has(up.userId.toString())) {
+        userPlayersMap.set(up.userId.toString(), []);
+      }
+      userPlayersMap.get(up.userId.toString()).push(up);
+    });
+    
+    // Group active bids by bidder
+    allActiveBids.forEach(bid => {
+      if (!activeBidsMap.has(bid.bidder._id.toString())) {
+        activeBidsMap.set(bid.bidder._id.toString(), []);
+      }
+      activeBidsMap.get(bid.bidder._id.toString()).push(bid);
+    });
 
-        // Fetch all active bids placed by the user (from Bid)
-        const activeBids = await Bid.find({ bidder: user._id, isActive: true, isBidOn: true })
-          .populate("playerId", "name type")
-          .sort({ bidAmount: -1 }) // Sort by highest bid amount
-          .exec();
+    const userData = users.map((user) => {
+      // Get user's players and bids from maps
+      const userPlayers = userPlayersMap.get(user._id.toString()) || [];
+      const activeBids = activeBidsMap.get(user._id.toString()) || [];
 
         // Group bids by playerId and select the highest bid for each player
         const highestBidsByPlayer = activeBids.reduce((acc, bid) => {
@@ -272,48 +342,58 @@ router.get("/purses", async (req, res) => {
           purseValue: parseFloat(user.purse.toString()), // Convert Decimal128 to Number
           players: [...soldPlayers, ...biddingPlayers], // Combine sold and bidding players
         };
-      })
-    );
+      });
 
-    // Now add bidding status information for each player
+    // OPTIMIZATION: Pre-calculate bidding status for all players
+    const biddingStatusMap = new Map();
+    
+    // Group all bidding players by player name
+    const playerBiddersMap = new Map();
+    userData.forEach(user => {
+      user.players.forEach(player => {
+        if (player.isBidOn) {
+          if (!playerBiddersMap.has(player.name)) {
+            playerBiddersMap.set(player.name, []);
+          }
+          playerBiddersMap.get(player.name).push({
+            userId: user.id,
+            userName: user.userName,
+            bidAmount: player.biddingPrice
+          });
+        }
+      });
+    });
+    
+    // Calculate bidding status for each player
+    playerBiddersMap.forEach((bidders, playerName) => {
+      const sortedBidders = bidders.sort((a, b) => b.bidAmount - a.bidAmount);
+      sortedBidders.forEach((bidder, index) => {
+        biddingStatusMap.set(`${bidder.userId}-${playerName}`, {
+          isHighest: index === 0,
+          isSecondHighest: index === 1,
+          position: index + 1,
+          totalBidders: sortedBidders.length
+        });
+      });
+    });
+
+    // OPTIMIZATION: Apply bidding status using pre-calculated map
     const enhancedUserData = userData.map((user) => {
-      console.log(`Processing user: ${user.userName} (ID: ${user.id})`);
-      
       const enhancedPlayers = user.players.map((player) => {
         if (!player.isBidOn) {
-          // Sold players don't need bidding status
           return player;
         }
-
-        console.log(`Processing bidding player: ${player.name} for user: ${user.userName}`);
-
-        // Find all users bidding on this player
-        const allBidders = userData
-          .filter(u => u.players.some(p => p.name === player.name && p.isBidOn))
-          .map(u => ({
-            userId: u.id,
-            userName: u.userName,
-            bidAmount: u.players.find(p => p.name === player.name && p.isBidOn)?.biddingPrice || 0
-          }))
-          .sort((a, b) => b.bidAmount - a.bidAmount); // Sort by bid amount (highest first)
-
-        console.log(`All bidders for ${player.name}:`, allBidders);
-
-        // Find current user's position
-        const currentUserIndex = allBidders.findIndex(bidder => bidder.userId === user.id);
-        const isHighest = currentUserIndex === 0;
-        const isSecondHighest = currentUserIndex === 1;
-
-        console.log(`User ${user.userName} position for ${player.name}: ${currentUserIndex + 1}, isHighest: ${isHighest}, isSecondHighest: ${isSecondHighest}`);
+        
+        const biddingStatus = biddingStatusMap.get(`${user.id}-${player.name}`) || {
+          isHighest: false,
+          isSecondHighest: false,
+          position: 1,
+          totalBidders: 1
+        };
 
         return {
           ...player,
-          biddingStatus: {
-            isHighest,
-            isSecondHighest,
-            position: currentUserIndex + 1,
-            totalBidders: allBidders.length
-          }
+          biddingStatus
         };
       });
 
@@ -323,15 +403,8 @@ router.get("/purses", async (req, res) => {
       };
     });
 
-    console.log('Final enhanced user data structure:');
-    enhancedUserData.forEach(user => {
-      console.log(`User: ${user.userName}`);
-      user.players.forEach(player => {
-        if (player.isBidOn) {
-          console.log(`  - ${player.name}: ${JSON.stringify(player.biddingStatus)}`);
-        }
-      });
-    });
+    const totalTime = Date.now() - startTime;
+    console.log(`✅ Purses API completed in ${totalTime}ms - Processed ${enhancedUserData.length} users`);
 
     res.status(200).json(enhancedUserData);
   } catch (error) {
@@ -462,7 +535,7 @@ router.put('/:userId/admin-update', async (req, res) => {
 // Get all users for admin
 router.get('/all', async (req, res) => {
   try {
-    const users = await User.find({}, 'name email teamName timezone streamLink abbreviation isAdmin');
+    const users = await User.find({}, 'name email teamName timezone streamLink abbreviation isAdmin isRetentionLocked');
     res.status(200).json(users);
   } catch (error) {
     console.error('Error fetching users:', error);

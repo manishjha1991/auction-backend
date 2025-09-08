@@ -24,4 +24,9 @@ const FixtureSchema = new mongoose.Schema({
   matchType: { type: String, enum: ['group', 'normal'], default: 'normal' } // Track match type
 });
 
+// Add indexes for better performance
+FixtureSchema.index({ team1: 1, isActive: 1 });
+FixtureSchema.index({ team2: 1, isActive: 1 });
+FixtureSchema.index({ isActive: 1, createdAt: 1 });
+
 module.exports = mongoose.model('Fixture', FixtureSchema);

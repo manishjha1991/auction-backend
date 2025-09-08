@@ -14,5 +14,6 @@ BidSchema.index({ playerId: 1 });
 BidSchema.index({ bidder: 1 });
 BidSchema.index({ bidAmount: -1 });
 BidSchema.index({ isActive: 1 });
+BidSchema.index({ playerId: 1, bidAmount: -1 }); // Compound index for highest bid queries
 
 module.exports = mongoose.model('Bid', BidSchema);

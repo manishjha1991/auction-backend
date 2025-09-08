@@ -19,6 +19,7 @@ const Schedule = require('../models/Schedule');
 const UserPlayer = require('../models/UserPlayer');
 const PlayoffFixture = require('../models/PlayoffFixture');
 const AppSettings = require('../models/AppSettings');
+const RetainedPlayer = require('../models/RetainedPlayer');
 
 // Create all indexes for maximum performance
 router.post('/create-all', async (req, res) => {
@@ -90,6 +91,10 @@ router.post('/create-all', async (req, res) => {
     console.log('⚙️ Creating AppSettings indexes...');
     results.appSettings = await createAppSettingsIndexes();
 
+    // 17. RETAINED PLAYER COLLECTION INDEXES
+    console.log('🔒 Creating RetainedPlayer indexes...');
+    results.retainedPlayers = await createRetainedPlayerIndexes();
+
     console.log('✅ All indexes created successfully!');
     res.status(200).json({
       success: true,
@@ -136,7 +141,15 @@ async function createUserIndexes() {
     
     // Admin queries
     { isAdmin: 1, isActive: 1 },
-    { isLocked: 1, isActive: 1 }
+    { isLocked: 1, isActive: 1 },
+    
+    // NEW: Retention-related indexes
+    { isRetentionLocked: 1 },
+    { allPlayersReleased: 1 },
+    { isRetentionLocked: 1, isActive: 1 },
+    { allPlayersReleased: 1, isActive: 1 },
+    { isRetentionLocked: 1, allPlayersReleased: 1 },
+    { isActive: 1, isAdmin: 1, allPlayersReleased: 1 }
   ];
 
   const results = [];
@@ -657,15 +670,70 @@ async function createAppSettingsIndexes() {
     { enableTradeCenter: 1 },
     { enableUnsoldPlayers: 1 },
     { enablePickButton: 1 },
+    { enablePlayerRetention: 1 },
     { requiredGames: 1 },
+    { adminReleasedPlayers: 1 },
+    { allPlayersReleased: 1 },
     { createdAt: -1 },
-    { updatedAt: -1 }
+    { updatedAt: -1 },
+    
+    // NEW: Retention-related compound indexes
+    { enablePlayerRetention: 1, adminReleasedPlayers: 1 },
+    { adminReleasedPlayers: 1, allPlayersReleased: 1 }
   ];
 
   const results = [];
   for (const index of indexes) {
     try {
       await AppSettings.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// RETAINED PLAYER COLLECTION INDEXES
+async function createRetainedPlayerIndexes() {
+  const indexes = [
+    // Basic indexes (some already exist in model)
+    { playerId: 1 },
+    { userId: 1 },
+    { isActive: 1 },
+    { status: 1 },
+    { playerType: 1 },
+    { playerRole: 1 },
+    { retainedAt: -1 },
+    { withdrawnAt: -1 },
+    
+    // Compound indexes for common queries
+    { userId: 1, isActive: 1 },
+    { playerId: 1, isActive: 1 },
+    { userId: 1, status: 1 },
+    { playerId: 1, status: 1 },
+    { userId: 1, playerType: 1 },
+    { isActive: 1, status: 1 },
+    { userId: 1, playerType: 1, isActive: 1 },
+    
+    // Complex queries for retention logic
+    { userId: 1, isActive: 1, status: 1 },
+    { playerId: 1, isActive: 1, status: 1 },
+    { userId: 1, withdrawnAt: -1 },
+    { status: 1, withdrawnAt: -1 },
+    { isActive: 1, withdrawnAt: -1 },
+    
+    // Sorting and filtering
+    { retainedAt: -1, isActive: 1 },
+    { userId: 1, retainedAt: -1 },
+    { playerType: 1, isActive: 1 },
+    { playerRole: 1, isActive: 1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await RetainedPlayer.collection.createIndex(index);
       results.push({ index, status: 'created' });
     } catch (error) {
       results.push({ index, status: 'error', error: error.message });
@@ -681,7 +749,7 @@ router.get('/stats', async (req, res) => {
       'users', 'players', 'bids', 'bidhistories', 'fixtures', 
       'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'schedules', 
-      'userplayers', 'playofffixtures', 'appsettings'
+      'userplayers', 'playofffixtures', 'appsettings', 'retainedplayers'
     ];
 
     const stats = {};
@@ -726,7 +794,7 @@ router.post('/drop-all', async (req, res) => {
       'users', 'players', 'bids', 'bidhistories', 'fixtures', 
       'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'schedules', 
-      'userplayers', 'playofffixtures', 'appsettings'
+      'userplayers', 'playofffixtures', 'appsettings', 'retainedplayers'
     ];
 
     const results = {};

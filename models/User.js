@@ -23,9 +23,17 @@ const UserSchema = new mongoose.Schema({
   abbreviation: { type: String, default: null },
   group: { type: String, enum: ['A', 'B', null], default: null },
   isLocked: { type: Boolean, default: false },
+  isRetentionLocked: { type: Boolean, default: false }, // NEW: Lock for retention functionality
   isTournamentReady: { type: Boolean, default: false }, // NEW: Only true when user is ready for tournament
   timezone: { type: String, default: 'Asia/Kolkata' }, // User's preferred timezone
   streamLink: { type: String, default: null }, // User's streaming URL
+  allPlayersReleased: { type: Boolean, default: false }, // NEW: Track if all players are released for this user
 });
+
+// Add indexes for better performance
+UserSchema.index({ teamName: 1 });
+UserSchema.index({ isActive: 1, isAdmin: 1 });
+UserSchema.index({ isTournamentReady: 1 });
+UserSchema.index({ allPlayersReleased: 1 });
 
 module.exports = mongoose.model('User', UserSchema);

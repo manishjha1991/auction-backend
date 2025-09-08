@@ -29,6 +29,7 @@ const postLikeRoutes = require('./routes/postLikes');
 const playoffFixtureRoutes = require('./routes/playoffFixtures');
 const scheduleRoutes = require('./routes/schedules');
 const indexRoutes = require('./routes/indexes');
+const retainedPlayerRoutes = require('./routes/retainedPlayers');
 
 
 app.set('io', io);
@@ -107,6 +108,7 @@ app.use('/api/playoff-fixtures', playoffFixtureRoutes);
 app.use('/api/schedules', scheduleRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/indexes', indexRoutes);
+app.use('/api/retained-players', retainedPlayerRoutes);
 
 
 io.on('connection', (socket) => {
