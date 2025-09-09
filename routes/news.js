@@ -8,6 +8,7 @@ const Player = require('../models/Player');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
 const Fixture = require('../models/Fixture');
+const Schedule = require('../models/Schedule');
 const Comment = require('../models/Comment');
 const PostLike = require('../models/PostLike');
 
@@ -94,7 +95,7 @@ async function getSocialData(newsItems) {
 
 router.get('/feed', async (_req, res) => {
   try {
-    const [trades, releases, picks, recentStats, fixtures] = await Promise.all([
+    const [trades, releases, picks, recentStats, fixtures, schedules] = await Promise.all([
       TradeRequest.find({})
         .populate({
           path: 'fromUser',
@@ -138,7 +139,8 @@ router.get('/feed', async (_req, res) => {
         select: 'isTournamentReady',
         match: { isTournamentReady: true }
       }).sort({ createdAt: -1 }).limit(50).lean(),
-      Fixture.find({ isActive: true }).sort({ createdAt: -1 }).limit(20).lean()
+      Fixture.find({ isActive: true }).sort({ createdAt: -1 }).limit(20).lean(),
+      Schedule.find({}).sort({ createdAt: -1 }).limit(30).lean()
     ]);
 
     // Test query to see raw data
@@ -1120,6 +1122,77 @@ router.get('/feed', async (_req, res) => {
       });
     }
 
+    // Process scheduled matches
+    for (const s of schedules) {
+      const matchDate = new Date(s.date);
+      const now = new Date();
+      const isToday = matchDate.toDateString() === now.toDateString();
+      const isTomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toDateString() === matchDate.toDateString();
+      const isPast = matchDate < now;
+      
+      let title, body, status, isBreaking = false;
+      
+      // Format date and time
+      const dateStr = matchDate.toLocaleDateString('en-US', { 
+        weekday: 'short', 
+        month: 'short', 
+        day: 'numeric' 
+      });
+      const timeStr = s.time || 'TBD';
+      
+      // Determine status and content based on schedule status
+      if (s.status === 'pending') {
+        title = `📅 Match Invitation: ${s.requester} vs ${s.opponent}`;
+        body = `${s.requester} has invited ${s.opponent} for a match on ${dateStr} at ${timeStr} (${s.timezone})`;
+        status = 'pending';
+        isBreaking = isToday;
+      } else if (s.status === 'accepted') {
+        title = `✅ Match Confirmed: ${s.requester} vs ${s.opponent}`;
+        body = `Match scheduled for ${dateStr} at ${timeStr} (${s.timezone})`;
+        status = isPast ? 'completed' : (isToday ? 'today' : isTomorrow ? 'tomorrow' : 'upcoming');
+        isBreaking = isToday;
+      } else if (s.status === 'rejected') {
+        title = `❌ Match Rejected: ${s.requester} vs ${s.opponent}`;
+        body = `${s.opponent} rejected the match invitation for ${dateStr} at ${timeStr}`;
+        status = 'rejected';
+        isBreaking = false;
+      }
+      
+      // Add message if available
+      if (s.message) {
+        body += ` 💬 Note: ${s.message}`;
+      }
+      
+      // Add new time proposal if available
+      if (s.newTimeSlot && s.newDate) {
+        const newDateStr = new Date(s.newDate).toLocaleDateString('en-US', { 
+          weekday: 'short', 
+          month: 'short', 
+          day: 'numeric' 
+        });
+        body += ` 🔄 New time proposed: ${newDateStr} at ${s.newTimeSlot}`;
+      }
+      
+      news.push({
+        id: s._id,
+        kind: 'schedule',
+        status,
+        title,
+        body,
+        isBreaking,
+        timestamp: s.createdAt,
+        matchDate: s.date,
+        matchTime: s.time,
+        timezone: s.timezone,
+        requester: s.requester,
+        opponent: s.opponent,
+        scheduleStatus: s.status,
+        message: s.message,
+        newTimeSlot: s.newTimeSlot,
+        newDate: s.newDate
+      });
+    }
+
     // Sort by timestamp desc and cap
     news.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     
@@ -1132,6 +1205,7 @@ router.get('/feed', async (_req, res) => {
     const pickCount = news.filter(n => n.kind === 'pick').length;
     const statsCount = news.filter(n => n.kind === 'stats').length;
     const fixtureCount = news.filter(n => n.kind === 'fixture').length;
+    const scheduleCount = news.filter(n => n.kind === 'schedule').length;
     
     console.log('📰 News Feed Summary:', {
       total: news.length,
@@ -1139,7 +1213,8 @@ router.get('/feed', async (_req, res) => {
       releases: releaseCount,
       picks: pickCount,
       stats: statsCount,
-      fixtures: fixtureCount
+      fixtures: fixtureCount,
+      schedules: scheduleCount
     });
     
     res.json({ items: newsWithSocialData });
