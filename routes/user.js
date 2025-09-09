@@ -318,6 +318,7 @@ router.get("/purses", async (req, res) => {
 
         // Map sold players (from UserPlayer)
         const soldPlayers = userPlayers.map((entry) => ({
+          id: entry.playerId._id,
           name: entry.playerId.name,
           boughtValue: entry.bidValue,
           type: entry.playerId.type,
@@ -328,6 +329,7 @@ router.get("/purses", async (req, res) => {
 
         // Map all actively bid players (using highest bid per player)
         const biddingPlayers = Object.values(highestBidsByPlayer).map((bid) => ({
+          id: bid.playerId._id,
           name: bid.playerId.name,
           boughtValue: null, // Not yet sold, so no bought value
           type: bid.playerId.type,
