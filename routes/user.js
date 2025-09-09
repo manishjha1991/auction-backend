@@ -269,9 +269,9 @@ router.get("/purses", async (req, res) => {
   try {
     console.log('🚀 Starting purses API optimization...');
     
-    // OPTIMIZATION: Fetch all data in parallel with single queries
+    // OPTIMIZATION: Fetch all data in parallel with single queries (excluding admin users)
     const [users, allUserPlayers, allActiveBids] = await Promise.all([
-      User.find().select("name purse _id").lean(),
+      User.find({ isAdmin: { $ne: true } }).select("name purse _id").lean(),
       UserPlayer.find({ isActive: true }).populate("playerId", "name type").lean(),
       Bid.find({ isActive: true, isBidOn: true })
         .populate("playerId", "name type")
