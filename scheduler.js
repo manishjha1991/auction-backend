@@ -20,27 +20,27 @@ console.log('🕒 Auction scheduler running…');
 
 
 // ---------------- existing helper ----------------
-async function sellingSingleBidSinceStarting() {
-  try {
-    const { data } = await axios.post(SINGLE_BID_PATH);
-    const ids = data.resultMain;
+// async function sellingSingleBidSinceStarting() {
+//   try {
+//     const { data } = await axios.post(SINGLE_BID_PATH);
+//     const ids = data.resultMain;
 
-    if (!Array.isArray(ids) || ids.length === 0) {
-      console.log('No single-bid players to finalize.');
-      return;
-    }
+//     if (!Array.isArray(ids) || ids.length === 0) {
+//       console.log('No single-bid players to finalize.');
+//       return;
+//     }
 
-    for (const playerId of ids) {
-      const resSold = await axios.post(SELL_PATH(playerId));
-      console.log(`Sold player ${playerId}:`, resSold.data);
-    }
-  } catch (err) {
-    console.error(
-      'Error in finalizeSingleBidSinceStarting:',
-      err.response?.data || err.message
-    );
-  }
-}
+//     for (const playerId of ids) {
+//       const resSold = await axios.post(SELL_PATH(playerId));
+//       console.log(`Sold player ${playerId}:`, resSold.data);
+//     }
+//   } catch (err) {
+//     console.error(
+//       'Error in finalizeSingleBidSinceStarting:',
+//       err.response?.data || err.message
+//     );
+//   }
+// }
 
 // ---------------- cron schedule ------------------
 // second minute hour  day mon dow
@@ -70,14 +70,14 @@ async function runBulkExit() {
 }
 /*
 |--------------------------------------------------------------------------
-| 1.  Every 15 min from 00:00 through 21:45  (sec  min  hrs)
+| 1.  Every 15 min from 00:00 through 23:45  (sec  min  hrs)
 |--------------------------------------------------------------------------
 | second  minute   hour
  
 // */
-// cron.schedule('0 */15 0-22 * * *', runBulkExit, {
-//   timezone: 'Asia/Kolkata'
-// });
+cron.schedule('0 */15 0-23 * * *', runBulkExit, {
+  timezone: 'Asia/Kolkata'
+});
 
 // //② The last three runs at 10:00, 10:15, and 10:30 IST
 // cron.schedule(
