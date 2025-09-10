@@ -114,15 +114,15 @@ cron.schedule('0 */15 0-23 * * *', runBulkExit, {
 // Lock Account run exact at 22:59:59 IST each night
 // ---------------------------------------------------------------------------
 
-cron.schedule('59 59 22 * * *', async () => {          // 22:59:59 IST each night
-  console.log(`⏱️  [${new Date().toISOString()}] running lock-under-limit/all`);
-  try {
-    const { data } = await axios.post(LOCK_PATH);
-    console.log('   →', data.message);
-  } catch (err) {
-    console.error('   ❌ cron error:', err.response?.data ?? err.message);
-  }
-}, { timezone: 'Asia/Kolkata' });
+// cron.schedule('59 59 22 * * *', async () => {          // 22:59:59 IST each night
+//   console.log(`⏱️  [${new Date().toISOString()}] running lock-under-limit/all`);
+//   try {
+//     const { data } = await axios.post(LOCK_PATH);
+//     console.log('   →', data.message);
+//   } catch (err) {
+//     console.error('   ❌ cron error:', err.response?.data ?? err.message);
+//   }
+// }, { timezone: 'Asia/Kolkata' });
 
 
 
