@@ -425,9 +425,9 @@ router.post("/bid/sold", async (req, res) => {
           continue;
         }
 
-        // 3. Fetch all bids
-        const bids = await Bid.find({ playerId: pid }).sort({ bidAmount: -1 });
-        if (!bids || bids.length === 0) {
+        // 3. Fetch ALL bids (including inactive ones) to find the highest bid
+        const allBids = await Bid.find({ playerId: pid }).sort({ bidAmount: -1 });
+        if (!allBids || allBids.length === 0) {
           results.push({
             playerID: pid,
             status: "error",
@@ -436,8 +436,13 @@ router.post("/bid/sold", async (req, res) => {
           continue;
         }
 
-        // 4. Highest bid
-        const highestBid = bids[0];
+        // 4. Highest bid (regardless of active status)
+        const highestBid = allBids[0];
+        
+        // Get all users who have this player in their currentBids (for cleanup)
+        const usersWithBidsOnThisPlayer = await User.find({
+          'currentBids.playerId': pid
+        }).select('_id currentBids');
 
         // 5. Mark all bids as inactive
         await Bid.updateMany({ playerId: pid }, { $set: { isActive: false } });
@@ -473,7 +478,7 @@ router.post("/bid/sold", async (req, res) => {
           await new BidHistory({
             playerId: pid,
             bidID: highestBid._id,
-            bids: bids.map((bid) => ({
+            bids: allBids.map((bid) => ({
               userID: bid.bidder,
               bidAmount: bid.bidAmount,
               status: bid._id.toString() === highestBid._id.toString(),
@@ -527,25 +532,24 @@ router.post("/bid/sold", async (req, res) => {
         winningUser.boughtPlayers.push(pid);
         await winningUser.save();
 
-        // 12. Revert locked amounts for other bidders
-        for (const bid of bids.slice(1)) {
-          const otherBidder = await User.findById(bid.bidder);
-          if (otherBidder) {
-            const lockedBid = otherBidder.currentBids.find(
-              (userBid) => userBid.playerId.toString() === pid
-            );
-            const otherLockedAmount = lockedBid ? lockedBid.amount : 0;
-            const otherPurse = parseFloat(otherBidder.purse.toString());
-
-            // Refund locked amount
-            otherBidder.purse = mongoose.Types.Decimal128.fromString(
-              (otherPurse + otherLockedAmount).toString()
-            );
-            // Remove the bid from user's current bids
-            otherBidder.currentBids = otherBidder.currentBids.filter(
-              (b) => b.playerId.toString() !== pid
-            );
-            await otherBidder.save();
+        // 12. Refund other bidders and clean up currentBids (excluding the winner)
+        for (const user of usersWithBidsOnThisPlayer) {
+          // Skip the winner as they were already processed above
+          if (user._id.equals(highestBid.bidder)) {
+            continue;
+          }
+          
+          const userBid = user.currentBids.find(cb => cb.playerId.equals(pid));
+          if (userBid) {
+            const lockedAmount = userBid.amount || 0;
+            const purse = parseFloat(user.purse.toString());
+            
+            // Refund the locked amount
+            user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
+            
+            // Remove this player from currentBids
+            user.currentBids = user.currentBids.filter(cb => !cb.playerId.equals(pid));
+            await user.save();
           }
         }
 
@@ -862,14 +866,20 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
           continue;
         }
 
-        // b) Fetch bids
-        const bids = await Bid.find({ playerId: pid }).sort({ bidAmount: -1 });
-        if (!bids.length) {
+        // b) Fetch ALL bids (including inactive ones) to find the highest bid
+        const allBids = await Bid.find({ playerId: pid }).sort({ bidAmount: -1 });
+        if (!allBids.length) {
           results.push({ playerID: pid, status: 'error', message: 'No bids found.' });
           continue;
         }
 
-        const highestBid = bids[0];
+        // Find the highest bid (regardless of active status)
+        const highestBid = allBids[0];
+        
+        // Get all users who have this player in their currentBids (for cleanup)
+        const usersWithBidsOnThisPlayer = await User.find({
+          'currentBids.playerId': pid
+        }).select('_id currentBids');
 
         // c) Deactivate all bids
         await Bid.updateMany({ playerId: pid }, { $set: { isActive: false } });
@@ -903,7 +913,7 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
           await new BidHistory({
             playerId: pid,
             bidID: highestBid._id,
-            bids: bids.map(b => ({
+            bids: allBids.map(b => ({
               userID: b.bidder,
               bidAmount: b.bidAmount,
               status: b._id.equals(highestBid._id),
@@ -930,15 +940,24 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
         winner.boughtPlayers.push(pid);
         await winner.save();
 
-        // h) Refund other bidders
-        for (const b of bids.slice(1)) {
-          const u = await User.findById(b.bidder);
-          if (u) {
-            const amt = u.currentBids.find(cb => cb.playerId.equals(pid))?.amount || 0;
-            const pu = parseFloat(u.purse.toString());
-            u.purse = mongoose.Types.Decimal128.fromString((pu + amt).toString());
-            u.currentBids = u.currentBids.filter(cb => !cb.playerId.equals(pid));
-            await u.save();
+        // h) Refund other bidders and clean up currentBids (excluding the winner)
+        for (const user of usersWithBidsOnThisPlayer) {
+          // Skip the winner as they were already processed above
+          if (user._id.equals(highestBid.bidder)) {
+            continue;
+          }
+          
+          const userBid = user.currentBids.find(cb => cb.playerId.equals(pid));
+          if (userBid) {
+            const lockedAmount = userBid.amount || 0;
+            const purse = parseFloat(user.purse.toString());
+            
+            // Refund the locked amount
+            user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
+            
+            // Remove this player from currentBids
+            user.currentBids = user.currentBids.filter(cb => !cb.playerId.equals(pid));
+            await user.save();
           }
         }
 
