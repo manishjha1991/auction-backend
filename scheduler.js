@@ -108,93 +108,73 @@ cron.schedule('0 */15 0-23 * * *', runBulkExit, {
 
 
 
-// ---------------------------------------------------------------------------
-// Your existing auction helper and check if second bidder exit the sold that Player run after 12 till 3 coclock night
-// ---------------------------------------------------------------------------
-/**
- * For a given player ID, poll the “bid count” endpoint every minute until
- * there is exactly one single bid remaining with no counter (count === 0).
- * When that happens, POST to sell that player.
- */
-async function handlePlayerAuctionToSellOneSingleBidRemainingAndNoCounterBid(pid) {
-  console.log(`▶️ [${new Date().toISOString()}] Auction window opened for ${pid}`);
 
-  let lastCount = Infinity;
+// async function handlePlayerAuctionToSellOneSingleBidRemainingAndNoCounterBid(pid) {
+//   console.log(`▶️ [${new Date().toISOString()}] Auction window opened for ${pid}`);
 
-  const step = async () => {
-    try {
-      const res = await axios.get(GET_BID_COUNT(pid));
-      lastCount = res.data.count ?? 0;
-    } catch (e) {
-      console.error(`   ⚠️ bid count error for ${pid}:`, e.message);
-      return false;
-    }
+//   let lastCount = Infinity;
+
+//   const step = async () => {
+//     try {
+//       const res = await axios.get(GET_BID_COUNT(pid));
+//       lastCount = res.data.count ?? 0;
+//     } catch (e) {
+//       console.error(`   ⚠️ bid count error for ${pid}:`, e.message);
+//       return false;
+//     }
    
 
-    if (lastCount === 0) {
-      // exactly one active bid with no counterbid
-      console.log(`   → exactly one single bid, finalizing sale for ${pid}`);
-      try {
-        await axios.post(SELL_PATH(pid), { playerID: pid });
-        console.log(`   ✅ sold ${pid}`);
-      } catch (e) {
-        console.error(`   ❌ sell error for ${pid}:`, e.message);
-      }
-      return true;   // done polling
-    } else {
+//     if (lastCount === 0) {
+//       // exactly one active bid with no counterbid
+//       console.log(`   → exactly one single bid, finalizing sale for ${pid}`);
+//       try {
+//         await axios.post(SELL_PATH(pid), { playerID: pid });
+//         console.log(`   ✅ sold ${pid}`);
+//       } catch (e) {
+//         console.error(`   ❌ sell error for ${pid}:`, e.message);
+//       }
+//       return true;   // done polling
+//     } else {
       
-      // any other case: still multiple or no proper single bid
-      return false;  // keep polling
-    }
-  };
+//       // any other case: still multiple or no proper single bid
+//       return false;  // keep polling
+//     }
+//   };
 
-  // initial run
-  if (await step() !== true) {
-    // then every minute
-    const interval = setInterval(async () => {
-      if (await step() === true) {
-        clearInterval(interval);
-        console.log(`   🛑 stopped polling for ${pid}`);
-      }
-    }, 60 * 1000);
-  }
-}
+//   // initial run
+//   if (await step() !== true) {
+//     // then every minute
+//     const interval = setInterval(async () => {
+//       if (await step() === true) {
+//         clearInterval(interval);
+//         console.log(`   🛑 stopped polling for ${pid}`);
+//       }
+//     }, 60 * 1000);
+//   }
+// }
 
-// ---------------------------------------------------------------------------
-// CRON • every 30 min from 00:00 → 03:30 IST
-// ---------------------------------------------------------------------------
-// second   minute   hour
-//   0        0,30   0-3          ← 00:00, 00:30, … 03:30
-/**
- * Cron job: every minute, fetch all unsold players and
- * for each one start (or continue) its auction-to-sell check.
- */
-/**
- * The “job” that runs your unsold‐players check each tick:
- *  - fetches all unsold players
- *  - for each one kicks off the per-player auction handler
- */
-async function job() {
-  console.log(`⏱️ [${new Date().toISOString()}] Running sold-single-bid check for all unsold players`);
-  try {
-    const { data } = await axios.get(GET_UNSOLD_PLAYERS);
-    const players = data.players || [];
-    console.log(`  • Found ${players.length} unsold player(s)`);
 
-    for (const { _id: pid } of players) {
-      handlePlayerAuctionToSellOneSingleBidRemainingAndNoCounterBid(pid);
-    }
-  } catch (err) {
-    console.error('⚠️ fetchUnsoldPlayers error:', err.message);
-  }
-}
+// async function job() {
+//   console.log(`⏱️ [${new Date().toISOString()}] Running sold-single-bid check for all unsold players`);
+//   try {
+//     const { data } = await axios.get(GET_UNSOLD_PLAYERS);
+//     const players = data.players || [];
+//     console.log(`  • Found ${players.length} unsold player(s)`);
+
+//     for (const { _id: pid } of players) {
+//       handlePlayerAuctionToSellOneSingleBidRemainingAndNoCounterBid(pid);
+//     }
+//   } catch (err) {
+//     console.error('⚠️ fetchUnsoldPlayers error:', err.message);
+//   }
+// }
 
 // Schedule "job" every 5 minutes starting from 23:30 IST (11:30 PM)
-cron.schedule(
-  '*/5 23 * * *',             // Every 5 minutes from 23:30 IST (11:30 PM)
-  job,
-  { timezone: 'Asia/Kolkata' }
-);
+// cron.schedule(
+//   '*/5 23 * * *',             // Every 5 minutes from 23:30 IST (11:30 PM)
+//   job,
+//   { timezone: 'Asia/Kolkata' }
+// );
 
 console.log('✅ Auction scheduler started:');
 console.log('   • 10:30 PM IST - Sell single bid players (no counter bids since starting)');
