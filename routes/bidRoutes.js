@@ -103,7 +103,7 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     // 6. Max 5 Current Bids
     // ============================
     if (
-      user.currentBids.length >= 5 &&
+      user.currentBids.length >= 8 &&
       !user.currentBids.some((bid) => bid.playerId.toString() === playerId)
     ) {
       return res.status(400).json({
