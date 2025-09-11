@@ -553,13 +553,74 @@ router.post("/bid/sold", async (req, res) => {
           }
         }
 
-        // 13. Mark the player as sold
-        player.isSold = true;
-        player.currentBid = highestBid.bidAmount;
-        player.currentBidder = highestBid.bidder;
-        // Defensive: remove accidental currentBids field if present
-        if (player.currentBids !== undefined) delete player.currentBids;
-        await player.save();
+        // 13. Mark the player as sold - GUARANTEED to set both isSold and isActive to true
+        let playerStatusUpdated = false;
+        
+        try {
+          // Method 1: Direct save
+          player.isSold = true;
+          player.isActive = true;
+          player.currentBid = highestBid.bidAmount;
+          player.currentBidder = highestBid.bidder;
+          if (player.currentBids !== undefined) delete player.currentBids;
+          await player.save();
+          playerStatusUpdated = true;
+          console.log(`✅ Player ${pid} marked as sold and active (method 1)`);
+        } catch (playerUpdateError) {
+          console.error(`❌ Method 1 failed for player ${pid}:`, playerUpdateError);
+          
+          try {
+            // Method 2: findByIdAndUpdate
+            await Player.findByIdAndUpdate(pid, {
+              $set: {
+                isSold: true,
+                isActive: true,
+                currentBid: highestBid.bidAmount,
+                currentBidder: highestBid.bidder
+              },
+              $unset: { currentBids: "" }
+            });
+            playerStatusUpdated = true;
+            console.log(`✅ Player ${pid} marked as sold and active (method 2)`);
+          } catch (fallbackError) {
+            console.error(`❌ Method 2 failed for player ${pid}:`, fallbackError);
+            
+            try {
+              // Method 3: Direct MongoDB update
+              await Player.updateOne(
+                { _id: pid },
+                {
+                  $set: {
+                    isSold: true,
+                    isActive: true,
+                    currentBid: highestBid.bidAmount,
+                    currentBidder: highestBid.bidder
+                  },
+                  $unset: { currentBids: "" }
+                }
+              );
+              playerStatusUpdated = true;
+              console.log(`✅ Player ${pid} marked as sold and active (method 3)`);
+            } catch (finalError) {
+              console.error(`❌ ALL METHODS FAILED for player ${pid}:`, finalError);
+              throw new Error(`Failed to update player status after all attempts: ${finalError.message}`);
+            }
+          }
+        }
+        
+        // Verify the update was successful
+        if (playerStatusUpdated) {
+          const verifyPlayer = await Player.findById(pid);
+          if (verifyPlayer && verifyPlayer.isSold === true && verifyPlayer.isActive === true) {
+            console.log(`✅ VERIFIED: Player ${pid} is correctly sold and active`);
+          } else {
+            console.error(`❌ VERIFICATION FAILED: Player ${pid} status is incorrect`, {
+              isSold: verifyPlayer?.isSold,
+              isActive: verifyPlayer?.isActive
+            });
+            throw new Error(`Player status verification failed for ${pid}`);
+          }
+        }
 
         results.push({
           playerID: pid,
@@ -843,8 +904,22 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
 
     const results = [];
 
-    // 3) Run the “sell” logic for each unsold player
-    for (const pid of unsoldIds) {
+    // 3) Process players in batches of 5 for cron selling to prevent overwhelming the system
+    const BATCH_SIZE = 5;
+    const totalPlayers = unsoldIds.length;
+    let processedCount = 0;
+    
+    console.log(`🔄 CRON: Starting batch processing: ${totalPlayers} players in batches of ${BATCH_SIZE}`);
+    
+    for (let i = 0; i < unsoldIds.length; i += BATCH_SIZE) {
+      const batch = unsoldIds.slice(i, i + BATCH_SIZE);
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(unsoldIds.length / BATCH_SIZE);
+      
+      console.log(`📦 CRON: Processing batch ${batchNumber}/${totalBatches}: ${batch.length} players`);
+      
+      // Process each player in the current batch
+      for (const pid of batch) {
       try {
         // a) Load player
         const player = await Player.findById(pid);
@@ -961,13 +1036,74 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
           }
         }
 
-        // i) Mark player as sold
-        player.isSold = true;
-        player.currentBid = highestBid.bidAmount;
-        player.currentBidder = highestBid.bidder;
-        // Defensive: remove accidental currentBids field if present
-        if (player.currentBids !== undefined) delete player.currentBids;
-        await player.save();
+        // i) Mark player as sold - GUARANTEED to set both isSold and isActive to true
+        let playerStatusUpdated = false;
+        
+        try {
+          // Method 1: Direct save
+          player.isSold = true;
+          player.isActive = true;
+          player.currentBid = highestBid.bidAmount;
+          player.currentBidder = highestBid.bidder;
+          if (player.currentBids !== undefined) delete player.currentBids;
+          await player.save();
+          playerStatusUpdated = true;
+          console.log(`✅ Player ${pid} marked as sold and active (method 1)`);
+        } catch (playerUpdateError) {
+          console.error(`❌ Method 1 failed for player ${pid}:`, playerUpdateError);
+          
+          try {
+            // Method 2: findByIdAndUpdate
+            await Player.findByIdAndUpdate(pid, {
+              $set: {
+                isSold: true,
+                isActive: true,
+                currentBid: highestBid.bidAmount,
+                currentBidder: highestBid.bidder
+              },
+              $unset: { currentBids: "" }
+            });
+            playerStatusUpdated = true;
+            console.log(`✅ Player ${pid} marked as sold and active (method 2)`);
+          } catch (fallbackError) {
+            console.error(`❌ Method 2 failed for player ${pid}:`, fallbackError);
+            
+            try {
+              // Method 3: Direct MongoDB update
+              await Player.updateOne(
+                { _id: pid },
+                {
+                  $set: {
+                    isSold: true,
+                    isActive: true,
+                    currentBid: highestBid.bidAmount,
+                    currentBidder: highestBid.bidder
+                  },
+                  $unset: { currentBids: "" }
+                }
+              );
+              playerStatusUpdated = true;
+              console.log(`✅ Player ${pid} marked as sold and active (method 3)`);
+            } catch (finalError) {
+              console.error(`❌ ALL METHODS FAILED for player ${pid}:`, finalError);
+              throw new Error(`Failed to update player status after all attempts: ${finalError.message}`);
+            }
+          }
+        }
+        
+        // Verify the update was successful
+        if (playerStatusUpdated) {
+          const verifyPlayer = await Player.findById(pid);
+          if (verifyPlayer && verifyPlayer.isSold === true && verifyPlayer.isActive === true) {
+            console.log(`✅ VERIFIED: Player ${pid} is correctly sold and active`);
+          } else {
+            console.error(`❌ VERIFICATION FAILED: Player ${pid} status is incorrect`, {
+              isSold: verifyPlayer?.isSold,
+              isActive: verifyPlayer?.isActive
+            });
+            throw new Error(`Player status verification failed for ${pid}`);
+          }
+        }
 
         results.push({
           playerID: pid,
@@ -976,15 +1112,34 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
           soldTo: highestBid.bidder.toString(),
           bidAmount: highestBid.bidAmount
         });
+        
+        processedCount++;
+        console.log(`✅ CRON: Player ${pid} sold successfully (${processedCount}/${totalPlayers})`);
       } catch (err) {
-        console.error(`Error selling player ${pid}:`, err);
+        console.error(`❌ CRON: Error selling player ${pid}:`, err);
+        console.error(`❌ CRON: Error details:`, {
+          message: err.message,
+          stack: err.stack,
+          name: err.name
+        });
         results.push({
           playerID: pid,
           status: 'error',
-          message: err.message || 'Internal error for this player.'
+          message: err.message || 'Internal error for this player.',
+          errorType: err.name || 'Unknown'
         });
+        processedCount++;
+      }
+      }
+      
+      // Add a small delay between batches to prevent overwhelming the system
+      if (i + BATCH_SIZE < unsoldIds.length) {
+        console.log(`⏳ CRON: Batch ${batchNumber} completed. Waiting 1 second before next batch...`);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
       }
     }
+    
+    console.log(`🎉 CRON: Batch processing completed: ${processedCount}/${totalPlayers} players processed`);
 
     // 4) Send back detailed results
     return res.status(200).json({ results });
