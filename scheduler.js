@@ -46,7 +46,7 @@ async function sellingSingleBidSinceStarting() {
 // second minute hour  day mon dow
 //   0      30    22   *   *   *
 cron.schedule(
-  '0 30 22 * * *',            // 22:30:00 IST every day (10:30 PM)
+  '0 30 22 * * *',            // 22:30:00 IST every day (10:30 PM) - Sell single bid players
   sellingSingleBidSinceStarting,
   { timezone: 'Asia/Kolkata' }
 );
@@ -189,14 +189,16 @@ async function job() {
   }
 }
 
-// Schedule "job" every 5 minutes
+// Schedule "job" every 5 minutes starting from 23:30 IST (11:30 PM)
 cron.schedule(
-  '*/5 * * * *',              // Every 5 minutes
+  '*/5 23 * * *',             // Every 5 minutes from 23:30 IST (11:30 PM)
   job,
   { timezone: 'Asia/Kolkata' }
 );
 
-console.log('✅ Auction scheduler started: will run every 5 minutes to check for single-bid players.');
+console.log('✅ Auction scheduler started:');
+console.log('   • 10:30 PM IST - Sell single bid players (no counter bids since starting)');
+console.log('   • 11:30 PM IST onwards - Check every 5 minutes for players where second bidder exited');
 
 
 
