@@ -59,25 +59,25 @@ cron.schedule(
 
 
 // --- shared callback ---------------------------------------------------------
-async function runBulkExit() {
-  console.log(`⏱️ [${new Date().toISOString()}] Running bulk exit-second-highest/all`);
-  try {
-    const { data } = await axios.post(EXIT_ALL_PATH);
-    console.log('   → bulk exit response:', data);
-  } catch (err) {
-    console.error('   ❌ bulk exit error:', err.message);
-  }
-}
-/*
-|--------------------------------------------------------------------------
-| 1.  Every 15 min from 00:00 through 23:45  (sec  min  hrs)
-|--------------------------------------------------------------------------
-| second  minute   hour
+// async function runBulkExit() {
+//   console.log(`⏱️ [${new Date().toISOString()}] Running bulk exit-second-highest/all`);
+//   try {
+//     const { data } = await axios.post(EXIT_ALL_PATH);
+//     console.log('   → bulk exit response:', data);
+//   } catch (err) {
+//     console.error('   ❌ bulk exit error:', err.message);
+//   }
+// }
+// /*
+// |--------------------------------------------------------------------------
+// | 1.  Every 15 min from 00:00 through 23:45  (sec  min  hrs)
+// |--------------------------------------------------------------------------
+// | second  minute   hour
  
-// */
-cron.schedule('0 */15 0-23 * * *', runBulkExit, {
-  timezone: 'Asia/Kolkata'
-});
+// // */
+// cron.schedule('0 */15 0-23 * * *', runBulkExit, {
+//   timezone: 'Asia/Kolkata'
+// });
 
 
 
