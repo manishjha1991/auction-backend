@@ -1318,13 +1318,13 @@ router.post('/exit-second-highest/all', async (req, res) => {
 router.post('/lock-under-limit/all', async (_req, res) => {
   try {
     // ── 1. RULES ─────────────────────────────────────────────────────────────
-    // per-type minimums (your original numbers)
-    // const MIN_REQUIRED = { Sapphire: 1, Gold: 8, Emerald: 3, Silver: 6 };
-    const MIN_REQUIRED = { Sapphire: 1, Emerald: 3 };
-    // const MIN_REQUIRED = { Silver: 6 };
-    // const MIN_REQUIRED = { Gold: 8 };
-    // NEW: max Emerald+Sapphire combined
-    const MAX_ES_COMBINED = 5;
+    // Gold type exact requirements:
+    // - If user has 1+ bought Gold players → need EXACTLY 6 bidding (total 7)
+    // - If user has 0 bought Gold players → need EXACTLY 8 bidding (total 8)
+    const GOLD_EXACT_TOTAL_IF_BOUGHT = 7; // If bought 1+, need exactly 7 total
+    const GOLD_EXACT_TOTAL_IF_NOT_BOUGHT = 8; // If bought 0, need exactly 8 total
+    const GOLD_EXACT_BIDDING_IF_BOUGHT = 7; // If bought 1+, need exactly 6 bidding
+    const GOLD_EXACT_BIDDING_IF_NOT_BOUGHT = 8; // If bought 0, need exactly 8 bidding
 
     // ── 2. SCAN EVERY USER ───────────────────────────────────────────────────
     const users = await User.find({}, { boughtPlayers: 1, currentBids: 1 }).lean();
@@ -1357,29 +1357,44 @@ router.post('/lock-under-limit/all', async (_req, res) => {
         return acc;
       }, {});
 
-      // ── 2-a. Check per-type minimums ───────────────────────────────────────
-      let failsMinimum = false;
-      const missing = {};
-      for (const [type, min] of Object.entries(MIN_REQUIRED)) {
-        const have = counts[type] || 0;
-        if (have < min) {
-          failsMinimum = true;
-          missing[type] = min - have;
+      // ── 2-a. Check ONLY Gold type requirements ─────────────────────────────
+      const goldBought = counts['Gold'] || 0;
+      const goldBidding = user.currentBids.filter(bid => {
+        // Count only Gold players in current bids
+        return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Gold';
+      }).length;
+      const goldTotal = goldBought + goldBidding;
+      
+      let failsGoldRequirement = false;
+      let goldReason = '';
+      
+      if (goldBought >= 1) {
+        // If user has 1+ bought Gold players, need EXACTLY 6 bidding (total 7)
+        if (goldBidding !== GOLD_EXACT_BIDDING_IF_BOUGHT) {
+          failsGoldRequirement = true;
+          goldReason = `Has ${goldBought} bought Gold, needs EXACTLY ${GOLD_EXACT_BIDDING_IF_BOUGHT} bidding (has ${goldBidding})`;
+        }
+      } else {
+        // If user has 0 bought Gold players, need EXACTLY 8 bidding (total 8)
+        if (goldBidding !== GOLD_EXACT_BIDDING_IF_NOT_BOUGHT) {
+          failsGoldRequirement = true;
+          goldReason = `Has 0 bought Gold, needs EXACTLY ${GOLD_EXACT_BIDDING_IF_NOT_BOUGHT} bidding (has ${goldBidding})`;
         }
       }
 
-      // ── 2-b. NEW: Check Emerald+Sapphire maximum ──────────────────────────
-      const esCombined =
-        (counts['Emerald'] || 0) + (counts['Sapphire'] || 0);
-      const exceedsES = esCombined > MAX_ES_COMBINED;
-
-      // ── 2-c. Decide whether to lock this user ─────────────────────────────
-      if (failsMinimum || exceedsES) {
+      // ── 2-b. Lock user ONLY if they fail Gold requirements ─────────────────
+      if (failsGoldRequirement) {
         toLock.push(user._id);
         details.push({
-          userId : user._id,
-          reason : failsMinimum ? 'belowMinimum' : 'exceedsES',
-          data   : failsMinimum ? missing : { combined: esCombined }
+          userId: user._id,
+          reason: 'goldRequirement',
+          data: {
+            goldBought,
+            goldBidding,
+            goldTotal,
+            requirement: goldBought >= 1 ? GOLD_EXACT_BIDDING_IF_BOUGHT : GOLD_EXACT_BIDDING_IF_NOT_BOUGHT,
+            explanation: goldReason
+          }
         });
       }
     }
@@ -1394,7 +1409,7 @@ router.post('/lock-under-limit/all', async (_req, res) => {
 
     // ── 4. RESPONSE ──────────────────────────────────────────────────────────
     return res.json({
-      message     : `Locked ${toLock.length} user(s) (minimums or Emerald+Sapphire > ${MAX_ES_COMBINED}).`,
+      message     : `Locked ${toLock.length} user(s) for not meeting Gold requirements (1+ bought needs exactly 6 bidding = 7 total, 0 bought needs exactly 8 bidding = 8 total).`,
       totalLocked : toLock.length,
       details,
     });

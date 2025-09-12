@@ -90,18 +90,19 @@ cron.schedule('0 */15 0-23 * * *', runBulkExit, {
 
 
 // ---------------------------------------------------------------------------
-// Lock Account run exact at 22:59:59 IST each night
+// Lock Account run exact at 22:00:00 IST (10 PM sharp) each night
 // ---------------------------------------------------------------------------
 
-// cron.schedule('59 59 22 * * *', async () => {          // 22:59:59 IST each night
-//   console.log(`⏱️  [${new Date().toISOString()}] running lock-under-limit/all`);
-//   try {
-//     const { data } = await axios.post(LOCK_PATH);
-//     console.log('   →', data.message);
-//   } catch (err) {
-//     console.error('   ❌ cron error:', err.response?.data ?? err.message);
-//   }
-// }, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 0 22 * * *', async () => {          // 22:00:00 IST (10 PM sharp) each night
+  console.log(`⏱️  [${new Date().toISOString()}] running lock-under-limit/all at 10 PM IST`);
+  try {
+    const { data } = await axios.post(LOCK_PATH);
+    console.log('   →', data.message);
+    console.log(`   → Locked ${data.totalLocked} users for not meeting Gold requirements (1+ bought needs exactly 6 bidding = 7 total, 0 bought needs exactly 8 bidding = 8 total)`);
+  } catch (err) {
+    console.error('   ❌ cron error:', err.response?.data ?? err.message);
+  }
+}, { timezone: 'Asia/Kolkata' });
 
 
 
