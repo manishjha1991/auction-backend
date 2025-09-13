@@ -35,7 +35,7 @@ const retainedPlayerRoutes = require('./routes/retainedPlayers');
 app.set('io', io);
 // 🚀 OPTIMIZED MongoDB Connection Pooling Configuration
 const mongooseOptions = {
-  dbName: 'cpl_12_auction_ready',
+  dbName: 'cpl_12',
   useNewUrlParser: true,
   useUnifiedTopology: true,
   
@@ -127,5 +127,5 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3000;
 
 // register cron jobs
-require('./scheduler');
+// require('./scheduler');
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
