@@ -4,12 +4,12 @@ const playoffFixtureSchema = new mongoose.Schema({
   matchId: {
     type: String,
     required: true,
-    enum: ['A', 'B', 'C', 'D', 'E', 'F']
+    enum: ['A', 'B', 'C', 'D', 'E', 'F', 'Q1', 'Q2', 'SF1', 'SF2']
   },
   stage: {
     type: String,
     required: true,
-    enum: ['ELIMINATOR ROUND', 'QUALIFIER 1', 'ELIMINATOR 2', 'QUALIFIER 2', 'FINALS']
+    enum: ['ELIMINATOR ROUND', 'QUALIFIER 1', 'ELIMINATOR 2', 'QUALIFIER 2', 'FINALS', 'SEMI-FINAL 1', 'SEMI-FINAL 2', 'FINAL']
   },
   team1: {
     type: String,
@@ -18,6 +18,10 @@ const playoffFixtureSchema = new mongoose.Schema({
   team2: {
     type: String,
     required: true
+  },
+  description: {
+    type: String,
+    default: null
   },
   team1Score: {
     type: String,
