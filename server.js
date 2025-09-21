@@ -35,7 +35,7 @@ const retainedPlayerRoutes = require('./routes/retainedPlayers');
 app.set('io', io);
 // 🚀 OPTIMIZED MongoDB Connection Pooling Configuration
 const mongooseOptions = {
-  dbName: 'cpl_12_auction_ready',
+  dbName: 'cpl_13_2',
   useNewUrlParser: true,
   useUnifiedTopology: true,
   
