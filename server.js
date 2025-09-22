@@ -84,10 +84,48 @@ mongoose.connect(process.env.MONGO_URI, mongooseOptions)
   });
 
 app.use('/uploads', express.static('uploads'));
-app.use(cors());
+
+// Enhanced CORS configuration for geographic access
+app.use(cors({
+  origin: '*', // Allow all origins
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'user-id'],
+  credentials: false
+}));
+
+// Add request logging middleware
+app.use((req, res, next) => {
+  const clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+  const userAgent = req.get('User-Agent') || 'Unknown';
+  const country = req.get('CF-IPCountry') || req.get('X-Country-Code') || 'Unknown';
+  
+  console.log(`🌍 Request from ${country} (IP: ${clientIP}): ${req.method} ${req.path}`);
+  console.log(`📱 User-Agent: ${userAgent}`);
+  
+  next();
+});
+
 app.use(express.json());
 
-app.use('/auth', authRoutes);
+// Test endpoint to check if requests are reaching the server
+app.get('/api/test', (req, res) => {
+  const clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+  const country = req.get('CF-IPCountry') || req.get('X-Country-Code') || 'Unknown';
+  const userAgent = req.get('User-Agent') || 'Unknown';
+  
+  console.log(`🧪 TEST ENDPOINT HIT from ${country} (IP: ${clientIP})`);
+  console.log(`📱 User-Agent: ${userAgent}`);
+  
+  res.json({
+    message: 'Server is reachable!',
+    timestamp: new Date().toISOString(),
+    clientIP,
+    country,
+    userAgent: userAgent.substring(0, 100) // Truncate for readability
+  });
+});
+
+app.use('/api/auth', authRoutes);
 app.use('/api/player', playerRoutes); // This sets the base route for players
 app.use('/api/users', userRoutes); // Mount the route
 app.use('/api/fixtures', fixtureRoutes);

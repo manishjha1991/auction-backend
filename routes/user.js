@@ -47,6 +47,13 @@ router.post('/signup', async (req, res) => {
 });
 // POST: User Login
 router.post('/login', async (req, res) => {
+  const clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+  const country = req.get('CF-IPCountry') || req.get('X-Country-Code') || 'Unknown';
+  
+  console.log(`🔐 LOGIN ATTEMPT from ${country} (IP: ${clientIP})`);
+  console.log(`📧 Email: ${req.body.email}`);
+  console.log(`🔑 Password length: ${req.body.password ? req.body.password.length : 0}`);
+  
   const { email, password } = req.body;
   console.log(email, password,"@@@@@@@@@@@@@@");
   try {
