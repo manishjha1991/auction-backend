@@ -3,6 +3,13 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
 const router = express.Router();
+
+// Add middleware to log ALL requests to user routes
+router.use((req, res, next) => {
+  console.log(`👤 USER ROUTE: ${req.method} ${req.path}`);
+  console.log(`📝 Body:`, req.body);
+  next();
+});
 const User = require('../models/User'); // Adjust the path based on your project structure
 const AppSettings = require('../models/AppSettings');
 const Player = require('../models/Player');
