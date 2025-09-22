@@ -10,11 +10,16 @@ const router = express.Router();
 
 router.get('/', async (req, res) => {
   try {
-    // 1) Fetch teams (users) that have a valid teamName, are active, and are tournament ready.
+    // Get mode from query parameter
+    const mode = req.query.mode || 'normal';
+    console.log(`🏏 Fixture generation mode: ${mode}`);
+    
+    // 1) Fetch teams (users) that have a valid teamName, are active, tournament ready, and are not admin.
     const teams = await User.find({
       teamName: { $exists: true, $ne: null, $ne: 'NA' },
       isActive: true,
-      isTournamentReady: true // NEW: Only include users who are tournament ready
+      isTournamentReady: true, // Only include users who are tournament ready
+      isAdmin: { $ne: true } // Exclude admin teams
     })
       .populate('boughtPlayers')
       .select('teamName teamImage boughtPlayers group'); 
@@ -56,13 +61,10 @@ router.get('/', async (req, res) => {
       )
     );
 
-    // 6) Generate new fixtures based on group assignment
+    // 6) Generate new fixtures based on mode
     const newFixtures = [];
 
-    // Check if we have groups assigned
-    const hasGroups = groupA.length > 0 || groupB.length > 0;
-
-    if (hasGroups) {
+    if (mode === 'groups') {
       // GROUP STAGE: Generate fixtures within each group
       console.log('🏆 Generating GROUP STAGE fixtures...');
       
@@ -129,10 +131,16 @@ router.get('/', async (req, res) => {
         }
       }
     } else {
-      // NORMAL MODE: Generate fixtures for all teams (original behavior)
+      // NORMAL MODE: Generate fixtures for all teams (everyone plays everyone)
       console.log('🏏 Generating NORMAL fixtures...');
+      console.log(`📊 Found ${teams.length} teams for normal mode fixture generation`);
       const teamNames = teams.map((team) => team.teamName);
       
+      // Calculate expected number of fixtures (n choose 2)
+      const expectedFixtures = (teams.length * (teams.length - 1)) / 2;
+      console.log(`📊 Expected fixtures for ${teams.length} teams: ${expectedFixtures} (every team plays each other once)`);
+      
+      // Generate fixtures for ALL teams regardless of group assignment
       for (let i = 0; i < teamNames.length; i++) {
         for (let j = i + 1; j < teamNames.length; j++) {
           const t1 = teamNames[i];
@@ -157,6 +165,10 @@ router.get('/', async (req, res) => {
       await Fixture.insertMany(newFixtures);
       console.log(`✅ Created ${newFixtures.length} new fixtures:`, newFixtures.map(f => `${f.team1} vs ${f.team2} (${f.matchType}${f.group ? ` - Group ${f.group}` : ''})`));
     }
+    
+    // 7.5) Log total fixture count
+    const totalActiveFixtures = await Fixture.countDocuments({ isActive: true });
+    console.log(`📊 Total active fixtures in database: ${totalActiveFixtures}`);
 
     // 8) Fetch *all* active fixtures sorted by createdAt
     const allFixtures = await Fixture.find({ isActive: true }).sort({
