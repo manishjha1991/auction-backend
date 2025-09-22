@@ -32,12 +32,40 @@ router.get('/unsold', async (req, res) => {
     const totalPages = Math.max(1, Math.ceil(total / limit));
     const skip = (page - 1) * limit;
 
-    const items = await Player.find(filter)
+    // First, get all players that match the filter
+    const allItems = await Player.find(filter)
       .select('name type role basePrice')
       .sort({ name: 1 })
-      .skip(skip)
-      .limit(limit)
       .lean();
+
+    // Check which players have active bids (like in user section)
+    const playerIds = allItems.map(item => item._id);
+    const activeBids = await Bid.find({
+      playerId: { $in: playerIds },
+      isActive: true,
+      isBidOn: true
+    }).select('playerId');
+
+    const playersWithActiveBids = new Set(activeBids.map(bid => bid.playerId.toString()));
+
+    // Add bidding status indicator to items
+    const itemsWithStatus = allItems.map(item => ({
+      ...item,
+      hasPendingRequest: playersWithActiveBids.has(item._id.toString()) // Player is under bidding if has active bids
+    }));
+
+    // Sort items to show "Request Raised" players first
+    const sortedItems = itemsWithStatus.sort((a, b) => {
+      // If both have or both don't have pending requests, sort by name
+      if (a.hasPendingRequest === b.hasPendingRequest) {
+        return a.name.localeCompare(b.name);
+      }
+      // If only one has pending request, prioritize it
+      return b.hasPendingRequest - a.hasPendingRequest;
+    });
+
+    // Apply pagination to sorted items
+    const items = sortedItems.slice(skip, skip + limit);
 
     res.json({ items, page, totalPages, total });
   } catch (e) {
