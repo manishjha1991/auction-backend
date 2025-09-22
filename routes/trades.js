@@ -270,14 +270,14 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       const newTeam1Purse = team1Purse + offeredValue - requestedValue;
       const newTeam2Purse = team2Purse + requestedValue - offeredValue;
       
-      if (Number.isNaN(newTeam1Purse) || Number.isNaN(newTeam2Purse)) {
-        return res.status(400).json({ message: 'Invalid purse or bid values for trade validation.' });
-      }
-      if (newTeam1Purse < 0 || newTeam2Purse < 0) {
-        return res.status(400).json({ 
-          message: 'Trade would result in negative purse balance for one or both teams.' 
-        });
-      }
+      // if (Number.isNaN(newTeam1Purse) || Number.isNaN(newTeam2Purse)) {
+      //   return res.status(400).json({ message: 'Invalid purse or bid values for trade validation.' });
+      // }
+      // if (newTeam1Purse < 0 || newTeam2Purse < 0) {
+      //   return res.status(400).json({ 
+      //     message: 'Trade would result in negative purse balance for one or both teams.' 
+      //   });
+      // }
 
       // 2. TYPE LIMITS VALIDATION: Check if trade violates team composition rules
       const [team1Counts, team2Counts] = await Promise.all([
