@@ -5,7 +5,10 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "check-purse-diff": "node check-user-purse-difference.js",
+    "update-purse": "node update-purse-to-100-minus-players.js",
+    "confirm-update-purse": "node confirm-update-purse.js"
   },
   "keywords": [],
   "author": "",
