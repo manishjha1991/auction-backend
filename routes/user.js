@@ -641,7 +641,8 @@ router.get('/points-table', async (req, res) => {
 
       return {
         _id: user._id,
-        teamName: user.abbreviation || user.teamName || 'Unknown', // Fallback to teamName if abbreviation is null
+        teamName: user.abbreviation || user.teamName || 'Unknown', // Display name (abbreviation)
+        originalTeamName: user.teamName || 'Unknown', // Original team name for fixture matching
         matchesPlayed,
         points,
         wins,
@@ -708,7 +709,8 @@ router.get('/points-table-grouped', async (_req, res) => {
       const losses = matchesPlayed - wins;
       return {
         _id: u._id,
-        teamName: u.abbreviation || u.teamName || 'Unknown', // Fallback to teamName if abbreviation is null
+        teamName: u.abbreviation || u.teamName || 'Unknown', // Display name (abbreviation)
+        originalTeamName: u.teamName || 'Unknown', // Original team name for fixture matching
         matchesPlayed,
         points,
         wins,
