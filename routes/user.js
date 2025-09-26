@@ -286,9 +286,9 @@ router.get("/purses", async (req, res) => {
     // OPTIMIZATION: Fetch all data in parallel with single queries (excluding admin users)
     const [users, allUserPlayers, allActiveBids] = await Promise.all([
       User.find({ isAdmin: { $ne: true } }).select("name purse _id").lean(),
-      UserPlayer.find({ isActive: true }).populate("playerId", "name type").lean(),
+      UserPlayer.find({ isActive: true }).populate("playerId", "name type role").lean(),
       Bid.find({ isActive: true, isBidOn: true })
-        .populate("playerId", "name type")
+        .populate("playerId", "name type role")
         .populate("bidder", "name _id")
         .sort({ bidAmount: -1 })
         .lean()
@@ -336,6 +336,7 @@ router.get("/purses", async (req, res) => {
           name: entry.playerId.name,
           boughtValue: entry.bidValue,
           type: entry.playerId.type,
+          role: entry.playerId.role,
           isBidOn: false, // Sold players are not actively being bid on
           biddingPrice: null,
           biddingBy: null,
@@ -347,6 +348,7 @@ router.get("/purses", async (req, res) => {
           name: bid.playerId.name,
           boughtValue: null, // Not yet sold, so no bought value
           type: bid.playerId.type,
+          role: bid.playerId.role,
           isBidOn: true, // Actively being bid on
           biddingPrice: bid.bidAmount,
           biddingBy: user.name, // User placing the bid
