@@ -16,7 +16,12 @@ const PlayerSchema = new mongoose.Schema({
     tradeLocked: { type: Boolean, default: false },
       // NEW FIELDS:
     totalRuns: { type: Number, default: 0 },
+    totalBalls: { type: Number, default: 0 },
+    totalRunsGiven: { type: Number, default: 0 },
+    totalBallsBowled: { type: Number, default: 0 },
     totalWickets: { type: Number, default: 0 },
+    momCount: { type: Number, default: 0 },
+    matchesPlayed: { type: Number, default: 0 },
 });
 
 // Add indexes for better performance

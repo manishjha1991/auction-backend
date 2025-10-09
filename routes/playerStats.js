@@ -6,6 +6,50 @@ const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
 // Load list of players with playerId and userId
 
+// Helper function to update cumulative stats in Player document
+const updatePlayerCumulativeStats = async (playerId) => {
+  try {
+    // Get all stats for this player
+    const allStats = await PlayerStats.find({ playerId });
+    
+    // Calculate cumulative stats
+    let totalRuns = 0;
+    let totalBalls = 0;
+    let totalRunsGiven = 0;
+    let totalBallsBowled = 0;
+    let totalWickets = 0;
+    let momCount = 0;
+
+    allStats.forEach(stat => {
+      totalRuns += stat.battingStats?.runs || 0;
+      totalBalls += stat.battingStats?.balls || 0;
+      totalRunsGiven += stat.bowlingStats?.runsGiven || 0;
+      totalBallsBowled += stat.bowlingStats?.ballsBowled || 0;
+      totalWickets += stat.bowlingStats?.wickets || 0;
+      if (stat.isMom) momCount++;
+    });
+
+    // Update the Player document
+    await Player.findByIdAndUpdate(playerId, {
+      $set: {
+        totalRuns: totalRuns,
+        totalBalls: totalBalls,
+        totalRunsGiven: totalRunsGiven,
+        totalBallsBowled: totalBallsBowled,
+        totalWickets: totalWickets,
+        momCount: momCount,
+        matchesPlayed: allStats.length
+      }
+    });
+
+    console.log(`Updated cumulative stats for player ${playerId}:`, {
+      totalRuns, totalBalls, totalRunsGiven, totalBallsBowled, totalWickets, momCount, matchesPlayed: allStats.length
+    });
+  } catch (error) {
+    console.error('Error updating cumulative stats:', error);
+  }
+};
+
 router.get('/list', async (req, res) => {
   try {
     const { userId } = req.query;
@@ -238,6 +282,9 @@ router.post('/store', async (req, res) => {
 
       await existingStats.save();
 
+      // Update the Player document with cumulative stats
+      await updatePlayerCumulativeStats(playerId);
+
       return res.status(200).json({
         message: 'Player stats updated successfully',
         data: existingStats,
@@ -261,6 +308,9 @@ router.post('/store', async (req, res) => {
       });
 
       await newStats.save();
+
+      // Update the Player document with cumulative stats
+      await updatePlayerCumulativeStats(playerId);
 
       return res.status(201).json({
         message: 'Player stats saved successfully',

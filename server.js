@@ -30,6 +30,7 @@ const playoffFixtureRoutes = require('./routes/playoffFixtures');
 const scheduleRoutes = require('./routes/schedules');
 const indexRoutes = require('./routes/indexes');
 const retainedPlayerRoutes = require('./routes/retainedPlayers');
+const tournamentRoutes = require('./routes/tournaments');
 
 
 app.set('io', io);
@@ -147,6 +148,7 @@ app.use('/api/schedules', scheduleRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/indexes', indexRoutes);
 app.use('/api/retained-players', retainedPlayerRoutes);
+app.use('/api/tournaments', tournamentRoutes);
 
 
 io.on('connection', (socket) => {
