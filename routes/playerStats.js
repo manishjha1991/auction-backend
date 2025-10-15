@@ -751,6 +751,117 @@ router.get('/stats-overview', async (req, res) => {
 
 
 
+// GET /player-details/:playerId - Get detailed stats for a specific player
+router.get('/player-details/:playerId', async (req, res) => {
+  try {
+    const { playerId } = req.params;
+
+    // Find the player
+    const player = await Player.findById(playerId);
+    if (!player) {
+      return res.status(404).json({ message: 'Player not found' });
+    }
+
+    // Find the user who owns this player
+    const ownerUser = await User.findOne({ boughtPlayers: playerId });
+    if (!ownerUser) {
+      return res.status(404).json({ message: 'Player owner not found' });
+    }
+
+    // Get all stats for this player
+    const stats = await PlayerStats.find({ playerId })
+      .populate({
+        path: 'opponentUserId',
+        model: User,
+        select: 'teamName'
+      })
+      .sort({ createdAt: 1 });
+
+    // Calculate totals and averages
+    let totalRuns = 0;
+    let totalBalls = 0;
+    let totalWickets = 0;
+    let totalRunsGiven = 0;
+    let totalBallsBowled = 0;
+    let momCount = 0;
+    let matchCount = stats.length;
+
+    // Helper functions
+    const calcStrikeRate = (runs, balls) => {
+      if (!balls || balls < 1) return 0;
+      return (runs / balls) * 100;
+    };
+
+    const calcEconomy = (runsGiven, ballsBowled) => {
+      if (!ballsBowled || ballsBowled < 6) return 0;
+      return (runsGiven / (ballsBowled / 6));
+    };
+
+    const calcBowlingStrikeRate = (ballsBowled, wickets) => {
+      if (!wickets || wickets < 1) return 0;
+      return ballsBowled / wickets;
+    };
+
+    // Build match history
+    const matchHistory = stats.map((stat, index) => {
+      const runs = stat.battingStats?.runs || 0;
+      const balls = stat.battingStats?.balls || 0;
+      const wickets = stat.bowlingStats?.wickets || 0;
+      const runsGiven = stat.bowlingStats?.runsGiven || 0;
+      const ballsBowled = stat.bowlingStats?.ballsBowled || 0;
+
+      // Add to totals
+      totalRuns += runs;
+      totalBalls += balls;
+      totalWickets += wickets;
+      totalRunsGiven += runsGiven;
+      totalBallsBowled += ballsBowled;
+      if (stat.isMom) momCount++;
+
+      return {
+        matchNumber: index + 1,
+        date: stat.createdAt,
+        teamName: ownerUser.teamName,
+        opponentTeam: stat.opponentUserId?.teamName || 'Unknown Team',
+        runs: runs,
+        balls: balls,
+        wickets: wickets,
+        runsGiven: runsGiven,
+        isMom: stat.isMom || false
+      };
+    });
+
+    // Calculate averages
+    const average = matchCount > 0 ? totalRuns / matchCount : 0;
+    const strikeRate = calcStrikeRate(totalRuns, totalBalls);
+    const economy = calcEconomy(totalRunsGiven, totalBallsBowled);
+    const bowlingStrikeRate = calcBowlingStrikeRate(totalBallsBowled, totalWickets);
+
+    // Determine if this is batting or bowling focused
+    const isBattingFocused = totalRuns > totalWickets * 10; // Simple heuristic
+
+    const response = {
+      playerName: player.name,
+      teamName: ownerUser.teamName,
+      type: isBattingFocused ? 'batting' : 'bowling',
+      totalRuns: totalRuns,
+      totalWickets: totalWickets,
+      average: parseFloat(average.toFixed(2)),
+      strikeRate: parseFloat(strikeRate.toFixed(2)),
+      economy: parseFloat(economy.toFixed(2)),
+      bowlingStrikeRate: parseFloat(bowlingStrikeRate.toFixed(1)),
+      momCount: momCount,
+      matchesPlayed: matchCount,
+      matchHistory: matchHistory
+    };
+
+    res.json(response);
+  } catch (error) {
+    console.error('Error fetching player details:', error);
+    res.status(500).json({ message: 'Error fetching player details', error: error.message });
+  }
+});
+
 module.exports = router;
 
 
