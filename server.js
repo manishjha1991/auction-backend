@@ -36,7 +36,7 @@ const tournamentRoutes = require('./routes/tournaments');
 app.set('io', io);
 // 🚀 OPTIMIZED MongoDB Connection Pooling Configuration
 const mongooseOptions = {
-  dbName: 'cpl_13_2',
+  dbName: 'cpl_14',
   useNewUrlParser: true,
   useUnifiedTopology: true,
   
