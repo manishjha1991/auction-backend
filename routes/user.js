@@ -18,6 +18,7 @@ const Fixture = require('../models/Fixture');
 const UserPlayer = require('../models/UserPlayer');
 const TradeRequest = require('../models/TradeRequest');
 const ReleaseRequest = require('../models/ReleaseRequest');
+const MatchResult = require('../models/MatchResult');
 const multer = require('multer');
 const path = require('path');
 // Configure Multer for file uploads
@@ -284,14 +285,15 @@ router.get("/purses", async (req, res) => {
     console.log('🚀 Starting purses API optimization...');
     
     // OPTIMIZATION: Fetch all data in parallel with single queries (excluding admin users)
-    const [users, allUserPlayers, allActiveBids] = await Promise.all([
-      User.find({ isAdmin: { $ne: true } }).select("name purse _id").lean(),
+    const [users, allUserPlayers, allActiveBids, matchResults] = await Promise.all([
+      User.find({ isAdmin: { $ne: true } }).select("name teamName purse _id").lean(),
       UserPlayer.find({ isActive: true }).populate("playerId", "name type role").lean(),
       Bid.find({ isActive: true, isBidOn: true })
         .populate("playerId", "name type role")
         .populate("bidder", "name _id")
         .sort({ bidAmount: -1 })
-        .lean()
+        .lean(),
+      MatchResult.find({}).lean()
     ]);
     
     console.log(`⏱️ Data fetch took: ${Date.now() - startTime}ms`);
@@ -354,11 +356,30 @@ router.get("/purses", async (req, res) => {
           biddingBy: user.name, // User placing the bid
         }));
 
+        // Calculate trophy and runner-up counts from match results
+        const teamWins = matchResults.filter(match => {
+          if (!match.winner || match.winner === 'tie' || match.winner === 'no_result') return false;
+          const winningTeam = match.winner === 'team1' ? match.team1 : match.team2;
+          return winningTeam === user.teamName;
+        });
+
+        const teamLosses = matchResults.filter(match => {
+          if (!match.winner || match.winner === 'tie' || match.winner === 'no_result') return false;
+          const winningTeam = match.winner === 'team1' ? match.team1 : match.team2;
+          return (match.team1 === user.teamName || match.team2 === user.teamName) && winningTeam !== user.teamName;
+        });
+
+        const trophyCount = teamWins.length;
+        const runnerUpCount = teamLosses.length;
+
         return {
           id: user._id, // Add user ID for frontend reference
           userName: user.name,
+          teamName: user.teamName,
           purseValue: parseFloat(user.purse.toString()), // Convert Decimal128 to Number
           players: [...soldPlayers, ...biddingPlayers], // Combine sold and bidding players
+          trophyCount: trophyCount,
+          runnerUpCount: runnerUpCount
         };
       });
 
