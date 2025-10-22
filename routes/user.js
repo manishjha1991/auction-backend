@@ -630,17 +630,79 @@ router.put('/update-points/:userId', async (req, res) => {
   }
 });
 
+// PUT: Update fairness points, matches played, and points directly (Admin only)
+router.put('/update-fairness/:userId', async (req, res) => {
+  const { userId } = req.params;
+  const { points, matchesPlayed, fairnessPoint } = req.body;
+
+  try {
+    // Validate input
+    if (points === undefined || matchesPlayed === undefined || fairnessPoint === undefined) {
+      return res.status(400).json({ message: 'All fields (points, matchesPlayed, fairnessPoint) are required' });
+    }
+
+    // Fetch the user
+    const user = await User.findById(userId);
+    if (!user || !user.teamName) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Update points, matches played, and fairness points directly
+    user.points = parseInt(points) || 0;
+    user.matchesPlayed = parseInt(matchesPlayed) || 0;
+    user.fairnessPoint = parseInt(fairnessPoint) || 0;
+
+    await user.save();
+
+    console.log(`Updated team ${user.teamName}: Points=${user.points}, Matches=${user.matchesPlayed}, Fairness=${user.fairnessPoint}`);
+
+    res.json({ 
+      message: 'Team stats updated successfully', 
+      user: {
+        _id: user._id,
+        teamName: user.teamName,
+        abbreviation: user.abbreviation,
+        points: user.points,
+        matchesPlayed: user.matchesPlayed,
+        fairnessPoint: user.fairnessPoint
+      }
+    });
+  } catch (error) {
+    console.error('Error updating team stats:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// GET: Debug endpoint to check all users and their fairness points
+router.get('/debug-fairness', async (req, res) => {
+  try {
+    const users = await User.find({ 
+      teamName: { $exists: true, $ne: null, $ne: "NA" }, 
+      isActive: true,
+      isAdmin: false
+    })
+    .select('_id teamName abbreviation points matchesPlayed fairnessPoint isTournamentReady')
+    .lean();
+
+    console.log('Debug - All users with fairness data:', users);
+    res.json({ users, count: users.length });
+  } catch (error) {
+    console.error('Error fetching debug data:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 
 
 
 router.get('/points-table', async (req, res) => {
   try {
-    // Fetch all users who have a valid team name, are active, are NOT admins, and are tournament ready
+    // Fetch all users who have a valid team name, are active, and are NOT admins
     const users = await User.find({ 
       teamName: { $exists: true, $ne: null, $ne: "NA" }, 
       isActive: true,
-      isAdmin: false, // Exclude admin accounts
-      isTournamentReady: true // NEW: Only include users who are tournament ready
+      isAdmin: false // Exclude admin accounts
+      // Removed isTournamentReady filter to include all teams for fairness management
     })
     .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage')
     .lean();
