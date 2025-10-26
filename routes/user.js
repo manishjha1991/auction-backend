@@ -475,6 +475,9 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
+    // Store the old team name before updating
+    const oldTeamName = user.teamName;
+
     // Update user fields
     user.name = name;
     user.teamName = teamName;
@@ -508,6 +511,26 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
     await user.save();
     
     console.log('User saved with timezone:', user.timezone);
+    
+    // If team name changed, update ALL references across the entire system
+    if (oldTeamName && oldTeamName !== teamName) {
+      console.log(`🔄 Team name changed from "${oldTeamName}" to "${teamName}". Starting comprehensive update...`);
+      
+      try {
+        // Use the comprehensive team name updater
+        const { updateTeamNameEverywhere } = require('../utils/teamNameUpdater');
+        const updateSummary = await updateTeamNameEverywhere(oldTeamName, teamName, userId);
+        
+        // Log the comprehensive update results
+        const totalUpdates = Object.values(updateSummary.updates).reduce((sum, count) => sum + count, 0);
+        console.log(`✅ Comprehensive team name update completed: ${totalUpdates} total updates made`);
+        console.log(`📊 Details: Fixtures(${updateSummary.updates.fixtures}), MatchResults(${updateSummary.updates.matchResults}), MOM(${updateSummary.updates.momReferences}), Playoffs(${updateSummary.updates.playoffFixtures}), Tournaments(${updateSummary.updates.tournaments})`);
+        
+      } catch (updateError) {
+        console.error('❌ Error during comprehensive team name update:', updateError);
+        // Don't fail the profile update if this fails, but log the error
+      }
+    }
     
     // Verify the timezone was actually saved by fetching from database
     const savedUser = await User.findById(userId);

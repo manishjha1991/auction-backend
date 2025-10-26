@@ -29,37 +29,59 @@ router.get('/', async (req, res) => {
     // 2) Fetch all active fixtures (which store team1/team2 as strings)
     const existingFixtures = await Fixture.find({ isActive: true });
 
-    // Deduplicate existing fixtures with the same pair of team names
-    const uniqueFixtureMap = new Set();
+    // Advanced deduplication of existing fixtures with the same pair of team names
+    const fixtureMap = new Map();
+    const duplicatesToDelete = [];
+    
     for (const fixture of existingFixtures) {
-      // Both team1 and team2 are strings, so just do:
       const sortedKey = [fixture.team1, fixture.team2].sort().join('-');
-
-      if (uniqueFixtureMap.has(sortedKey)) {
-        // If we already have this pair, 
-        // and there's no winner => remove the duplicate
-        if (!fixture.winner) {
-          await Fixture.deleteOne({ _id: fixture._id });
+      
+      if (fixtureMap.has(sortedKey)) {
+        const existingFixture = fixtureMap.get(sortedKey);
+        
+        // Keep the fixture with a winner, or the newer one if both have/don't have winners
+        if (existingFixture.winner && !fixture.winner) {
+          // Keep existing (has winner), delete current (no winner)
+          duplicatesToDelete.push(fixture._id);
+        } else if (!existingFixture.winner && fixture.winner) {
+          // Delete existing (no winner), keep current (has winner)
+          duplicatesToDelete.push(existingFixture._id);
+          fixtureMap.set(sortedKey, fixture);
+        } else if (!existingFixture.winner && !fixture.winner) {
+          // Neither has winner, keep the newer one
+          if (fixture.createdAt > existingFixture.createdAt) {
+            duplicatesToDelete.push(existingFixture._id);
+            fixtureMap.set(sortedKey, fixture);
+          } else {
+            duplicatesToDelete.push(fixture._id);
+          }
+        } else {
+          // Both have winners, keep the older one (first completed match)
+          if (fixture.createdAt > existingFixture.createdAt) {
+            duplicatesToDelete.push(fixture._id);
+          } else {
+            duplicatesToDelete.push(existingFixture._id);
+            fixtureMap.set(sortedKey, fixture);
+          }
         }
       } else {
-        uniqueFixtureMap.add(sortedKey);
+        fixtureMap.set(sortedKey, fixture);
       }
     }
+    
+    // Delete all identified duplicates in one go
+    if (duplicatesToDelete.length > 0) {
+      await Fixture.deleteMany({ _id: { $in: duplicatesToDelete } });
+      console.log(`🗑️ Deleted ${duplicatesToDelete.length} duplicate fixtures`);
+    }
 
-    // 3) Re-fetch cleaned active fixtures
-    const cleanedFixtures = await Fixture.find({ isActive: true });
+    // 3) Use the cleaned fixture map for existing fixture keys
+    const existingFixtureKeys = new Set(fixtureMap.keys());
 
     // 4) Separate teams by groups
     const groupA = teams.filter(team => team.group === 'A');
     const groupB = teams.filter(team => team.group === 'B');
     const ungroupedTeams = teams.filter(team => !team.group || team.group === null);
-
-    // 5) Build a set of fixture keys from existing fixtures
-    const fixtureMap = new Set(
-      cleanedFixtures.map((f) =>
-        [f.team1, f.team2].sort().join('-')
-      )
-    );
 
     // 6) Generate new fixtures based on mode
     const newFixtures = [];
@@ -76,14 +98,14 @@ router.get('/', async (req, res) => {
             const t2 = groupA[j].teamName;
             const fixtureKey = [t1, t2].sort().join('-');
 
-            if (!fixtureMap.has(fixtureKey)) {
+            if (!existingFixtureKeys.has(fixtureKey)) {
               newFixtures.push({ 
                 team1: t1, 
                 team2: t2, 
                 group: 'A',
                 matchType: 'group'
               });
-              fixtureMap.add(fixtureKey);
+              existingFixtureKeys.add(fixtureKey);
             }
           }
         }
@@ -97,14 +119,14 @@ router.get('/', async (req, res) => {
             const t2 = groupB[j].teamName;
             const fixtureKey = [t1, t2].sort().join('-');
 
-            if (!fixtureMap.has(fixtureKey)) {
+            if (!existingFixtureKeys.has(fixtureKey)) {
               newFixtures.push({ 
                 team1: t1, 
                 team2: t2, 
                 group: 'B',
                 matchType: 'group'
               });
-              fixtureMap.add(fixtureKey);
+              existingFixtureKeys.add(fixtureKey);
             }
           }
         }
@@ -118,14 +140,14 @@ router.get('/', async (req, res) => {
             const t2 = ungroupedTeams[j].teamName;
             const fixtureKey = [t1, t2].sort().join('-');
 
-            if (!fixtureMap.has(fixtureKey)) {
+            if (!existingFixtureKeys.has(fixtureKey)) {
               newFixtures.push({ 
                 team1: t1, 
                 team2: t2, 
                 group: null,
                 matchType: 'normal'
               });
-              fixtureMap.add(fixtureKey);
+              existingFixtureKeys.add(fixtureKey);
             }
           }
         }
@@ -147,33 +169,56 @@ router.get('/', async (req, res) => {
           const t2 = teamNames[j];
           const fixtureKey = [t1, t2].sort().join('-');
 
-          if (!fixtureMap.has(fixtureKey)) {
+          if (!existingFixtureKeys.has(fixtureKey)) {
             newFixtures.push({ 
               team1: t1, 
               team2: t2, 
               group: null,
               matchType: 'normal'
             });
-            fixtureMap.add(fixtureKey);
+            existingFixtureKeys.add(fixtureKey);
           }
         }
       }
     }
 
-    // 7) Insert any new fixtures
+    // 7) Create new fixtures using smart creation to prevent duplicates
+    let insertedFixtures = [];
     if (newFixtures.length > 0) {
-      await Fixture.insertMany(newFixtures);
-      console.log(`✅ Created ${newFixtures.length} new fixtures:`, newFixtures.map(f => `${f.team1} vs ${f.team2} (${f.matchType}${f.group ? ` - Group ${f.group}` : ''})`));
+      const { createOrUpdateFixture } = require('../utils/teamNameUpdater');
+      
+      console.log(`🔨 Processing ${newFixtures.length} new fixtures with smart creation...`);
+      for (const fixtureData of newFixtures) {
+        try {
+          const createdFixture = await createOrUpdateFixture(
+            fixtureData.team1, 
+            fixtureData.team2, 
+            {
+              group: fixtureData.group,
+              matchType: fixtureData.matchType
+            }
+          );
+          insertedFixtures.push(createdFixture);
+          
+          // Add to our fixture map
+          const sortedKey = [createdFixture.team1, createdFixture.team2].sort().join('-');
+          fixtureMap.set(sortedKey, createdFixture);
+        } catch (error) {
+          console.error(`❌ Error creating fixture ${fixtureData.team1} vs ${fixtureData.team2}:`, error.message);
+        }
+      }
+      
+      console.log(`✅ Smart fixture creation completed: ${insertedFixtures.length} fixtures processed`);
     }
     
     // 7.5) Log total fixture count
     const totalActiveFixtures = await Fixture.countDocuments({ isActive: true });
     console.log(`📊 Total active fixtures in database: ${totalActiveFixtures}`);
 
-    // 8) Fetch *all* active fixtures sorted by createdAt
-    const allFixtures = await Fixture.find({ isActive: true }).sort({
-      createdAt: 1,
-    });
+    // 8) Get all fixtures from our cleaned map and sort by createdAt
+    const allFixtures = Array.from(fixtureMap.values()).sort((a, b) => 
+      new Date(a.createdAt) - new Date(b.createdAt)
+    );
 
     // 9) Enhance each fixture with user/team details, matched by teamName
     const enhancedFixtures = allFixtures.map((fixture) => {
@@ -234,7 +279,9 @@ router.post('/save', async (req, res) => {
       matchType,
     } = req.body;
 
-    let fixture = await Fixture.findOne({ team1, team2 });
+    // Use smart fixture lookup to find existing fixture regardless of team order
+    const { findExistingFixture } = require('../utils/teamNameUpdater');
+    let fixture = await findExistingFixture(team1, team2);
 
     // If no existing fixture, create a new one
     if (!fixture) {
@@ -251,15 +298,43 @@ router.post('/save', async (req, res) => {
         group: group || null,
         matchType: matchType || 'normal',
       });
+      console.log(`✨ Creating new fixture: ${team1} vs ${team2}`);
     } else {
-      // Otherwise, update existing fixture
-      fixture.winner = winner;
+      console.log(`📝 Updating existing fixture: ${fixture.team1} vs ${fixture.team2}`);
+      
+      // If teams are swapped in existing fixture, adjust the incoming data to match fixture order
+      let adjustedTeam1 = team1, adjustedTeam2 = team2;
+      let adjustedTeam1Score = team1Score, adjustedTeam2Score = team2Score;
+      let adjustedTeam1Fairness = team1Fairness, adjustedTeam2Fairness = team2Fairness;
+      let adjustedWinner = winner;
+
+      if (fixture.team1 === team2 && fixture.team2 === team1) {
+        // Teams are swapped - adjust all data to match existing fixture order
+        adjustedTeam1 = team2;
+        adjustedTeam2 = team1;
+        adjustedTeam1Score = team2Score;
+        adjustedTeam2Score = team1Score;
+        adjustedTeam1Fairness = team2Fairness;
+        adjustedTeam2Fairness = team1Fairness;
+        
+        // Adjust winner to match correct team position in fixture
+        if (winner === team1) {
+          adjustedWinner = fixture.team2; // team1 maps to fixture.team2
+        } else if (winner === team2) {
+          adjustedWinner = fixture.team1; // team2 maps to fixture.team1
+        }
+        
+        console.log(`🔄 Teams swapped in existing fixture - adjusting data to match fixture order`);
+      }
+
+      // Update existing fixture with adjusted data
+      fixture.winner = adjustedWinner;
       fixture.margin = margin;
       fixture.mom = mom;
-      fixture.team1Score = team1Score;
-      fixture.team2Score = team2Score;
-      fixture.team1Fairness = team1Fairness;
-      fixture.team2Fairness = team2Fairness;
+      fixture.team1Score = adjustedTeam1Score;
+      fixture.team2Score = adjustedTeam2Score;
+      fixture.team1Fairness = adjustedTeam1Fairness;
+      fixture.team2Fairness = adjustedTeam2Fairness;
       // Update group and matchType if provided
       if (group !== undefined) fixture.group = group;
       if (matchType !== undefined) fixture.matchType = matchType;
@@ -367,4 +442,67 @@ router.get('/normal', async (req, res) => {
   }
 });
 
+// Admin route to manually clean up duplicate fixtures
+router.post('/cleanup-duplicates', async (req, res) => {
+  try {
+    console.log('🧹 Starting manual fixture cleanup...');
+    
+    const existingFixtures = await Fixture.find({ isActive: true });
+    const fixtureMap = new Map();
+    const duplicatesToDelete = [];
+    
+    for (const fixture of existingFixtures) {
+      const sortedKey = [fixture.team1, fixture.team2].sort().join('-');
+      
+      if (fixtureMap.has(sortedKey)) {
+        const existingFixture = fixtureMap.get(sortedKey);
+        
+        // Keep the fixture with a winner, or the newer one if both have/don't have winners
+        if (existingFixture.winner && !fixture.winner) {
+          duplicatesToDelete.push(fixture._id);
+        } else if (!existingFixture.winner && fixture.winner) {
+          duplicatesToDelete.push(existingFixture._id);
+          fixtureMap.set(sortedKey, fixture);
+        } else if (!existingFixture.winner && !fixture.winner) {
+          // Neither has winner, keep the newer one
+          if (fixture.createdAt > existingFixture.createdAt) {
+            duplicatesToDelete.push(existingFixture._id);
+            fixtureMap.set(sortedKey, fixture);
+          } else {
+            duplicatesToDelete.push(fixture._id);
+          }
+        } else {
+          // Both have winners, keep the older one (first completed match)
+          if (fixture.createdAt > existingFixture.createdAt) {
+            duplicatesToDelete.push(fixture._id);
+          } else {
+            duplicatesToDelete.push(existingFixture._id);
+            fixtureMap.set(sortedKey, fixture);
+          }
+        }
+      } else {
+        fixtureMap.set(sortedKey, fixture);
+      }
+    }
+    
+    // Delete all identified duplicates
+    let deletedCount = 0;
+    if (duplicatesToDelete.length > 0) {
+      await Fixture.deleteMany({ _id: { $in: duplicatesToDelete } });
+      deletedCount = duplicatesToDelete.length;
+      console.log(`🗑️ Deleted ${deletedCount} duplicate fixtures`);
+    }
+    
+    res.status(200).json({
+      message: `Fixture cleanup completed. Deleted ${deletedCount} duplicate fixtures.`,
+      deletedCount,
+      remainingFixtures: fixtureMap.size
+    });
+  } catch (error) {
+    console.error('Error during fixture cleanup:', error);
+    res.status(500).json({ message: 'Failed to cleanup fixtures.' });
+  }
+});
+
 module.exports = router;
+
