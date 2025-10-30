@@ -167,7 +167,7 @@ const verifySyncResults = async () => {
     // Check for players that are in userPlayer but not in boughtPlayers
     let mismatches = 0;
     for (const user of usersWithBoughtPlayers) {
-      const userPlayerRecords = await UserPlayer.find({ userId: user._id }).select('playerId');
+      const userPlayerRecords = await UserPlayer.find({ userId: user._id, isActive: true }).select('playerId');
       const userPlayerIds = userPlayerRecords.map(up => up.playerId.toString());
       const boughtPlayerIds = user.boughtPlayers.map(bp => bp.toString());
       
