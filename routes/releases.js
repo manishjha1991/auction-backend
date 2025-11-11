@@ -85,6 +85,7 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
           await Player.findByIdAndUpdate(item.player, {
             $set: {
               isSold: false,
+              isActive: false,
               currentBid: null,
               currentBidder: null,
               tradeLocked: false // Reset trade lock when player is released
