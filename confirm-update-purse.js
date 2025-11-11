@@ -9,7 +9,7 @@ const UserPlayer = require('./models/UserPlayer');
 const connectDB = async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI, {
-      dbName: 'cpl_13_2',
+      dbName: 'cpl_15',
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
@@ -79,7 +79,8 @@ const updatePurseTo100MinusPlayers = async () => {
       const currentStr = currentPurseCr.toFixed(2).padStart(13);
       const playersStr = boughtValueCr.toFixed(2).padStart(13);
       const newStr = newPurseCr.toFixed(2).padStart(9);
-      const diffStr = (newPurseCr - currentPurseCr).toFixed(2).padStart(10);
+      const diffValue = newPurseCr - currentPurseCr;
+      const diffStr = Math.abs(diffValue).toFixed(2).padStart(10);
       
       console.log(`| ${teamName} | ${currentStr} | ${playersStr} | ${newStr} | ${diffStr} |`);
       
