@@ -4,6 +4,10 @@ const TradeRequest = require('../models/TradeRequest');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
+const {
+  analyzeTeamBalance,
+  generateTradeRecommendations,
+} = require('../utils/tradeInsights');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
@@ -32,6 +36,25 @@ async function getOwnerOfPlayer(playerId) {
   const up = await UserPlayer.findOne({ playerId, isActive: true }).populate('userId');
   return up ? up.userId : null;
 }
+
+router.get('/insights/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId) {
+      return res.status(400).json({ message: 'userId is required' });
+    }
+
+    const balance = await analyzeTeamBalance(userId);
+    const recommendations = await generateTradeRecommendations(userId, { limit: 3 });
+
+    res.json({ balance, recommendations });
+  } catch (error) {
+    console.error('Trade insights error:', error);
+    res
+      .status(error.statusCode || 500)
+      .json({ message: error.message || 'Unable to generate trade insights' });
+  }
+});
 
 // POST create trade request
 router.post('/', async (req, res) => {

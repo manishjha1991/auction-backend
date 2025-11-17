@@ -6,6 +6,78 @@ const User = require('../models/User');
 const Player = require('../models/Player'); // Add Player model import
 const Bid = require('../models/Bid'); // Add Bid model import for cleanup
 
+const CRORE = 10000000;
+
+const roundToTwo = (value = 0) => Number((value || 0).toFixed(2));
+
+async function buildReleaseInsight(requestDoc) {
+  try {
+    const request = requestDoc.toObject ? requestDoc.toObject({ virtuals: true }) : requestDoc;
+    const userId = request.user?._id || request.user;
+    const playerId = request.player?._id || request.player;
+    if (!userId || !playerId) return null;
+
+    const [activeCount, ownership, freshUser] = await Promise.all([
+      UserPlayer.countDocuments({ userId, isActive: true }),
+      UserPlayer.findOne({ userId, playerId, isActive: true }).select('bidValue'),
+      request.user && typeof request.user.purse !== 'undefined'
+        ? null
+        : User.findById(userId).select('purse'),
+    ]);
+
+    const refundValue = Number(ownership?.bidValue || 0);
+    const refundAvailable = refundValue > 0;
+    const refundCrValue = refundAvailable ? refundValue / CRORE : null;
+    const currentPurseRaw =
+      request.user?.purse ?? freshUser?.purse ?? 0;
+    const currentPurseCr = Number(currentPurseRaw) / CRORE;
+    const projectedPurseCr = refundAvailable
+      ? currentPurseCr + refundCrValue
+      : currentPurseCr;
+    const remainingPlayers = Math.max(
+      activeCount - (ownership ? 1 : 0),
+      0
+    );
+
+    const warnings = [];
+    if (remainingPlayers < 16) {
+      warnings.push(
+        `Roster would drop to ${remainingPlayers} players after release.`
+      );
+    }
+    if (!refundAvailable) {
+      warnings.push('Refund value unavailable; admin will confirm amount.');
+    }
+
+    const baseSummary = `${request.user?.teamName || 'Team'} currently has ${activeCount} active players and ₹${roundToTwo(currentPurseCr)} Cr in purse.`;
+    const summary = refundAvailable
+      ? `${baseSummary} Releasing ${request.player?.name || 'this player'} would refund approximately ₹${roundToTwo(refundCrValue)} Cr, leaving ${remainingPlayers} players with a projected purse of ₹${roundToTwo(projectedPurseCr)} Cr.`
+      : `${baseSummary} Releasing ${request.player?.name || 'this player'} keeps the purse at ₹${roundToTwo(projectedPurseCr)} Cr (refund amount pending confirmation).`;
+
+    return {
+      summary,
+      refundCr: refundAvailable ? roundToTwo(refundCrValue) : null,
+      projectedPurseCr: roundToTwo(projectedPurseCr),
+      remainingPlayers,
+      warnings,
+    };
+  } catch (error) {
+    console.error('Release insight error:', error.message);
+    return null;
+  }
+}
+
+async function attachInsights(docs) {
+  return Promise.all(
+    docs.map(async doc => {
+      const insight = await buildReleaseInsight(doc);
+      const obj = doc.toObject({ virtuals: true });
+      if (insight) obj.aiInsight = insight;
+      return obj;
+    })
+  );
+}
+
 // Create release request
 router.post('/', async (req, res) => {
   try {
@@ -19,7 +91,15 @@ router.post('/', async (req, res) => {
     const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true });
     if (!ownership) return res.status(400).json({ message: 'You do not own this player' });
     const rr = await ReleaseRequest.create({ user: userId, player: playerId, status: 'pending', history: [{ byUser: userId, action: 'propose' }] });
-    res.status(201).json(rr);
+
+    const populated = await ReleaseRequest.findById(rr._id)
+      .populate('player', 'name type role')
+      .populate('user', 'name teamName purse');
+
+    const responseObj = populated.toObject({ virtuals: true });
+    responseObj.aiInsight = await buildReleaseInsight(populated);
+
+    res.status(201).json(responseObj);
   } catch (e) {
     console.error('Release create error', e);
     res.status(500).json({ message: 'Internal server error' });
@@ -32,8 +112,10 @@ router.get('/user/:userId', async (req, res) => {
     const { userId } = req.params;
     const list = await ReleaseRequest.find({ user: userId })
       .populate('player', 'name type role')
+      .populate('user', 'name teamName purse')
       .sort({ createdAt: -1 });
-    res.json(list);
+    const enriched = await attachInsights(list);
+    res.json(enriched);
   } catch (e) {
     console.error('Release list error', e);
     res.status(500).json({ message: 'Internal server error' });
@@ -44,10 +126,11 @@ router.get('/user/:userId', async (req, res) => {
 router.get('/admin/pending', async (req, res) => {
   try {
     const list = await ReleaseRequest.find({ status: { $in: ['pending', 'admin_pending'] } })
-      .populate('user', 'name teamName')
+      .populate('user', 'name teamName purse')
       .populate('player', 'name type role')
       .sort({ updatedAt: -1 });
-    res.json(list);
+    const enriched = await attachInsights(list);
+    res.json(enriched);
   } catch (e) {
     console.error('Release pending error', e);
     res.status(500).json({ message: 'Internal server error' });
@@ -135,9 +218,12 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
     // Return populated release request
     const populatedItem = await ReleaseRequest.findById(releaseId)
       .populate('player', 'name type role')
-      .populate('user', 'name teamName');
+      .populate('user', 'name teamName purse');
+
+    const responseObj = populatedItem.toObject({ virtuals: true });
+    responseObj.aiInsight = await buildReleaseInsight(populatedItem);
     
-    res.json(populatedItem);
+    res.json(responseObj);
   } catch (e) {
     console.error('Release decide error', e);
     res.status(500).json({ message: 'Internal server error' });
@@ -179,9 +265,12 @@ router.post('/:releaseId/withdraw', async (req, res) => {
     // Return populated release request
     const populatedItem = await ReleaseRequest.findById(releaseId)
       .populate('player', 'name type role')
-      .populate('user', 'name teamName');
+      .populate('user', 'name teamName purse');
     
-    res.json(populatedItem);
+    const responseObj = populatedItem.toObject({ virtuals: true });
+    responseObj.aiInsight = await buildReleaseInsight(populatedItem);
+
+    res.json(responseObj);
   } catch (e) {
     console.error('Release withdraw error', e);
     res.status(500).json({ message: 'Internal server error' });
@@ -192,11 +281,12 @@ router.post('/:releaseId/withdraw', async (req, res) => {
 router.get('/admin/history', async (req, res) => {
   try {
     const list = await ReleaseRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
-      .populate('user', 'name teamName')
+      .populate('user', 'name teamName purse')
       .populate('player', 'name type role')
       .populate('adminDecision.decidedBy', 'name email')
       .sort({ 'adminDecision.decidedAt': -1 });
-    res.json(list);
+    const enriched = await attachInsights(list);
+    res.json(enriched);
   } catch (e) {
     console.error('Release history error', e);
     res.status(500).json({ message: 'Internal server error' });

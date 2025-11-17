@@ -6,6 +6,267 @@ const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
 // Load list of players with playerId and userId
 
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const roundNumber = (value = 0, digits = 2) => Number.parseFloat((value || 0).toFixed(digits));
+
+const summarizeRoleFocus = (player) => {
+  if (!player) return 'Utility Player';
+  if (player.role) return player.role;
+  if (player.type) return `${player.type} pick`;
+  return 'Squad Player';
+};
+
+const buildRecentHighlight = (runs, wickets) => {
+  if (runs >= 50) return 'Match-winning knock';
+  if (runs >= 35) return 'Anchor innings';
+  if (wickets >= 4) return 'Devastating spell';
+  if (wickets >= 2) return 'Key breakthroughs';
+  if (runs >= 20) return 'Handy cameo';
+  if (wickets === 0 && runs === 0) return 'Quiet outing';
+  return 'Support contribution';
+};
+
+const computeInsightPayload = (player, ownerTeam, stats) => {
+  if (!stats.length) {
+    return {
+      playerId: player._id,
+      playerName: player.name,
+      teamName: ownerTeam,
+      roleFocus: summarizeRoleFocus(player),
+      summary: 'No recorded performances yet. Once stats are logged, insights will appear here.',
+      form: null,
+      batting: null,
+      bowling: null,
+      recentMatches: [],
+      hasStats: false,
+    };
+  }
+
+  const sortedStats = [...stats].sort((a, b) => a.createdAt - b.createdAt);
+  const matchCount = sortedStats.length;
+  const lastFive = sortedStats.slice(-5);
+  const lastThree = sortedStats.slice(-3);
+  const previousThree = sortedStats.slice(-6, -3);
+
+  const totals = sortedStats.reduce(
+    (acc, stat) => {
+      const runs = stat.battingStats?.runs || 0;
+      const balls = stat.battingStats?.balls || 0;
+      const wickets = stat.bowlingStats?.wickets || 0;
+      const runsGiven = stat.bowlingStats?.runsGiven || 0;
+      const ballsBowled = stat.bowlingStats?.ballsBowled || 0;
+
+      acc.battingRuns += runs;
+      acc.battingBalls += balls;
+      acc.wickets += wickets;
+      acc.runsGiven += runsGiven;
+      acc.ballsBowled += ballsBowled;
+
+      return acc;
+    },
+    { battingRuns: 0, battingBalls: 0, wickets: 0, runsGiven: 0, ballsBowled: 0 }
+  );
+
+  const lastFiveTotals = lastFive.reduce(
+    (acc, stat) => {
+      const runs = stat.battingStats?.runs || 0;
+      const balls = stat.battingStats?.balls || 0;
+      const wickets = stat.bowlingStats?.wickets || 0;
+      const runsGiven = stat.bowlingStats?.runsGiven || 0;
+      const ballsBowled = stat.bowlingStats?.ballsBowled || 0;
+
+      acc.battingRuns += runs;
+      acc.battingBalls += balls;
+      acc.wickets += wickets;
+      acc.runsGiven += runsGiven;
+      acc.ballsBowled += ballsBowled;
+
+      return acc;
+    },
+    { battingRuns: 0, battingBalls: 0, wickets: 0, runsGiven: 0, ballsBowled: 0 }
+  );
+
+  const recentAvg = lastFive.length ? lastFiveTotals.battingRuns / lastFive.length : 0;
+  const recentStrikeRate =
+    lastFiveTotals.battingBalls > 0
+      ? (lastFiveTotals.battingRuns / lastFiveTotals.battingBalls) * 100
+      : 0;
+
+  const overallAvg = matchCount > 0 ? totals.battingRuns / matchCount : 0;
+  const overallStrikeRate =
+    totals.battingBalls > 0 ? (totals.battingRuns / totals.battingBalls) * 100 : 0;
+
+  const economy =
+    totals.ballsBowled > 0 ? totals.runsGiven / (totals.ballsBowled / 6 || 1) : 0;
+  const bowlingStrikeRate =
+    totals.wickets > 0 ? totals.ballsBowled / totals.wickets : 0;
+  const recentEconomy =
+    lastFiveTotals.ballsBowled > 0
+      ? lastFiveTotals.runsGiven / (lastFiveTotals.ballsBowled / 6 || 1)
+      : 0;
+
+  const lastThreeAvg =
+    lastThree.length > 0
+      ? lastThree.reduce((sum, stat) => sum + (stat.battingStats?.runs || 0), 0) /
+        lastThree.length
+      : 0;
+  const prevThreeAvg =
+    previousThree.length > 0
+      ? previousThree.reduce((sum, stat) => sum + (stat.battingStats?.runs || 0), 0) /
+        previousThree.length
+      : 0;
+
+  const trendUp = lastThreeAvg >= prevThreeAvg;
+  const formScore = clamp(
+    Math.round(recentAvg * 1.5 + recentStrikeRate / 4 + lastFiveTotals.wickets * 6),
+    12,
+    98
+  );
+
+  const formOutlook = trendUp
+    ? 'In rhythm – trending upward.'
+    : 'Needs a spark – form tapering slightly.';
+  const projection =
+    formScore >= 70
+      ? 'Projected to deliver an impact outing next match.'
+      : 'Best deployed with support while form rebuilds.';
+
+  const tags = [];
+  if (recentStrikeRate >= 140) tags.push('Powerplay aggressor');
+  if (recentAvg >= 35) tags.push('Reliable anchor');
+  if (lastFiveTotals.wickets / Math.max(lastFive.length, 1) >= 1.5)
+    tags.push('Strike bowler');
+  if (!tags.length) tags.push('Flexible role');
+
+  const recentMatches = lastFive
+    .slice()
+    .reverse()
+    .map((stat, index) => {
+      const runs = stat.battingStats?.runs || 0;
+      const balls = stat.battingStats?.balls || 0;
+      const wickets = stat.bowlingStats?.wickets || 0;
+      const highlight = buildRecentHighlight(runs, wickets);
+      const opponent =
+        stat.opponentUserId?.teamName ||
+        (stat.opponentUserId?.team ? stat.opponentUserId.team : 'Unknown Team');
+      return {
+        matchLabel: `Match ${matchCount - index}`,
+        opponent,
+        runs,
+        strikeRate: balls ? roundNumber((runs / balls) * 100) : null,
+        wickets,
+        highlight,
+        date: stat.createdAt,
+      };
+    });
+
+  const summary = `${player.name} averages ${roundNumber(
+    overallAvg
+  )} runs (${roundNumber(overallStrikeRate)} SR) across ${matchCount} matches. Over the last ${
+    lastFive.length
+  } innings, they're posting ${roundNumber(
+    recentAvg
+  )} runs with a form score of ${formScore}. Bowling returns sit at ${roundNumber(
+    totals.wickets / Math.max(matchCount, 1),
+    2
+  )} wickets per match with ${roundNumber(economy)} economy. ${formOutlook}`;
+
+  return {
+    playerId: player._id,
+    playerName: player.name,
+    teamName: ownerTeam,
+    roleFocus: summarizeRoleFocus(player),
+    summary,
+    hasStats: true,
+    form: {
+      score: formScore,
+      outlook: formOutlook,
+      projection,
+      tags,
+    },
+    batting: {
+      average: roundNumber(overallAvg),
+      strikeRate: roundNumber(overallStrikeRate),
+      recentAverage: roundNumber(recentAvg),
+      recentStrikeRate: roundNumber(recentStrikeRate),
+    },
+    bowling: {
+      wicketsPerMatch: roundNumber(totals.wickets / Math.max(matchCount, 1), 2),
+      economy: roundNumber(economy),
+      recentEconomy: roundNumber(recentEconomy),
+      strikeRate: roundNumber(bowlingStrikeRate),
+    },
+    recentMatches,
+  };
+};
+
+const generatePlayerInsight = async (playerId) => {
+  const player = await Player.findById(playerId).lean();
+  if (!player) {
+    return { error: 'player-not-found' };
+  }
+
+  const ownerUser = await User.findOne({ boughtPlayers: playerId })
+    .select('teamName')
+    .lean();
+
+  const stats = await PlayerStats.find({ playerId })
+    .populate({
+      path: 'opponentUserId',
+      model: User,
+      select: 'teamName',
+    })
+    .sort({ createdAt: 1 })
+    .lean();
+
+  const insight = computeInsightPayload(
+    player,
+    ownerUser?.teamName || 'Free Agent',
+    stats
+  );
+
+  return insight;
+};
+
+const buildComparisonRecommendation = (insightA, insightB) => {
+  const battingEdge =
+    (insightA.batting?.recentAverage || 0) - (insightB.batting?.recentAverage || 0);
+  const bowlingEdge =
+    (insightA.bowling?.wicketsPerMatch || 0) -
+    (insightB.bowling?.wicketsPerMatch || 0);
+  const formEdge = (insightA.form?.score || 0) - (insightB.form?.score || 0);
+
+  if (battingEdge >= 6) {
+    return `${insightA.playerName} offers stronger recent batting with ${roundNumber(
+      insightA.batting?.recentAverage
+    )} vs ${roundNumber(
+      insightB.batting?.recentAverage
+    )}. Ideal for top-order duties.`;
+  }
+
+  if (battingEdge <= -6) {
+    return `${insightB.playerName} is the more reliable scorer right now, making them the safer batting pick.`;
+  }
+
+  if (bowlingEdge >= 0.6) {
+    return `${insightA.playerName} provides better wicket-taking impact (${roundNumber(
+      insightA.bowling?.wicketsPerMatch
+    )} wickets/match).`;
+  }
+
+  if (bowlingEdge <= -0.6) {
+    return `${insightB.playerName} brings superior bowling returns and control.`;
+  }
+
+  if (Math.abs(formEdge) >= 8) {
+    return formEdge > 0
+      ? `${insightA.playerName} carries hotter form and should be prioritized.`
+      : `${insightB.playerName} carries hotter form and should be prioritized.`;
+  }
+
+  return 'Both players are performing similarly; base the decision on specific role requirements or matchup advantages.';
+};
+
 // Helper function to update cumulative stats in Player document
 const updatePlayerCumulativeStats = async (playerId) => {
   try {
@@ -860,6 +1121,76 @@ router.get('/player-details/:playerId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching player details:', error);
     res.status(500).json({ message: 'Error fetching player details', error: error.message });
+  }
+});
+
+router.get('/insights/:playerId', async (req, res) => {
+  try {
+    const { playerId } = req.params;
+    const insight = await generatePlayerInsight(playerId);
+
+    if (insight?.error === 'player-not-found') {
+      return res.status(404).json({ message: 'Player not found' });
+    }
+
+    return res.json(insight);
+  } catch (error) {
+    console.error('Error generating player insight:', error);
+    return res.status(500).json({ message: 'Error generating insight', error: error.message });
+  }
+});
+
+router.post('/compare', async (req, res) => {
+  try {
+    const { playerAId, playerBId } = req.body;
+
+    if (!playerAId || !playerBId) {
+      return res.status(400).json({ message: 'playerAId and playerBId are required' });
+    }
+
+    const [insightA, insightB] = await Promise.all([
+      generatePlayerInsight(playerAId),
+      generatePlayerInsight(playerBId),
+    ]);
+
+    if (insightA?.error === 'player-not-found' || insightB?.error === 'player-not-found') {
+      return res.status(404).json({ message: 'One or both players not found' });
+    }
+
+    if (!insightA.hasStats || !insightB.hasStats) {
+      return res.status(400).json({
+        message: 'Both players need recorded stats for a comparison.',
+      });
+    }
+
+    const recommendation = buildComparisonRecommendation(insightA, insightB);
+
+    return res.json({
+      players: [
+        {
+          playerId: insightA.playerId,
+          playerName: insightA.playerName,
+          teamName: insightA.teamName,
+          roleFocus: insightA.roleFocus,
+          formScore: insightA.form?.score || null,
+          batting: insightA.batting,
+          bowling: insightA.bowling,
+        },
+        {
+          playerId: insightB.playerId,
+          playerName: insightB.playerName,
+          teamName: insightB.teamName,
+          roleFocus: insightB.roleFocus,
+          formScore: insightB.form?.score || null,
+          batting: insightB.batting,
+          bowling: insightB.bowling,
+        },
+      ],
+      recommendation,
+    });
+  } catch (error) {
+    console.error('Error comparing players:', error);
+    return res.status(500).json({ message: 'Error comparing players', error: error.message });
   }
 });
 
