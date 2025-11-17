@@ -311,6 +311,106 @@ const updatePlayerCumulativeStats = async (playerId) => {
   }
 };
 
+const savePlayerStatsEntry = async (payload = {}) => {
+  const {
+    playerId,
+    opponentUserId,
+    battingStats,
+    bowlingStats,
+    wicketsTaken,
+    isMom,
+    isPlayoffScore,
+    economy,
+    extras,
+  } = payload;
+
+  if (!playerId) {
+    const error = new Error('playerId is required');
+    error.status = 400;
+    throw error;
+  }
+
+  const ownerUser = await User.findOne({
+    boughtPlayers: playerId,
+  });
+
+  if (!ownerUser) {
+    const error = new Error('No user found who owns this playerId');
+    error.status = 400;
+    throw error;
+  }
+
+  const userId = ownerUser._id;
+  const existingStats = await PlayerStats.findOne({
+    playerId,
+    userId,
+    opponentUserId,
+  });
+
+  // If existing stats found AND it's NOT a playoff score → UPDATE (no duplicates for regular matches)
+  // If existing stats found AND it IS a playoff score → CREATE NEW (allow duplicates for playoff matches)
+  // If no existing stats → CREATE NEW
+  if (existingStats && !isPlayoffScore) {
+    existingStats.battingStats = {
+      runs: battingStats?.runs || 0,
+      balls: battingStats?.balls || 0,
+    };
+
+    existingStats.bowlingStats = {
+      runsGiven: bowlingStats?.runsGiven || 0,
+      ballsBowled: bowlingStats?.ballsBowled || 0,
+      wickets: wicketsTaken || 0,
+    };
+
+    existingStats.isMom = !!isMom;
+    
+    // Store economy and extras in metadata
+    if (!existingStats.metadata) {
+      existingStats.metadata = {};
+    }
+    if (economy !== null && economy !== undefined) {
+      existingStats.metadata.economy = Number(economy);
+    }
+    if (extras !== null && extras !== undefined) {
+      existingStats.metadata.extras = Number(extras);
+    }
+    if (isPlayoffScore !== null && isPlayoffScore !== undefined) {
+      existingStats.metadata.isPlayoffScore = !!isPlayoffScore;
+    }
+
+    await existingStats.save();
+    await updatePlayerCumulativeStats(playerId);
+
+    return { action: 'updated', doc: existingStats };
+  }
+
+  const newStats = new PlayerStats({
+    playerId,
+    userId,
+    opponentUserId,
+    battingStats: {
+      runs: battingStats?.runs || 0,
+      balls: battingStats?.balls || 0,
+    },
+    bowlingStats: {
+      runsGiven: bowlingStats?.runsGiven || 0,
+      ballsBowled: bowlingStats?.ballsBowled || 0,
+      wickets: wicketsTaken || 0,
+    },
+    isMom: !!isMom,
+    metadata: {
+      economy: economy !== null && economy !== undefined ? Number(economy) : null,
+      extras: extras !== null && extras !== undefined ? Number(extras) : null,
+      isPlayoffScore: !!isPlayoffScore,
+    },
+  });
+
+  await newStats.save();
+  await updatePlayerCumulativeStats(playerId);
+
+  return { action: 'created', doc: newStats };
+};
+
 router.get('/list', async (req, res) => {
   try {
     const { userId } = req.query;
@@ -492,95 +592,190 @@ router.get('/list', async (req, res) => {
 // routes/playerStats.js (example)
 router.post('/store', async (req, res) => {
   try {
-    const {
-      playerId,
-      opponentUserId,
-      battingStats,
-      bowlingStats,
-      wicketsTaken,
-      isMom,
-      isPlayoffScore,
-    } = req.body;
-
-    // 1) Find which user owns this playerId:
-    //    We'll look for the user whose boughtPlayers array includes playerId.
-    const ownerUser = await User.findOne({
-      boughtPlayers: playerId,
-    });
-
-    // If no user found owning this player, handle accordingly:
-    if (!ownerUser) {
-      return res.status(400).json({
-        message: 'No user found who owns this playerId',
-      });
-    }
-
-    // This is the user who owns the player
-    const userId = ownerUser._id;
-
-    // 2) Check if a stats doc already exists for this "match" 
-    //    (defining match by userId, opponentUserId, and playerId).
-    const existingStats = await PlayerStats.findOne({
-      playerId,
-      userId,
-      opponentUserId,
-    });
-
-    if (existingStats && !isPlayoffScore) {
-      // 3) If it exists, update the fields
-      existingStats.battingStats = {
-        runs: battingStats?.runs || 0,
-        balls: battingStats?.balls || 0,
-      };
-
-      existingStats.bowlingStats = {
-        runsGiven: bowlingStats?.runsGiven || 0,
-        ballsBowled: bowlingStats?.ballsBowled || 0,
-        wickets: wicketsTaken || 0, // store "wicketsTaken" here
-      };
-
-      existingStats.isMom = !!isMom; // convert to boolean
-
-      await existingStats.save();
-
-      // Update the Player document with cumulative stats
-      await updatePlayerCumulativeStats(playerId);
-
+    const result = await savePlayerStatsEntry(req.body);
+    if (result.action === 'updated') {
       return res.status(200).json({
         message: 'Player stats updated successfully',
-        data: existingStats,
-      });
-    } else {
-      // 4) Otherwise, create a new stats document
-      const newStats = new PlayerStats({
-        playerId,
-        userId,              // <== from the user who actually owns this player
-        opponentUserId,
-        battingStats: {
-          runs: battingStats?.runs || 0,
-          balls: battingStats?.balls || 0,
-        },
-        bowlingStats: {
-          runsGiven: bowlingStats?.runsGiven || 0,
-          ballsBowled: bowlingStats?.ballsBowled || 0,
-          wickets: wicketsTaken || 0,
-        },
-        isMom: !!isMom,
-      });
-
-      await newStats.save();
-
-      // Update the Player document with cumulative stats
-      await updatePlayerCumulativeStats(playerId);
-
-      return res.status(201).json({
-        message: 'Player stats saved successfully',
-        data: newStats,
+        data: result.doc,
       });
     }
+    return res.status(201).json({
+      message: 'Player stats saved successfully',
+      data: result.doc,
+    });
   } catch (error) {
     console.error('Error saving/updating player stats:', error);
-    return res.status(500).json({ message: 'Error saving player stats', error });
+    const statusCode = error.status || 500;
+    return res.status(statusCode).json({
+      message: error.message || 'Error saving player stats',
+    });
+  }
+});
+
+router.post('/bulk-store', async (req, res) => {
+  try {
+    const { entries } = req.body || {};
+    if (!Array.isArray(entries) || !entries.length) {
+      return res.status(400).json({ message: 'entries array is required' });
+    }
+
+    const results = [];
+    const errors = [];
+
+    for (const entry of entries) {
+      try {
+        const result = await savePlayerStatsEntry(entry);
+        results.push({
+          playerId: entry.playerId,
+          action: result.action,
+        });
+      } catch (error) {
+        errors.push({
+          playerId: entry?.playerId || null,
+          message: error.message || 'Failed to save player stats',
+        });
+      }
+    }
+
+    return res.status(errors.length ? 207 : 200).json({
+      message: 'Bulk player stats processed',
+      results,
+      errors,
+    });
+  } catch (error) {
+    console.error('Error saving bulk player stats:', error);
+    return res.status(500).json({ message: 'Error saving bulk player stats', error });
+  }
+});
+
+const resolveOpponentUserId = async (rawOpponentUserId, opponentTeamName) => {
+  if (rawOpponentUserId) return rawOpponentUserId;
+  if (!opponentTeamName) return null;
+  const regex = new RegExp(`^${escapeRegex(opponentTeamName.trim())}$`, 'i');
+  const opponent = await User.findOne({ teamName: regex }).select('_id');
+  return opponent ? opponent._id : null;
+};
+
+router.post('/bulk-store', async (req, res) => {
+  try {
+    const {
+      entries = [],
+      matchName,
+      matchKey,
+      fixtureId,
+      isPlayoffScore,
+    } = req.body || {};
+
+    if (!Array.isArray(entries) || !entries.length) {
+      return res.status(400).json({ message: 'entries array is required' });
+    }
+
+    const warnings = [];
+    let successCount = 0;
+
+    for (const entry of entries) {
+      if (!entry?.playerId) {
+        warnings.push('Skipping entry with missing playerId');
+        continue;
+      }
+
+      const ownerUser = await User.findOne({ boughtPlayers: entry.playerId });
+      if (!ownerUser) {
+        warnings.push(`No owner found for player ${entry.playerId}`);
+        continue;
+      }
+
+      const batStats = sanitizeBattingStats(entry.battingStats);
+      const bowlStats = sanitizeBowlingStats(entry.bowlingStats, entry.wicketsTaken);
+      const resolvedOpponentUserId = await resolveOpponentUserId(
+        entry.opponentUserId,
+        entry.opponentTeamName
+      );
+
+      const normalizedMatchKey = entry.matchKey || matchKey || null;
+      const normalizedMatchName = entry.matchName || matchName || null;
+      const entryIsPlayoffScore =
+        entry.isPlayoffScore !== undefined
+          ? !!entry.isPlayoffScore
+          : isPlayoffScore !== undefined
+          ? !!isPlayoffScore
+          : false;
+
+      const query = {
+        playerId: entry.playerId,
+        userId: ownerUser._id,
+      };
+      if (normalizedMatchKey) {
+        query.matchKey = normalizedMatchKey;
+      } else if (resolvedOpponentUserId) {
+        query.opponentUserId = resolvedOpponentUserId;
+      }
+
+      // Check for existing stats
+      let statDoc = await PlayerStats.findOne(query);
+
+      // If existing stats found AND it's NOT a playoff score → UPDATE (no duplicates for regular matches)
+      // If existing stats found AND it IS a playoff score → CREATE NEW (allow duplicates for playoff matches)
+      // If no existing stats → CREATE NEW
+      if (statDoc && !entryIsPlayoffScore) {
+        // Update existing entry (regular match)
+        statDoc.opponentUserId = resolvedOpponentUserId || statDoc.opponentUserId || null;
+        statDoc.matchName = normalizedMatchName || statDoc.matchName || null;
+        statDoc.matchKey = normalizedMatchKey || statDoc.matchKey || null;
+        statDoc.fixtureId = entry.fixtureId || fixtureId || statDoc.fixtureId || null;
+        statDoc.isPlayoffScore = entryIsPlayoffScore;
+        statDoc.battingStats = batStats;
+        statDoc.bowlingStats = bowlStats;
+        statDoc.isMom = !!entry.isMom;
+        
+        // Update metadata
+        if (!statDoc.metadata) {
+          statDoc.metadata = {};
+        }
+        if (entry.economy !== null && entry.economy !== undefined) {
+          statDoc.metadata.economy = Number(entry.economy);
+        }
+        if (entry.extras !== null && entry.extras !== undefined) {
+          statDoc.metadata.extras = Number(entry.extras);
+        }
+        statDoc.metadata.isPlayoffScore = entryIsPlayoffScore;
+
+        await statDoc.save();
+      } else {
+        // Create new entry (either no existing stats OR it's a playoff score)
+        statDoc = new PlayerStats({
+          playerId: entry.playerId,
+          userId: ownerUser._id,
+          opponentUserId: resolvedOpponentUserId || null,
+          matchName: normalizedMatchName || null,
+          matchKey: normalizedMatchKey || null,
+          fixtureId: entry.fixtureId || fixtureId || null,
+          isPlayoffScore: entryIsPlayoffScore,
+          battingStats: batStats,
+          bowlingStats: bowlStats,
+          isMom: !!entry.isMom,
+          metadata: {
+            economy: entry.economy !== null && entry.economy !== undefined ? Number(entry.economy) : null,
+            extras: entry.extras !== null && entry.extras !== undefined ? Number(entry.extras) : null,
+            isPlayoffScore: entryIsPlayoffScore,
+          },
+        });
+
+        await statDoc.save();
+      }
+
+      await updatePlayerCumulativeStats(entry.playerId);
+      successCount += 1;
+    }
+
+    return res.status(200).json({
+      message: 'Player stats saved successfully',
+      count: successCount,
+      warnings,
+    });
+  } catch (error) {
+    console.error('Error saving bulk player stats:', error);
+    return res.status(500).json({ message: 'Error saving bulk player stats', error });
   }
 });
 

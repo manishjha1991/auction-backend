@@ -22,9 +22,8 @@ router.get('/', async (req, res) => {
       isAdmin: { $ne: true } // Exclude admin teams
     })
       .populate('boughtPlayers')
-      .select('teamName teamImage boughtPlayers group'); 
-      // Notice we DO NOT select _id, 
-      // because we only match on teamName now
+      .select('_id teamName teamImage boughtPlayers group'); 
+      // Include _id so we can reference owner user IDs for OCR dropdowns
 
     // 2) Fetch all active fixtures (which store team1/team2 as strings)
     const existingFixtures = await Fixture.find({ isActive: true });
@@ -188,6 +187,20 @@ router.get('/', async (req, res) => {
         (t) => t.teamName === fixture.team2
       ) || {};
 
+      const ownerTeam1 = {
+        userId: team1Details._id || null,
+        teamName: team1Details.teamName || fixture.team1 || 'Unknown',
+        teamImage: team1Details.teamImage || null,
+        players: team1Details.boughtPlayers || [],
+      };
+
+      const ownerTeam2 = {
+        userId: team2Details._id || null,
+        teamName: team2Details.teamName || fixture.team2 || 'Unknown',
+        teamImage: team2Details.teamImage || null,
+        players: team2Details.boughtPlayers || [],
+      };
+
       return {
         ...fixture._doc,
         // Keep the original team1/team2 in place 
@@ -199,14 +212,10 @@ router.get('/', async (req, res) => {
 
         // Add extra details
         team1Details: {
-          teamName: team1Details.teamName || fixture.team1 || 'Unknown',
-          teamImage: team1Details.teamImage || null,
-          players: team1Details.boughtPlayers || [],
+          ...ownerTeam1,
         },
         team2Details: {
-          teamName: team2Details.teamName || fixture.team2 || 'Unknown',
-          teamImage: team2Details.teamImage || null,
-          players: team2Details.boughtPlayers || [],
+          ...ownerTeam2,
         },
       };
     });

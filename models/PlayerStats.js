@@ -45,6 +45,20 @@ const playerStatsSchema = new mongoose.Schema({
     type: Boolean,
     default: false, // Default value is false
   },
+  metadata: {
+    economy: {
+      type: Number,
+      required: false,
+    },
+    extras: {
+      type: Number,
+      required: false,
+    },
+    isPlayoffScore: {
+      type: Boolean,
+      default: false,
+    },
+  },
   createdAt: {
     type: Date,
     default: Date.now,
