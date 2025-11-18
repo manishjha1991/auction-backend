@@ -174,7 +174,7 @@ router.get("/players/data", async (req, res) => {
           let: { userId: { $arrayElemAt: ['$userPlayer.userId', 0] } },
           pipeline: [
             { $match: { $expr: { $eq: ['$_id', '$$userId'] } } },
-            { $project: { name: 1, teamName: 1 } }
+            { $project: { name: 1, teamName: 1, teamImage: 1 } }
           ],
           as: 'user'
         }
@@ -253,7 +253,19 @@ router.get("/players/data", async (req, res) => {
               then: 'Sold',
               else: 'Unsold'
             }
-          }
+          },
+          totalRuns: { $ifNull: ['$totalRuns', 0] },
+          totalWickets: { $ifNull: ['$totalWickets', 0] },
+          matchesPlayed: { $ifNull: ['$matchesPlayed', 0] },
+          overallScore: { $ifNull: ['$overallScore', 0] },
+          teamLogo: {
+            $cond: {
+              if: { $gt: [{ $size: '$user' }, 0] },
+              then: { $arrayElemAt: ['$user.teamImage', 0] },
+              else: null
+            }
+          },
+          profilePicture: { $ifNull: ['$profilePicture', null] }
         }
       },
       {

@@ -228,43 +228,105 @@ const generatePlayerInsight = async (playerId) => {
   return insight;
 };
 
+const classifyRole = (roleFocus = '') => {
+  const text = (roleFocus || '').toLowerCase();
+  if (text.includes('all') || text.includes('round')) return 'allrounder';
+  if (text.includes('keeper')) return 'keeper';
+  if (text.includes('bowl')) return 'bowler';
+  return 'batter';
+};
+
+const battingImpactScore = (insight = {}) => {
+  if (!insight.batting) return 0;
+  const recentAvg = insight.batting.recentAverage || 0;
+  const overallAvg = insight.batting.average || 0;
+  const sr = insight.batting.recentStrikeRate || 0;
+  return recentAvg * 0.6 + overallAvg * 0.4 + sr / 8;
+};
+
+const bowlingImpactScore = (insight = {}) => {
+  if (!insight.bowling) return 0;
+  const wickets = insight.bowling.wicketsPerMatch || 0;
+  const economy = insight.bowling.economy || 0;
+  const strike = insight.bowling.strikeRate || 0;
+  return wickets * 18 - economy * 1.5 - strike * 0.2;
+};
+
+const overallImpactScore = (insight, roleType) => {
+  const base = (insight.form?.score || 0) * 0.8;
+  const batting = battingImpactScore(insight);
+  const bowling = bowlingImpactScore(insight);
+  const roleWeight =
+    roleType === 'allrounder'
+      ? 12
+      : roleType === 'bowler'
+      ? 6
+      : roleType === 'keeper'
+      ? 4
+      : 8;
+  return base + batting + bowling + roleWeight;
+};
+
+const buildPlayerNarrative = (insight, roleType) => {
+  const fragments = [];
+  if (insight.form?.score) {
+    fragments.push(`form score ${insight.form.score}`);
+  }
+  if ((roleType === 'batter' || roleType === 'keeper' || roleType === 'allrounder') && insight.batting) {
+    fragments.push(
+      `averaging ${roundNumber(insight.batting.recentAverage)} runs at ${roundNumber(
+        insight.batting.recentStrikeRate
+      )} SR recently`
+    );
+  }
+  if ((roleType === 'bowler' || roleType === 'allrounder') && insight.bowling) {
+    fragments.push(
+      `${roundNumber(insight.bowling.wicketsPerMatch)} wickets/match with ${roundNumber(
+        insight.bowling.economy
+      )} economy`
+    );
+  }
+  return fragments.join(', ');
+};
+
+const roleDescriptor = (roleType) => {
+  switch (roleType) {
+    case 'bowler':
+      return 'strike bowler';
+    case 'allrounder':
+      return '3D impact player';
+    case 'keeper':
+      return 'keeper-batter';
+    default:
+      return 'top-order option';
+  }
+};
+
 const buildComparisonRecommendation = (insightA, insightB) => {
-  const battingEdge =
-    (insightA.batting?.recentAverage || 0) - (insightB.batting?.recentAverage || 0);
-  const bowlingEdge =
-    (insightA.bowling?.wicketsPerMatch || 0) -
-    (insightB.bowling?.wicketsPerMatch || 0);
-  const formEdge = (insightA.form?.score || 0) - (insightB.form?.score || 0);
+  const roleA = classifyRole(insightA.roleFocus);
+  const roleB = classifyRole(insightB.roleFocus);
 
-  if (battingEdge >= 6) {
-    return `${insightA.playerName} offers stronger recent batting with ${roundNumber(
-      insightA.batting?.recentAverage
-    )} vs ${roundNumber(
-      insightB.batting?.recentAverage
-    )}. Ideal for top-order duties.`;
+  const scoreA = overallImpactScore(insightA, roleA);
+  const scoreB = overallImpactScore(insightB, roleB);
+  const edge = scoreA - scoreB;
+
+  const leader = edge >= 0 ? insightA : insightB;
+  const leaderRole = edge >= 0 ? roleA : roleB;
+  const trailer = edge >= 0 ? insightB : insightA;
+  const trailerRole = edge >= 0 ? roleB : roleA;
+  const leaderNarrative = buildPlayerNarrative(leader, leaderRole);
+  const trailerNarrative = buildPlayerNarrative(trailer, trailerRole);
+
+  if (Math.abs(edge) < 8) {
+    return `It is genuinely close: ${insightA.playerName} (${leaderNarrative || 'balanced returns'}) and ${insightB.playerName} (${trailerNarrative || 'balanced returns'}) are delivering comparable impact. Let matchups decide—lean ${roleDescriptor(
+      roleA
+    )} for powerplay stability, or ${roleDescriptor(roleB)} if you need flexibility.`;
   }
 
-  if (battingEdge <= -6) {
-    return `${insightB.playerName} is the more reliable scorer right now, making them the safer batting pick.`;
-  }
-
-  if (bowlingEdge >= 0.6) {
-    return `${insightA.playerName} provides better wicket-taking impact (${roundNumber(
-      insightA.bowling?.wicketsPerMatch
-    )} wickets/match).`;
-  }
-
-  if (bowlingEdge <= -0.6) {
-    return `${insightB.playerName} brings superior bowling returns and control.`;
-  }
-
-  if (Math.abs(formEdge) >= 8) {
-    return formEdge > 0
-      ? `${insightA.playerName} carries hotter form and should be prioritized.`
-      : `${insightB.playerName} carries hotter form and should be prioritized.`;
-  }
-
-  return 'Both players are performing similarly; base the decision on specific role requirements or matchup advantages.';
+  return `${leader.playerName} profiles as the superior ${roleDescriptor(
+    leaderRole
+  )} right now—${leaderNarrative || 'more complete contributions'}. ${trailer.playerName} still offers ${trailerNarrative ||
+    'steady output'}, so slot them in when conditions suit their strengths.`;
 };
 
 // Helper function to update cumulative stats in Player document
