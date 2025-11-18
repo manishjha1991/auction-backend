@@ -32,6 +32,7 @@ const indexRoutes = require('./routes/indexes');
 const retainedPlayerRoutes = require('./routes/retainedPlayers');
 const tournamentRoutes = require('./routes/tournaments');
 const matchResultsRoutes = require('./routes/matchResults');
+const adminToolsRoutes = require('./routes/adminTools');
 
 
 app.set('io', io);
@@ -151,6 +152,7 @@ app.use('/api/indexes', indexRoutes);
 app.use('/api/retained-players', retainedPlayerRoutes);
 app.use('/api/tournaments', tournamentRoutes);
 app.use('/api/match-results', matchResultsRoutes);
+app.use('/api/admin-tools', adminToolsRoutes);
 
 
 io.on('connection', (socket) => {

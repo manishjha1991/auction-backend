@@ -311,6 +311,35 @@ const updatePlayerCumulativeStats = async (playerId) => {
   }
 };
 
+const applyPlayerStatDelta = async (playerId, delta = {}) => {
+  const {
+    runs = 0,
+    balls = 0,
+    runsGiven = 0,
+    ballsBowled = 0,
+    wickets = 0,
+    mom = 0,
+    matches = 0,
+  } = delta;
+
+  const inc = {};
+  if (runs) inc.totalRuns = runs;
+  if (balls) inc.totalBalls = balls;
+  if (runsGiven) inc.totalRunsGiven = runsGiven;
+  if (ballsBowled) inc.totalBallsBowled = ballsBowled;
+  if (wickets) inc.totalWickets = wickets;
+  if (mom) inc.momCount = mom;
+  if (matches) inc.matchesPlayed = matches;
+
+  if (!Object.keys(inc).length) {
+    return;
+  }
+
+  await Player.findByIdAndUpdate(playerId, { $inc: inc }).catch((error) => {
+    console.error('Failed to apply stat delta', { playerId, delta, error });
+  });
+};
+
 const savePlayerStatsEntry = async (payload = {}) => {
   const {
     playerId,
@@ -347,10 +376,47 @@ const savePlayerStatsEntry = async (payload = {}) => {
     opponentUserId,
   });
 
+  const newTotals = {
+    runs: battingStats?.runs || 0,
+    balls: battingStats?.balls || 0,
+    runsGiven: bowlingStats?.runsGiven || 0,
+    ballsBowled: bowlingStats?.ballsBowled || 0,
+    wickets:
+      wicketsTaken !== undefined && wicketsTaken !== null
+        ? wicketsTaken
+        : bowlingStats?.wickets || 0,
+    mom: isMom ? 1 : 0,
+  };
+
+  const deltaTotals = {
+    runs: 0,
+    balls: 0,
+    runsGiven: 0,
+    ballsBowled: 0,
+    wickets: 0,
+    mom: 0,
+    matches: 0,
+  };
+
   // If existing stats found AND it's NOT a playoff score → UPDATE (no duplicates for regular matches)
   // If existing stats found AND it IS a playoff score → CREATE NEW (allow duplicates for playoff matches)
   // If no existing stats → CREATE NEW
   if (existingStats && !isPlayoffScore) {
+    const previousTotals = {
+      runs: existingStats.battingStats?.runs || 0,
+      balls: existingStats.battingStats?.balls || 0,
+      runsGiven: existingStats.bowlingStats?.runsGiven || 0,
+      ballsBowled: existingStats.bowlingStats?.ballsBowled || 0,
+      wickets: existingStats.bowlingStats?.wickets || 0,
+      mom: existingStats.isMom ? 1 : 0,
+    };
+    deltaTotals.runs = newTotals.runs - previousTotals.runs;
+    deltaTotals.balls = newTotals.balls - previousTotals.balls;
+    deltaTotals.runsGiven = newTotals.runsGiven - previousTotals.runsGiven;
+    deltaTotals.ballsBowled = newTotals.ballsBowled - previousTotals.ballsBowled;
+    deltaTotals.wickets = newTotals.wickets - previousTotals.wickets;
+    deltaTotals.mom = newTotals.mom - previousTotals.mom;
+
     existingStats.battingStats = {
       runs: battingStats?.runs || 0,
       balls: battingStats?.balls || 0,
@@ -379,10 +445,18 @@ const savePlayerStatsEntry = async (payload = {}) => {
     }
 
     await existingStats.save();
-    await updatePlayerCumulativeStats(playerId);
+    await applyPlayerStatDelta(playerId, deltaTotals);
 
     return { action: 'updated', doc: existingStats };
   }
+
+  deltaTotals.runs = newTotals.runs;
+  deltaTotals.balls = newTotals.balls;
+  deltaTotals.runsGiven = newTotals.runsGiven;
+  deltaTotals.ballsBowled = newTotals.ballsBowled;
+  deltaTotals.wickets = newTotals.wickets;
+  deltaTotals.mom = newTotals.mom;
+  deltaTotals.matches = 1;
 
   const newStats = new PlayerStats({
     playerId,
@@ -406,7 +480,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
   });
 
   await newStats.save();
-  await updatePlayerCumulativeStats(playerId);
+  await applyPlayerStatDelta(playerId, deltaTotals);
 
   return { action: 'created', doc: newStats };
 };
@@ -764,7 +838,6 @@ router.post('/bulk-store', async (req, res) => {
         await statDoc.save();
       }
 
-      await updatePlayerCumulativeStats(entry.playerId);
       successCount += 1;
     }
 
