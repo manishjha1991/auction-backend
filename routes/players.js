@@ -184,7 +184,13 @@ router.get("/players/data", async (req, res) => {
           from: 'bids',
           let: { playerId: '$_id' },
           pipeline: [
-            { $match: { $expr: { $eq: ['$playerId', '$$playerId'] } } },
+            {
+              $match: {
+                $expr: { $eq: ['$playerId', '$$playerId'] },
+                isBidOn: true,
+                isActive: true
+              }
+            },
             { $sort: { bidAmount: -1 } },
             { $limit: 1 },
             {

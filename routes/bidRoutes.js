@@ -425,13 +425,17 @@ router.post("/bid/sold", async (req, res) => {
           continue;
         }
 
-        // 3. Fetch ALL bids (including inactive ones) to find the highest bid
-        const allBids = await Bid.find({ playerId: pid }).sort({ bidAmount: -1 });
+        // 3. Fetch only active/in-progress bids to find the highest bid
+        const allBids = await Bid.find({
+          playerId: pid,
+          isActive: true,
+          isBidOn: true
+        }).sort({ bidAmount: -1 });
         if (!allBids || allBids.length === 0) {
           results.push({
             playerID: pid,
             status: "error",
-            message: "No bids found for this player.",
+            message: "No active bids found for this player.",
           });
           continue;
         }
@@ -941,10 +945,14 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
           continue;
         }
 
-        // b) Fetch ALL bids (including inactive ones) to find the highest bid
-        const allBids = await Bid.find({ playerId: pid }).sort({ bidAmount: -1 });
+        // b) Fetch only active/in-progress bids to find the highest bid
+        const allBids = await Bid.find({
+          playerId: pid,
+          isActive: true,
+          isBidOn: true
+        }).sort({ bidAmount: -1 });
         if (!allBids.length) {
-          results.push({ playerID: pid, status: 'error', message: 'No bids found.' });
+          results.push({ playerID: pid, status: 'error', message: 'No active bids found.' });
           continue;
         }
 
