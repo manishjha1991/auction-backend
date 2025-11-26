@@ -108,7 +108,7 @@ router.get("/:userId/details", async (req, res) => {
     
     // 1) Fetch user data
     const userStart = Date.now();
-    const user = await User.findById(userId);
+    const user = await User.findById(userId).includeInactive();
     console.log(`⏱️ User fetch took: ${Date.now() - userStart}ms`);
     if (!user) {
       return res.status(404).json({ message: "User not found." });

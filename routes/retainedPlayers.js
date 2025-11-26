@@ -137,9 +137,12 @@ router.post('/retain', async (req, res) => {
     }
 
     // Check if user exists and is active
-    const user = await User.findById(userId);
-    if (!user || !user.isActive) {
-      return res.status(404).json({ message: 'User not found or inactive' });
+    const user = await User.findById(userId).includeInactive();
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    if (!user.isActive) {
+      return res.status(403).json({ message: 'User account is inactive. Cannot retain players.' });
     }
 
     // Check if user retention is locked
