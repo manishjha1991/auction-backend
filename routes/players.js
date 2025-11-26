@@ -173,7 +173,12 @@ router.get("/players/data", async (req, res) => {
           from: 'users',
           let: { userId: { $arrayElemAt: ['$userPlayer.userId', 0] } },
           pipeline: [
-            { $match: { $expr: { $eq: ['$_id', '$$userId'] } } },
+            {
+              $match: {
+                $expr: { $eq: ['$_id', '$$userId'] },
+                isActive: true,
+              },
+            },
             { $project: { name: 1, teamName: 1, teamImage: 1 } }
           ],
           as: 'user'
@@ -198,7 +203,12 @@ router.get("/players/data", async (req, res) => {
                 from: 'users',
                 let: { bidderId: '$bidder' },
                 pipeline: [
-                  { $match: { $expr: { $eq: ['$_id', '$$bidderId'] } } },
+                  {
+                    $match: {
+                      $expr: { $eq: ['$_id', '$$bidderId'] },
+                      isActive: true,
+                    },
+                  },
                   { $project: { name: 1, teamName: 1 } }
                 ],
                 as: 'bidder'

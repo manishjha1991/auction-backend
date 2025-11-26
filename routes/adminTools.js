@@ -321,5 +321,37 @@ router.post('/scripts/auction-fix/execute', async (req, res) => {
   }
 });
 
+router.post('/users/:userId/active', async (req, res) => {
+  try {
+    const { adminUserId, isActive } = req.body;
+    const { userId } = req.params;
+    await requireAdmin(adminUserId);
+    if (typeof isActive !== 'boolean') {
+      return res.status(400).json({ message: 'isActive boolean required' });
+    }
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { isActive },
+      { new: true, runValidators: true }
+    )
+      .includeInactive()
+      .select('_id name teamName isActive isAdmin');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      message: user.isActive ? 'User activated' : 'User deactivated',
+      user,
+    });
+  } catch (error) {
+    console.error('user active toggle error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to update user status' });
+  }
+});
+
 module.exports = router;
 

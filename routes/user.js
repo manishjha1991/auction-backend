@@ -65,9 +65,12 @@ router.post('/login', async (req, res) => {
   const { email, password } = req.body;
   console.log(email, password,"@@@@@@@@@@@@@@");
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }).includeInactive();
     if (!user) {
       return res.status(404).json({ message: 'User not found!' });
+    }
+    if (user.isActive === false && !user.isAdmin) {
+      return res.status(403).json({ message: 'Account has been deactivated. Please contact admin.' });
     }
 
     // console.log('Password input:', password);
@@ -597,7 +600,15 @@ router.put('/:userId/admin-update', async (req, res) => {
 // Get all users for admin
 router.get('/all', async (req, res) => {
   try {
-    const users = await User.find({}, 'name email teamName timezone streamLink abbreviation isAdmin isRetentionLocked');
+    const includeInactive = req.query.includeInactive === 'true';
+    let query = User.find(
+      {},
+      'name email teamName timezone streamLink abbreviation isAdmin isRetentionLocked isActive'
+    );
+    if (includeInactive) {
+      query = query.includeInactive();
+    }
+    const users = await query.lean();
     res.status(200).json(users);
   } catch (error) {
     console.error('Error fetching users:', error);
@@ -608,13 +619,22 @@ router.get('/all', async (req, res) => {
 // Get teams for team directory
 router.get('/teams', async (req, res) => {
   try {
-    const teams = await User.find({ 
-      teamName: { $exists: true, $ne: null, $ne: "NA" }, 
-      isActive: true,
-      isAdmin: false, // Exclude admin accounts
-      isTournamentReady: true // Only include users who are tournament ready
-    }, 'name teamName timezone streamLink abbreviation teamImage');
-    res.status(200).json(teams);
+    const includeInactive = req.query.includeInactive === 'true';
+    const baseFilter = {
+      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isAdmin: false,
+      isTournamentReady: true,
+    };
+    if (!includeInactive) {
+      baseFilter.isActive = true;
+    }
+
+    let query = User.find(baseFilter, 'name teamName timezone streamLink abbreviation teamImage isActive');
+    if (includeInactive) {
+      query = query.includeInactive();
+    }
+    const teams = await query.lean();
+    res.status(200).json({ teams });
   } catch (error) {
     console.error('Error fetching teams:', error);
     res.status(500).json({ message: 'An error occurred while fetching teams.' });

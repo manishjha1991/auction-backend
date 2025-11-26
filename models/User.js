@@ -30,6 +30,28 @@ const UserSchema = new mongoose.Schema({
   allPlayersReleased: { type: Boolean, default: false }, // NEW: Track if all players are released for this user
 });
 
+function applyActiveFilter(next) {
+  const options = (typeof this.getOptions === 'function' ? this.getOptions() : this.options) || {};
+  if (!options.includeInactive) {
+    this.where({ isActive: { $ne: false } });
+  }
+  next();
+}
+
+UserSchema.pre('find', applyActiveFilter);
+UserSchema.pre('findOne', applyActiveFilter);
+UserSchema.pre('findOneAndUpdate', applyActiveFilter);
+UserSchema.pre('count', applyActiveFilter);
+UserSchema.pre('countDocuments', applyActiveFilter);
+
+UserSchema.query.includeInactive = function () {
+  return this.setOptions({ includeInactive: true });
+};
+
+UserSchema.statics.findIncludingInactive = function (filter = {}) {
+  return this.find(filter).setOptions({ includeInactive: true });
+};
+
 // Add indexes for better performance
 UserSchema.index({ teamName: 1 });
 UserSchema.index({ isActive: 1, isAdmin: 1 });
