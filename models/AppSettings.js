@@ -17,6 +17,10 @@ const AppSettingsSchema = new mongoose.Schema(
     releasedTeams: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     // Track when ALL players are released for any user
     allPlayersReleased: { type: Boolean, default: false },
+    cronSingleBidEnabled: { type: Boolean, default: true },
+    cronSingleBidFinalizerEnabled: { type: Boolean, default: true },
+    cronBulkExitEnabled: { type: Boolean, default: true },
+    cronLockEnabled: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

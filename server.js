@@ -33,6 +33,7 @@ const retainedPlayerRoutes = require('./routes/retainedPlayers');
 const tournamentRoutes = require('./routes/tournaments');
 const matchResultsRoutes = require('./routes/matchResults');
 const adminToolsRoutes = require('./routes/adminTools');
+// require('./scheduler');
 
 
 app.set('io', io);
@@ -170,6 +171,4 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 
-// register cron jobs
-// require('./scheduler');
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
