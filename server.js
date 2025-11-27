@@ -33,7 +33,7 @@ const retainedPlayerRoutes = require('./routes/retainedPlayers');
 const tournamentRoutes = require('./routes/tournaments');
 const matchResultsRoutes = require('./routes/matchResults');
 const adminToolsRoutes = require('./routes/adminTools');
-// require('./scheduler');
+require('./scheduler');
 
 
 app.set('io', io);
