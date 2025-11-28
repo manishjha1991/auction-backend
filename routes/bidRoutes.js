@@ -20,7 +20,13 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   // Get IP address and device fingerprint from request
   const clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
   const userAgent = req.get('User-Agent') || 'Unknown';
-  const deviceFingerprint = generateDeviceFingerprint(userAgent, clientIP);
+  const extraDeviceInfo = {
+    acceptLanguage: req.get('accept-language') || '',
+    secChUA: req.get('sec-ch-ua') || '',
+    secChPlatform: req.get('sec-ch-ua-platform') || '',
+    secChMobile: req.get('sec-ch-ua-mobile') || '',
+  };
+  const deviceFingerprint = generateDeviceFingerprint(userAgent, clientIP, extraDeviceInfo);
   
   // Verify bidder matches authenticated user
   const authenticatedUserId = req.authenticatedUser._id.toString();

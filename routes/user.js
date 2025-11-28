@@ -84,13 +84,20 @@ router.post('/login', async (req, res) => {
     // Generate session ID and device fingerprint
     const sessionId = require('crypto').randomBytes(16).toString('hex');
     const userAgent = req.get('User-Agent') || 'Unknown';
+    const extraDeviceInfo = {
+      acceptLanguage: req.get('accept-language') || '',
+      secChUA: req.get('sec-ch-ua') || '',
+      secChPlatform: req.get('sec-ch-ua-platform') || '',
+      secChMobile: req.get('sec-ch-ua-mobile') || '',
+    };
     const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
-    const deviceFingerprint = generateDeviceFingerprint(userAgent, clientIP);
+    const deviceFingerprint = generateDeviceFingerprint(userAgent, clientIP, extraDeviceInfo);
     
     // Check for multi-account usage (same IP/device logging into multiple accounts)
     // Skip this check for admin accounts - they can login from multiple devices
     let isSuspiciousMultiAccount = false;
-    let suspiciousReason = null;
+    let isNewDeviceLogin = false;
+    const suspiciousReasons = [];
     
     if (!user.isAdmin) {
       // Find other users who logged in from the same IP recently (within last 24 hours)
@@ -116,7 +123,8 @@ router.post('/login', async (req, res) => {
           ...otherUsersSameIP.map(u => u.teamName || u.name),
           ...otherUsersSameDevice.map(u => u.teamName || u.name)
         ];
-        suspiciousReason = `Multiple accounts detected from same IP/device. Other accounts: ${[...new Set(otherAccounts)].join(', ')}`;
+        const sharedList = [...new Set(otherAccounts)].join(', ');
+        suspiciousReasons.push(`Shared device with: ${sharedList}`);
         
         // Log suspicious activity
         try {
@@ -134,7 +142,7 @@ router.post('/login', async (req, res) => {
               otherAccountsSameDevice: otherUsersSameDevice.map(u => ({ name: u.teamName || u.name, email: u.email }))
             },
             isSuspicious: true,
-            suspiciousReason: suspiciousReason
+            suspiciousReason: `Shared device with ${sharedList}`
           });
           
           // Also log for other accounts
@@ -149,7 +157,7 @@ router.post('/login', async (req, res) => {
                 detectedEmail: user.email
               },
               isSuspicious: true,
-              suspiciousReason: `Account ${user.teamName || user.name} logged in from same IP/device`
+              suspiciousReason: `Account ${user.teamName || user.name} logged in from same device`
             });
           }
         } catch (activityError) {
@@ -169,6 +177,10 @@ router.post('/login', async (req, res) => {
     if (!user.knownDevices.includes(deviceFingerprint)) {
       user.knownDevices.push(deviceFingerprint);
       if (user.knownDevices.length > 10) user.knownDevices.shift();
+      if (!user.isAdmin && user.knownDevices.length > 1) {
+        isNewDeviceLogin = true;
+        suspiciousReasons.push('Login from a new device');
+      }
     }
     
     // Update user with login information
@@ -178,7 +190,7 @@ router.post('/login', async (req, res) => {
     user.lastDeviceFingerprint = deviceFingerprint;
     
     // Increment suspicious count if multi-account detected
-    if (isSuspiciousMultiAccount) {
+    if (isSuspiciousMultiAccount || isNewDeviceLogin) {
       user.suspiciousActivityCount = (user.suspiciousActivityCount || 0) + 1;
     }
     
@@ -192,9 +204,15 @@ router.post('/login', async (req, res) => {
         action: 'login',
         ipAddress: clientIP,
         userAgent: userAgent,
-        details: { country, sessionId, deviceFingerprint },
-        isSuspicious: isSuspiciousMultiAccount,
-        suspiciousReason: suspiciousReason
+        details: { 
+          country, 
+          sessionId, 
+          deviceFingerprint,
+          newDevice: isNewDeviceLogin,
+          deviceInfo: extraDeviceInfo
+        },
+        isSuspicious: suspiciousReasons.length > 0,
+        suspiciousReason: suspiciousReasons.join(' | ') || null
       });
     } catch (activityError) {
       console.error('Error logging user activity:', activityError);

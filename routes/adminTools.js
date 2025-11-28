@@ -448,17 +448,41 @@ router.get('/suspicious-activity', async (req, res) => {
       { $match: { 'user.isAdmin': false } } // Exclude admin accounts
     ]);
 
+    // Get new device login alerts
+    const newDeviceLogins = await UserActivity.aggregate([
+      {
+        $match: {
+          isSuspicious: true,
+          'details.newDevice': true
+        }
+      },
+      { $sort: { timestamp: -1 } },
+      { $limit: 30 },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userId',
+          foreignField: '_id',
+          as: 'user'
+        }
+      },
+      { $unwind: '$user' },
+      { $match: { 'user.isAdmin': false } }
+    ]);
+
     res.json({
       suspiciousUsers,
       recentSuspicious,
       ipStats,
       ipMismatchUsers,
       multiAccountUsage,
+      newDeviceLogins,
       summary: {
         totalSuspiciousUsers: suspiciousUsers.length,
         totalSuspiciousActivities: recentSuspicious.length,
         totalIPMismatches: ipMismatchUsers.length,
-        totalMultiAccountCases: multiAccountUsage.length
+        totalMultiAccountCases: multiAccountUsage.length,
+        totalNewDeviceAlerts: newDeviceLogins.length
       }
     });
   } catch (error) {

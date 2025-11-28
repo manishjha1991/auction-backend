@@ -858,6 +858,32 @@ async function createRetainedPlayerIndexes() {
   return results;
 }
 
+// USER ACTIVITY COLLECTION INDEXES
+async function createUserActivityIndexes() {
+  const indexes = [
+    { userId: 1, timestamp: -1 },
+    { ipAddress: 1, timestamp: -1 },
+    { isSuspicious: 1, timestamp: -1 },
+    { action: 1, timestamp: -1 },
+    { userId: 1, isSuspicious: 1 },
+    { ipAddress: 1, isSuspicious: 1 },
+    { action: 1, isSuspicious: 1 },
+    { 'details.newDevice': 1, timestamp: -1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      const collection = mongoose.connection.db.collection('useractivities');
+      await collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
 // Get index statistics
 router.get('/stats', async (req, res) => {
   try {
