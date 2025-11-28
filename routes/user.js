@@ -81,7 +81,135 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials!' });
     }
 
-    // Return user data (excluding sensitive fields like password)
+    // Generate session ID and device fingerprint
+    const sessionId = require('crypto').randomBytes(16).toString('hex');
+    const userAgent = req.get('User-Agent') || 'Unknown';
+    const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
+    const deviceFingerprint = generateDeviceFingerprint(userAgent, clientIP);
+    
+    // Check for multi-account usage (same IP/device logging into multiple accounts)
+    // Skip this check for admin accounts - they can login from multiple devices
+    let isSuspiciousMultiAccount = false;
+    let suspiciousReason = null;
+    
+    if (!user.isAdmin) {
+      // Find other users who logged in from the same IP recently (within last 24 hours)
+      const recentLoginTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const otherUsersSameIP = await User.find({
+        _id: { $ne: user._id },
+        isAdmin: false,
+        lastLoginIP: clientIP,
+        lastLoginTime: { $gte: recentLoginTime }
+      }).select('name email teamName lastLoginTime').limit(5);
+      
+      // Find other users who logged in from the same device recently
+      const otherUsersSameDevice = await User.find({
+        _id: { $ne: user._id },
+        isAdmin: false,
+        lastDeviceFingerprint: deviceFingerprint,
+        lastLoginTime: { $gte: recentLoginTime }
+      }).select('name email teamName lastLoginTime').limit(5);
+      
+      if (otherUsersSameIP.length > 0 || otherUsersSameDevice.length > 0) {
+        isSuspiciousMultiAccount = true;
+        const otherAccounts = [
+          ...otherUsersSameIP.map(u => u.teamName || u.name),
+          ...otherUsersSameDevice.map(u => u.teamName || u.name)
+        ];
+        suspiciousReason = `Multiple accounts detected from same IP/device. Other accounts: ${[...new Set(otherAccounts)].join(', ')}`;
+        
+        // Log suspicious activity
+        try {
+          const UserActivity = require('../models/UserActivity');
+          await UserActivity.create({
+            userId: user._id,
+            action: 'login',
+            ipAddress: clientIP,
+            userAgent: userAgent,
+            details: { 
+              country, 
+              sessionId,
+              deviceFingerprint,
+              otherAccountsSameIP: otherUsersSameIP.map(u => ({ name: u.teamName || u.name, email: u.email })),
+              otherAccountsSameDevice: otherUsersSameDevice.map(u => ({ name: u.teamName || u.name, email: u.email }))
+            },
+            isSuspicious: true,
+            suspiciousReason: suspiciousReason
+          });
+          
+          // Also log for other accounts
+          for (const otherUser of [...otherUsersSameIP, ...otherUsersSameDevice]) {
+            await UserActivity.create({
+              userId: otherUser._id,
+              action: 'multi_account_detected',
+              ipAddress: clientIP,
+              userAgent: userAgent,
+              details: {
+                detectedAccount: user.teamName || user.name,
+                detectedEmail: user.email
+              },
+              isSuspicious: true,
+              suspiciousReason: `Account ${user.teamName || user.name} logged in from same IP/device`
+            });
+          }
+        } catch (activityError) {
+          console.error('Error logging suspicious multi-account activity:', activityError);
+        }
+      }
+    }
+    
+    // Update user's known IPs and devices (keep last 10)
+    if (!user.knownIPs) user.knownIPs = [];
+    if (!user.knownIPs.includes(clientIP)) {
+      user.knownIPs.push(clientIP);
+      if (user.knownIPs.length > 10) user.knownIPs.shift();
+    }
+    
+    if (!user.knownDevices) user.knownDevices = [];
+    if (!user.knownDevices.includes(deviceFingerprint)) {
+      user.knownDevices.push(deviceFingerprint);
+      if (user.knownDevices.length > 10) user.knownDevices.shift();
+    }
+    
+    // Update user with login information
+    user.lastLoginIP = clientIP;
+    user.lastLoginTime = new Date();
+    user.activeSessionId = sessionId;
+    user.lastDeviceFingerprint = deviceFingerprint;
+    
+    // Increment suspicious count if multi-account detected
+    if (isSuspiciousMultiAccount) {
+      user.suspiciousActivityCount = (user.suspiciousActivityCount || 0) + 1;
+    }
+    
+    await user.save();
+
+    // Log user activity (normal login)
+    try {
+      const UserActivity = require('../models/UserActivity');
+      await UserActivity.create({
+        userId: user._id,
+        action: 'login',
+        ipAddress: clientIP,
+        userAgent: userAgent,
+        details: { country, sessionId, deviceFingerprint },
+        isSuspicious: isSuspiciousMultiAccount,
+        suspiciousReason: suspiciousReason
+      });
+    } catch (activityError) {
+      console.error('Error logging user activity:', activityError);
+      // Don't fail login if activity logging fails
+    }
+
+    // Generate JWT token
+    const jwt = require('jsonwebtoken');
+    const token = jwt.sign(
+      { id: user._id, sessionId: sessionId },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '1d' }
+    );
+
+    // Return user data with token (excluding sensitive fields like password)
     res.json({
       id: user._id,
       name: user.name,
@@ -91,6 +219,7 @@ router.post('/login', async (req, res) => {
       isAdmin: user.isAdmin,
       timezone: user.timezone,
       streamLink: user.streamLink,
+      token: token, // Include JWT token in response
     });
   } catch (err) {
     console.error('Error logging in:', err);

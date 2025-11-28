@@ -5,6 +5,7 @@ const router = express.Router();
 const User = require('../models/User');
 const Player = require('../models/Player');
 const UserPlayer = require('../models/UserPlayer');
+const UserActivity = require('../models/UserActivity');
 const {
   previewAuctionFixes,
   executeAuctionFixes,
@@ -32,7 +33,7 @@ const requireAdmin = async (adminUserId) => {
     error.status = 400;
     throw error;
   }
-  const admin = await User.findById(adminUserId).select('isAdmin name');
+  const admin = await User.findById(adminUserId).includeInactive().select('isAdmin name');
   if (!admin || !admin.isAdmin) {
     const err = new Error('Only admins can perform this action');
     err.status = 403;
@@ -350,6 +351,140 @@ router.post('/users/:userId/active', async (req, res) => {
     res
       .status(error.status || 500)
       .json({ message: error.message || 'Failed to update user status' });
+  }
+});
+
+// Get all user activity with filters
+router.get('/user-activity', async (req, res) => {
+  try {
+    const { adminUserId, userId, action, isSuspicious, limit = 100, skip = 0 } = req.query;
+    await requireAdmin(adminUserId);
+
+    const filter = {};
+    if (userId) filter.userId = userId;
+    if (action) filter.action = action;
+    if (isSuspicious === 'true') filter.isSuspicious = true;
+
+    const activities = await UserActivity.find(filter)
+      .populate('userId', 'name email teamName')
+      .sort({ timestamp: -1 })
+      .limit(parseInt(limit))
+      .skip(parseInt(skip))
+      .lean();
+
+    const total = await UserActivity.countDocuments(filter);
+
+    res.json({ activities, total });
+  } catch (error) {
+    console.error('Error fetching user activity:', error);
+    res.status(error.status || 500).json({ message: error.message || 'Failed to fetch user activity' });
+  }
+});
+
+// Get suspicious activity summary
+router.get('/suspicious-activity', async (req, res) => {
+  try {
+    const { adminUserId } = req.query;
+    await requireAdmin(adminUserId);
+
+    // Get users with suspicious activity
+    const suspiciousUsers = await User.find({ 
+      suspiciousActivityCount: { $gt: 0 },
+      isAdmin: false // Exclude admins from suspicious users list
+    })
+      .select('name email teamName lastLoginIP lastBidIP suspiciousActivityCount lastLoginTime lastBidTime lastDeviceFingerprint')
+      .sort({ suspiciousActivityCount: -1 })
+      .lean();
+
+    // Get recent suspicious activities
+    const recentSuspicious = await UserActivity.find({ isSuspicious: true })
+      .populate('userId', 'name email teamName isAdmin')
+      .sort({ timestamp: -1 })
+      .limit(50)
+      .lean();
+
+    // Get IP address statistics (grouped by IP showing which users are using same IP)
+    const ipStats = await UserActivity.aggregate([
+      { $match: { isSuspicious: true } },
+      { $group: { _id: '$ipAddress', count: { $sum: 1 }, users: { $addToSet: '$userId' } } },
+      { $sort: { count: -1 } },
+      { $limit: 20 }
+    ]);
+
+    // Get users with IP mismatches
+    const ipMismatchUsers = await User.find({
+      $and: [
+        { lastLoginIP: { $exists: true, $ne: null } },
+        { lastBidIP: { $exists: true, $ne: null } },
+        { $expr: { $ne: ['$lastLoginIP', '$lastBidIP'] } },
+        { isAdmin: false } // Exclude admins
+      ]
+    })
+      .select('name email teamName lastLoginIP lastBidIP suspiciousActivityCount')
+      .lean();
+
+    // Get multi-account usage (same IP/device used by multiple accounts)
+    const multiAccountUsage = await UserActivity.aggregate([
+      { 
+        $match: { 
+          isSuspicious: true,
+          $or: [
+            { 'details.otherAccountsSameIP': { $exists: true, $ne: [] } },
+            { 'details.otherAccountsSameDevice': { $exists: true, $ne: [] } }
+          ]
+        }
+      },
+      { $sort: { timestamp: -1 } },
+      { $limit: 30 },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userId',
+          foreignField: '_id',
+          as: 'user'
+        }
+      },
+      { $unwind: '$user' },
+      { $match: { 'user.isAdmin': false } } // Exclude admin accounts
+    ]);
+
+    res.json({
+      suspiciousUsers,
+      recentSuspicious,
+      ipStats,
+      ipMismatchUsers,
+      multiAccountUsage,
+      summary: {
+        totalSuspiciousUsers: suspiciousUsers.length,
+        totalSuspiciousActivities: recentSuspicious.length,
+        totalIPMismatches: ipMismatchUsers.length,
+        totalMultiAccountCases: multiAccountUsage.length
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching suspicious activity:', error);
+    res.status(error.status || 500).json({ message: error.message || 'Failed to fetch suspicious activity' });
+  }
+});
+
+// Get user activity for a specific user
+router.get('/user-activity/:userId', async (req, res) => {
+  try {
+    const { adminUserId } = req.query;
+    const { userId } = req.params;
+    await requireAdmin(adminUserId);
+
+    const activities = await UserActivity.find({ userId })
+      .sort({ timestamp: -1 })
+      .limit(200)
+      .lean();
+
+    const user = await User.findById(userId).select('name email teamName lastLoginIP lastBidIP suspiciousActivityCount lastLoginTime lastBidTime').lean();
+
+    res.json({ user, activities });
+  } catch (error) {
+    console.error('Error fetching user activity:', error);
+    res.status(error.status || 500).json({ message: error.message || 'Failed to fetch user activity' });
   }
 });
 

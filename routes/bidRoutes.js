@@ -8,10 +8,108 @@ const validateUser = require("../config/validation.js")
 const User = require("../models/User.js");
 const mongoose = require("mongoose");
 const BidNotification = require('../models/BidNotification');
+const authenticateJWT = require('../middleware/authJWT');
+const UserActivity = require('../models/UserActivity');
+const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
+
 // Place a bid
-router.put("/:playerId/bid", validateUser, async (req, res) => {
+router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   const { playerId } = req.params;
   const { bidder } = req.body;
+  
+  // Get IP address and device fingerprint from request
+  const clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+  const userAgent = req.get('User-Agent') || 'Unknown';
+  const deviceFingerprint = generateDeviceFingerprint(userAgent, clientIP);
+  
+  // Verify bidder matches authenticated user
+  const authenticatedUserId = req.authenticatedUser._id.toString();
+  const bidderId = bidder ? bidder.toString() : null;
+  
+  if (!bidderId || bidderId !== authenticatedUserId) {
+    // Log suspicious activity
+    try {
+      await UserActivity.create({
+        userId: req.authenticatedUser._id,
+        action: 'bid_attempt',
+        ipAddress: clientIP,
+        userAgent: userAgent,
+        details: { 
+          attemptedBidder: bidderId,
+          actualUser: authenticatedUserId,
+          playerId: playerId,
+          deviceFingerprint
+        },
+        isSuspicious: true,
+        suspiciousReason: 'Bidder ID mismatch - attempted to bid as different user'
+      });
+      
+      // Increment suspicious activity count
+      req.authenticatedUser.suspiciousActivityCount = (req.authenticatedUser.suspiciousActivityCount || 0) + 1;
+      await req.authenticatedUser.save();
+    } catch (activityError) {
+      console.error('Error logging suspicious activity:', activityError);
+    }
+    
+    return res.status(403).json({ 
+      message: 'Unauthorized: You can only bid on your own behalf. Bidder ID does not match authenticated user.' 
+    });
+  }
+  
+  // Check IP address and device mismatch (warning only, don't block - allow bidding to continue)
+  const user = req.authenticatedUser;
+  let isSuspiciousIP = false;
+  let suspiciousReason = null;
+  
+  // Skip device/IP checks for admin accounts
+  if (!user.isAdmin) {
+    // Check IP mismatch
+    if (user.lastLoginIP && user.lastLoginIP !== clientIP) {
+      isSuspiciousIP = true;
+      suspiciousReason = `IP mismatch: Login IP (${user.lastLoginIP}) differs from bid IP (${clientIP})`;
+      console.warn(`⚠️ IP Mismatch for user ${user.name} (${user.email}): Login IP ${user.lastLoginIP} vs Bid IP ${clientIP}`);
+    }
+    
+    // Check device fingerprint mismatch
+    if (user.lastDeviceFingerprint && user.lastDeviceFingerprint !== deviceFingerprint) {
+      isSuspiciousIP = true;
+      if (suspiciousReason) {
+        suspiciousReason += ` | Device mismatch: Expected ${user.lastDeviceFingerprint.substring(0, 8)}... but got ${deviceFingerprint.substring(0, 8)}...`;
+      } else {
+        suspiciousReason = `Device mismatch: Expected ${user.lastDeviceFingerprint.substring(0, 8)}... but got ${deviceFingerprint.substring(0, 8)}...`;
+      }
+      console.warn(`⚠️ Device Mismatch for user ${user.name} (${user.email})`);
+    }
+    
+    // Check if this IP/device is being used by multiple accounts
+    const recentLoginTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const otherUsersSameIP = await User.find({
+      _id: { $ne: user._id },
+      isAdmin: false,
+      lastLoginIP: clientIP,
+      lastLoginTime: { $gte: recentLoginTime }
+    }).select('name email teamName').limit(3);
+    
+    const otherUsersSameDevice = await User.find({
+      _id: { $ne: user._id },
+      isAdmin: false,
+      lastDeviceFingerprint: deviceFingerprint,
+      lastLoginTime: { $gte: recentLoginTime }
+    }).select('name email teamName').limit(3);
+    
+    if (otherUsersSameIP.length > 0 || otherUsersSameDevice.length > 0) {
+      isSuspiciousIP = true;
+      const otherAccounts = [
+        ...otherUsersSameIP.map(u => u.teamName || u.name),
+        ...otherUsersSameDevice.map(u => u.teamName || u.name)
+      ];
+      if (suspiciousReason) {
+        suspiciousReason += ` | Multiple accounts from same IP/device: ${[...new Set(otherAccounts)].join(', ')}`;
+      } else {
+        suspiciousReason = `Multiple accounts detected from same IP/device. Other accounts: ${[...new Set(otherAccounts)].join(', ')}`;
+      }
+    }
+  }
 
   try {
     // 1. Fetch the player
@@ -27,12 +125,10 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
         .json({ message: "Cannot place bids on a sold player." });
     }
 
-    // 3. Fetch the user
-    const user = await User.findById(bidder);
-    if (!user) {
-      return res.status(404).json({ message: "Bidder not found." });
-    }
-// If the user is locked, reject their bid with a friendly explanation
+    // 3. Use authenticated user (already fetched by JWT middleware)
+    const user = req.authenticatedUser;
+    
+    // If the user is locked, reject their bid with a friendly explanation
     if (user.isLocked) {
       return res.status(403).json({
         message: "You’ve been locked out for not meeting the minimum/maximum player count by the deadline. " +
@@ -189,6 +285,30 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
       // They didn't have a bid for this player, add a new currentBids entry
       user.currentBids.push({ playerId, amount: bidAmount });
     }
+    
+    // Update user's last bid IP, time, and device fingerprint
+    user.lastBidIP = clientIP;
+    user.lastBidTime = new Date();
+    user.lastDeviceFingerprint = deviceFingerprint;
+    
+    // Update known IPs and devices (keep last 10)
+    if (!user.knownIPs) user.knownIPs = [];
+    if (!user.knownIPs.includes(clientIP)) {
+      user.knownIPs.push(clientIP);
+      if (user.knownIPs.length > 10) user.knownIPs.shift();
+    }
+    
+    if (!user.knownDevices) user.knownDevices = [];
+    if (!user.knownDevices.includes(deviceFingerprint)) {
+      user.knownDevices.push(deviceFingerprint);
+      if (user.knownDevices.length > 10) user.knownDevices.shift();
+    }
+    
+    // Increment suspicious activity count if IP/device mismatch or multi-account detected
+    if (isSuspiciousIP) {
+      user.suspiciousActivityCount = (user.suspiciousActivityCount || 0) + 1;
+    }
+    
     await user.save();
 
     // 13. Update the player's currentBid & currentBidder
@@ -216,6 +336,28 @@ router.put("/:playerId/bid", validateUser, async (req, res) => {
     // Save notification to database
     const newNotification = new BidNotification(notificationData);
     await newNotification.save();
+
+    // Log user activity
+    try {
+      await UserActivity.create({
+        userId: user._id,
+        action: 'bid',
+        ipAddress: clientIP,
+        userAgent: userAgent,
+        details: {
+          playerId: playerId,
+          playerName: player.name,
+          bidAmount: bidAmount,
+          previousBid: highestBid ? highestBid.bidAmount : null,
+          deviceFingerprint: deviceFingerprint
+        },
+        isSuspicious: isSuspiciousIP,
+        suspiciousReason: suspiciousReason
+      });
+    } catch (activityError) {
+      console.error('Error logging user activity:', activityError);
+      // Don't fail bid if activity logging fails
+    }
 
     // Emit real-time notification
     const io = req.app.get('io');

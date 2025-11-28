@@ -23,6 +23,7 @@ const AppSettings = require('../models/AppSettings');
 const RetainedPlayer = require('../models/RetainedPlayer');
 const MatchResult = require('../models/MatchResult');
 const Tournament = require('../models/Tournament');
+const UserActivity = require('../models/UserActivity');
 
 // Create all indexes for maximum performance
 router.post('/create-all', async (req, res) => {
@@ -110,6 +111,10 @@ router.post('/create-all', async (req, res) => {
     console.log('🔒 Creating RetainedPlayer indexes...');
     results.retainedPlayers = await createRetainedPlayerIndexes();
 
+    // 21. USER ACTIVITY COLLECTION INDEXES
+    console.log('📊 Creating UserActivity indexes...');
+    results.userActivities = await createUserActivityIndexes();
+
     console.log('✅ All indexes created successfully!');
     res.status(200).json({
       success: true,
@@ -164,7 +169,16 @@ async function createUserIndexes() {
     { isRetentionLocked: 1, isActive: 1 },
     { allPlayersReleased: 1, isActive: 1 },
     { isRetentionLocked: 1, allPlayersReleased: 1 },
-    { isActive: 1, isAdmin: 1, allPlayersReleased: 1 }
+    { isActive: 1, isAdmin: 1, allPlayersReleased: 1 },
+    
+    // NEW: Anti-proxy bidding indexes
+    { lastLoginIP: 1 },
+    { lastBidIP: 1 },
+    { activeSessionId: 1 },
+    { suspiciousActivityCount: 1 },
+    { lastLoginIP: 1, lastLoginTime: -1 },
+    { lastBidIP: 1, lastBidTime: -1 },
+    { suspiciousActivityCount: -1, isActive: 1 }
   ];
 
   const results = [];
@@ -851,7 +865,8 @@ router.get('/stats', async (req, res) => {
       'users', 'players', 'bids', 'bidhistories', 'matchresults', 'fixtures',
       'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
-      'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers'
+      'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
+      'useractivities'
     ];
 
     const stats = {};
@@ -896,7 +911,8 @@ router.post('/drop-all', async (req, res) => {
       'users', 'players', 'bids', 'bidhistories', 'matchresults', 'fixtures',
       'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
-      'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers'
+      'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
+      'useractivities'
     ];
 
     const results = {};

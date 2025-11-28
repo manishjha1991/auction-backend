@@ -28,6 +28,16 @@ const UserSchema = new mongoose.Schema({
   timezone: { type: String, default: 'Asia/Kolkata' }, // User's preferred timezone
   streamLink: { type: String, default: null }, // User's streaming URL
   allPlayersReleased: { type: Boolean, default: false }, // NEW: Track if all players are released for this user
+  // Anti-proxy bidding fields
+  lastLoginIP: { type: String, default: null }, // IP address of last login
+  lastLoginTime: { type: Date, default: null }, // Timestamp of last login
+  lastBidIP: { type: String, default: null }, // IP address of last bid
+  lastBidTime: { type: Date, default: null }, // Timestamp of last bid
+  activeSessionId: { type: String, default: null }, // Unique session identifier
+  suspiciousActivityCount: { type: Number, default: 0 }, // Count of suspicious activities
+  knownIPs: [{ type: String }], // Array of known IP addresses for this user
+  knownDevices: [{ type: String }], // Array of known device fingerprints for this user
+  lastDeviceFingerprint: { type: String, default: null }, // Last device fingerprint used
 });
 
 function applyActiveFilter(next) {
