@@ -253,8 +253,8 @@ cron.schedule('1,16,31,46 0-23 * * *', tenMinuteSingleBidJob, {
   timezone: 'Asia/Kolkata',
 });
 
-// 23:30 IST nightly – sell players that never received a counter bid
-cron.schedule('0 30 22 * * *', sellingSingleBidSinceStarting, {
+// 10:33 IST daily – sell players that never received a counter bid
+cron.schedule('0 33 10 * * *', sellingSingleBidSinceStarting, {
   timezone: 'Asia/Kolkata',
 });
 
