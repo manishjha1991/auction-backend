@@ -428,10 +428,7 @@ router.get('/suspicious-activity', async (req, res) => {
       { 
         $match: { 
           isSuspicious: true,
-          $or: [
-            { 'details.otherAccountsSameIP': { $exists: true, $ne: [] } },
-            { 'details.otherAccountsSameDevice': { $exists: true, $ne: [] } }
-          ]
+          'details.otherAccountsSameDevice': { $exists: true, $ne: [] }
         }
       },
       { $sort: { timestamp: -1 } },

@@ -3,7 +3,7 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
 const router = express.Router();
-const { getClientIp, isLocalIp } = require('../utils/network');
+const { getClientIp } = require('../utils/network');
 
 // Add middleware to log ALL requests to user routes
 router.use((req, res, next) => {
@@ -98,21 +98,18 @@ router.post('/login', async (req, res) => {
     // Skip this check for admin accounts - they can login from multiple devices
     let isSuspiciousMultiAccount = false;
     let isNewDeviceLogin = false;
+    let isDeviceSwitch = false;
     const suspiciousReasons = [];
-    
-    const treatAsSafeIp = isLocalIp(clientIP);
+    const previousDeviceFingerprint = user.lastDeviceFingerprint || null;
 
-    if (!user.isAdmin && !treatAsSafeIp) {
-      // Find other users who logged in from the same IP recently (within last 24 hours)
+    if (!user.isAdmin && previousDeviceFingerprint && previousDeviceFingerprint !== deviceFingerprint) {
+      isDeviceSwitch = true;
+      suspiciousReasons.push('Account accessed from a different device than last session');
+    }
+
+    if (!user.isAdmin) {
+      // Find other users who logged in from the same device recently (within last 24 hours)
       const recentLoginTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const otherUsersSameIP = await User.find({
-        _id: { $ne: user._id },
-        isAdmin: false,
-        lastLoginIP: clientIP,
-        lastLoginTime: { $gte: recentLoginTime }
-      }).select('name email teamName lastLoginTime').limit(5);
-      
-      // Find other users who logged in from the same device recently
       const otherUsersSameDevice = await User.find({
         _id: { $ne: user._id },
         isAdmin: false,
@@ -120,13 +117,9 @@ router.post('/login', async (req, res) => {
         lastLoginTime: { $gte: recentLoginTime }
       }).select('name email teamName lastLoginTime').limit(5);
       
-      if (otherUsersSameIP.length > 0 || otherUsersSameDevice.length > 0) {
+      if (otherUsersSameDevice.length > 0) {
         isSuspiciousMultiAccount = true;
-        const otherAccounts = [
-          ...otherUsersSameIP.map(u => u.teamName || u.name),
-          ...otherUsersSameDevice.map(u => u.teamName || u.name)
-        ];
-        const sharedList = [...new Set(otherAccounts)].join(', ');
+        const sharedList = [...new Set(otherUsersSameDevice.map(u => u.teamName || u.name))].join(', ');
         suspiciousReasons.push(`Shared device with: ${sharedList}`);
         
         // Log suspicious activity
@@ -141,7 +134,6 @@ router.post('/login', async (req, res) => {
               country, 
               sessionId,
               deviceFingerprint,
-              otherAccountsSameIP: otherUsersSameIP.map(u => ({ name: u.teamName || u.name, email: u.email })),
               otherAccountsSameDevice: otherUsersSameDevice.map(u => ({ name: u.teamName || u.name, email: u.email }))
             },
             isSuspicious: true,
@@ -149,7 +141,7 @@ router.post('/login', async (req, res) => {
           });
           
           // Also log for other accounts
-          for (const otherUser of [...otherUsersSameIP, ...otherUsersSameDevice]) {
+          for (const otherUser of otherUsersSameDevice) {
             await UserActivity.create({
               userId: otherUser._id,
               action: 'multi_account_detected',
@@ -180,7 +172,7 @@ router.post('/login', async (req, res) => {
     if (!user.knownDevices.includes(deviceFingerprint)) {
       user.knownDevices.push(deviceFingerprint);
       if (user.knownDevices.length > 10) user.knownDevices.shift();
-      if (!user.isAdmin && !treatAsSafeIp && user.knownDevices.length > 1) {
+    if (!user.isAdmin && user.knownDevices.length > 1) {
         isNewDeviceLogin = true;
         suspiciousReasons.push('Login from a new device');
       }
@@ -193,7 +185,7 @@ router.post('/login', async (req, res) => {
     user.lastDeviceFingerprint = deviceFingerprint;
     
     // Increment suspicious count if multi-account detected
-    if (!treatAsSafeIp && (isSuspiciousMultiAccount || isNewDeviceLogin)) {
+    if (isSuspiciousMultiAccount || isNewDeviceLogin || isDeviceSwitch) {
       user.suspiciousActivityCount = (user.suspiciousActivityCount || 0) + 1;
     }
     
@@ -212,6 +204,8 @@ router.post('/login', async (req, res) => {
           sessionId, 
           deviceFingerprint,
           newDevice: isNewDeviceLogin,
+          deviceSwitched: isDeviceSwitch,
+          previousDeviceFingerprint,
           deviceInfo: extraDeviceInfo
         },
         isSuspicious: suspiciousReasons.length > 0,

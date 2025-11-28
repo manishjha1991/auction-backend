@@ -11,7 +11,7 @@ const BidNotification = require('../models/BidNotification');
 const authenticateJWT = require('../middleware/authJWT');
 const UserActivity = require('../models/UserActivity');
 const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
-const { getClientIp, isLocalIp } = require('../utils/network');
+const { getClientIp } = require('../utils/network');
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
@@ -69,16 +69,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   let suspiciousReason = null;
   
   // Skip device/IP checks for admin accounts
-  const treatAsSafeIp = isLocalIp(clientIP);
-
-  if (!user.isAdmin && !treatAsSafeIp) {
-    // Check IP mismatch
-    if (user.lastLoginIP && user.lastLoginIP !== clientIP) {
-      isSuspiciousIP = true;
-      suspiciousReason = `IP mismatch: Login IP (${user.lastLoginIP}) differs from bid IP (${clientIP})`;
-      console.warn(`⚠️ IP Mismatch for user ${user.name} (${user.email}): Login IP ${user.lastLoginIP} vs Bid IP ${clientIP}`);
-    }
-    
+  if (!user.isAdmin) {
     // Check device fingerprint mismatch
     if (user.lastDeviceFingerprint && user.lastDeviceFingerprint !== deviceFingerprint) {
       isSuspiciousIP = true;
@@ -90,15 +81,8 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       console.warn(`⚠️ Device Mismatch for user ${user.name} (${user.email})`);
     }
     
-    // Check if this IP/device is being used by multiple accounts
+    // Check if this device is being used by multiple accounts
     const recentLoginTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const otherUsersSameIP = await User.find({
-      _id: { $ne: user._id },
-      isAdmin: false,
-      lastLoginIP: clientIP,
-      lastLoginTime: { $gte: recentLoginTime }
-    }).select('name email teamName').limit(3);
-    
     const otherUsersSameDevice = await User.find({
       _id: { $ne: user._id },
       isAdmin: false,
@@ -106,16 +90,13 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       lastLoginTime: { $gte: recentLoginTime }
     }).select('name email teamName').limit(3);
     
-    if (otherUsersSameIP.length > 0 || otherUsersSameDevice.length > 0) {
+    if (otherUsersSameDevice.length > 0) {
       isSuspiciousIP = true;
-      const otherAccounts = [
-        ...otherUsersSameIP.map(u => u.teamName || u.name),
-        ...otherUsersSameDevice.map(u => u.teamName || u.name)
-      ];
+      const otherAccounts = [...new Set(otherUsersSameDevice.map(u => u.teamName || u.name))];
       if (suspiciousReason) {
-        suspiciousReason += ` | Multiple accounts from same IP/device: ${[...new Set(otherAccounts)].join(', ')}`;
+        suspiciousReason += ` | Device shared with: ${otherAccounts.join(', ')}`;
       } else {
-        suspiciousReason = `Multiple accounts detected from same IP/device. Other accounts: ${[...new Set(otherAccounts)].join(', ')}`;
+        suspiciousReason = `Device shared with: ${otherAccounts.join(', ')}`;
       }
     }
   }
