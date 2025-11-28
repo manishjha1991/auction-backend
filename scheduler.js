@@ -17,22 +17,17 @@
 const cron = require('node-cron');
 const axios = require('axios');
 
-const API_BASES = [];
-if (process.env.SCHEDULER_API) {
-  API_BASES.push(process.env.SCHEDULER_API);
-}
-API_BASES.push('http://127.0.0.1:3000');
-if (!API_BASES.includes('https://cpl.in.net')) {
-  API_BASES.push('https://cpl.in.net');
-}
+const API_ENDPOINTS = process.env.SCHEDULER_API || 'https://cpl.in.net';
 
-const EXIT_PATH = (id) => `/api/bids/${id}/exit-second-highest`;
-const SELL_PATH = (id) => `/api/bids/players/${id}/soldcrone`;
-const GET_UNSOLD_PLAYERS = `/api/bids/players?filter=unsold`;
-const GET_BID_COUNT = (id) => `/api/bids/players/${id}/bidders`;
-const LOCK_PATH = `/api/bids/lock-under-limit/all`;
-const SINGLE_BID_PATH = `/api/bids/players/singlebid`;
-const SETTINGS_PATH = `/api/settings`;
+const API_BASE = `${API_ENDPOINTS}/api/bids`;
+const EXIT_PATH = (id) => `${API_BASE}/${id}/exit-second-highest`;
+const EXIT_ALL_PATH = `${API_BASE}/exit-second-highest/all`;
+const SELL_PATH = (id) => `${API_BASE}/players/${id}/soldcrone`;
+const GET_UNSOLD_PLAYERS = `${API_BASE}/players?filter=unsold`;
+const GET_BID_COUNT = (id) => `${API_BASE}/players/${id}/bidders`;
+const LOCK_PATH = `${API_BASE}/lock-under-limit/all`;
+const SINGLE_BID_PATH = `${API_BASE}/players/singlebid`;
+const SETTINGS_PATH = `${API_ENDPOINTS}/api/settings`;
 
 let cachedSettings = null;
 let settingsFetchedAt = 0;
@@ -44,22 +39,17 @@ const DEFAULT_ITEM_DELAY_MS = parseInt(process.env.SCHEDULER_ITEM_DELAY_MS, 10) 
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function schedulerRequest(method, path, data) {
-  const timeout = parseInt(process.env.SCHEDULER_TIMEOUT_MS, 10) || 120000;
-  let lastError;
-  for (const base of API_BASES) {
-    const url = `${base}${path}`;
-    try {
-      if (method === 'get') {
-        return await axios.get(url, { timeout });
-      }
-      return await axios.post(url, data, { timeout });
-    } catch (err) {
-      lastError = err;
-      console.error(`⚠️ Scheduler request failed (${url}):`, err.message);
+async function schedulerRequest(method, url, data) {
+  const timeout = parseInt(process.env.SCHEDULER_TIMEOUT_MS, 10) || 300000; // 5 minutes default for bulk operations
+  try {
+    if (method === 'get') {
+      return await axios.get(url, { timeout });
     }
+    return await axios.post(url, data, { timeout });
+  } catch (err) {
+    console.error(`⚠️ Scheduler request failed (${url}):`, err.message);
+    throw err;
   }
-  throw lastError;
 }
 
 async function runInBatches(items, batchSize, handler, pauseMs = DEFAULT_BATCH_DELAY_MS, perItemDelay = DEFAULT_ITEM_DELAY_MS) {
@@ -227,17 +217,8 @@ async function runBulkExitJob() {
 
   console.log(`⏱️ [${new Date().toISOString()}] Running bulk exit-second-highest job`);
   try {
-    const { data } = await schedulerRequest('get', GET_UNSOLD_PLAYERS);
-    const players = data?.players || [];
-    console.log(`   → processing ${players.length} unsold player(s) in batches`);
-
-    const batchSize = parseInt(process.env.SCHEDULER_EXIT_BATCH_SIZE, 10) || DEFAULT_BATCH_SIZE;
-    await runInBatches(
-      players,
-      batchSize,
-      async (p) => exitSecondHighestForPlayer(p._id || p.id)
-    );
-    console.log('   ✅ bulk exit batch run completed');
+    const { data } = await schedulerRequest('post', EXIT_ALL_PATH);
+    console.log('   → bulk exit response:', data?.message || data);
   } catch (err) {
     console.error('   ❌ bulk exit error:', err.message);
   }
