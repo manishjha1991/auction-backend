@@ -38,13 +38,14 @@ let cachedSettings = null;
 let settingsFetchedAt = 0;
 const SETTINGS_TTL_MS = 0; // disable caching to reflect toggles immediately
 
-const DEFAULT_BATCH_SIZE = parseInt(process.env.SCHEDULER_BATCH_SIZE, 10) || 10;
-const DEFAULT_BATCH_DELAY_MS = parseInt(process.env.SCHEDULER_BATCH_DELAY_MS, 10) || 250;
+const DEFAULT_BATCH_SIZE = parseInt(process.env.SCHEDULER_BATCH_SIZE, 10) || 5;
+const DEFAULT_BATCH_DELAY_MS = parseInt(process.env.SCHEDULER_BATCH_DELAY_MS, 10) || 400;
+const DEFAULT_ITEM_DELAY_MS = parseInt(process.env.SCHEDULER_ITEM_DELAY_MS, 10) || 100;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function schedulerRequest(method, path, data) {
-  const timeout = parseInt(process.env.SCHEDULER_TIMEOUT_MS, 10) || 45000;
+  const timeout = parseInt(process.env.SCHEDULER_TIMEOUT_MS, 10) || 120000;
   let lastError;
   for (const base of API_BASES) {
     const url = `${base}${path}`;
@@ -61,11 +62,16 @@ async function schedulerRequest(method, path, data) {
   throw lastError;
 }
 
-async function runInBatches(items, batchSize, handler, pauseMs = DEFAULT_BATCH_DELAY_MS) {
+async function runInBatches(items, batchSize, handler, pauseMs = DEFAULT_BATCH_DELAY_MS, perItemDelay = DEFAULT_ITEM_DELAY_MS) {
   if (!Array.isArray(items) || items.length === 0) return;
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
-    await Promise.all(batch.map((item) => handler(item)));
+    for (const item of batch) {
+      await handler(item);
+      if (perItemDelay > 0) {
+        await delay(perItemDelay);
+      }
+    }
     if (pauseMs > 0 && i + batchSize < items.length) {
       await delay(pauseMs);
     }
