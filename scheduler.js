@@ -16,12 +16,12 @@
 
 const cron = require('node-cron');
 const axios = require('axios');
+const { runBulkExitAll } = require('./routes/bidRoutes');
 
 const API_ENDPOINTS = process.env.SCHEDULER_API || 'https://cpl.in.net';
 
 const API_BASE = `${API_ENDPOINTS}/api/bids`;
 const EXIT_PATH = (id) => `${API_BASE}/${id}/exit-second-highest`;
-const EXIT_ALL_PATH = `${API_BASE}/exit-second-highest/all`;
 const SELL_PATH = (id) => `${API_BASE}/players/${id}/soldcrone`;
 const GET_UNSOLD_PLAYERS = `${API_BASE}/players?filter=unsold`;
 const GET_BID_COUNT = (id) => `${API_BASE}/players/${id}/bidders`;
@@ -217,8 +217,10 @@ async function runBulkExitJob() {
 
   console.log(`⏱️ [${new Date().toISOString()}] Running bulk exit-second-highest job`);
   try {
-    const { data } = await schedulerRequest('post', EXIT_ALL_PATH);
-    console.log('   → bulk exit response:', data?.message || data);
+    // Call the function directly instead of making HTTP request
+    const result = await runBulkExitAll(null); // Pass null for io since we're in scheduler context
+    console.log('   → bulk exit response:', result?.message || 'completed');
+    console.log(`   → processed ${result?.details?.length || 0} user-player combinations`);
   } catch (err) {
     console.error('   ❌ bulk exit error:', err.message);
   }

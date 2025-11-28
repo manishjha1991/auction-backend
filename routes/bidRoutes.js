@@ -1338,7 +1338,7 @@ router.post("/players/singlebid", async (req, res) => {
  */
 
 // Helper: encapsulate your existing exit logic into a function
-async function exitBidForUserOnPlayer(userId, playerId, io) {
+async function exitBidForUserOnPlayer(userId, playerId, io = null) {
   // 1) Load player
   const player = await Player.findById(playerId);
   if (!player)   return { playerId, userId, error: "Player not found" };
@@ -1402,7 +1402,9 @@ async function exitBidForUserOnPlayer(userId, playerId, io) {
   const newNotification = new BidNotification(notificationData);
   await newNotification.save();
   
-  io.emit('bid_exit_notification', notificationData);
+  if (io) {
+    io.emit('bid_exit_notification', notificationData);
+  }
 
   return {
     playerId,
@@ -1413,29 +1415,43 @@ async function exitBidForUserOnPlayer(userId, playerId, io) {
   };
 }
 
-// New batch endpoint
-router.post('/exit-second-highest/all', async (req, res) => {
+// Bulk exit function - can be called directly or via API
+async function runBulkExitAll(io = null) {
   try {
-    const io    = req.app.get('io');
-    const users = await User.find().select('_id');
+    const users = await User.find().select('_id isAdmin');
     const players = await Player.find({ isSold: false }).select('_id');
 
     const report = [];
-    for (const { _id: userId ,isAdmin} of users) {
+    for (const userDoc of users) {
+      const userId = userDoc._id;
+      const isAdmin = userDoc.isAdmin;
       if (isAdmin) {
         // skip any admin user entirely
         continue;
       }
-      for (const { _id: playerId } of players) {
+      for (const playerDoc of players) {
+        const playerId = playerDoc._id;
         const result = await exitBidForUserOnPlayer(userId.toString(), playerId.toString(), io);
         report.push(result);
       }
     }
 
-    return res.json({
+    return {
       message: 'Batch exit-all complete',
       details: report
-    });
+    };
+  } catch (err) {
+    console.error('Batch exit-all error:', err);
+    throw err;
+  }
+}
+
+// New batch endpoint
+router.post('/exit-second-highest/all', async (req, res) => {
+  try {
+    const io = req.app.get('io');
+    const result = await runBulkExitAll(io);
+    return res.json(result);
   } catch (err) {
     console.error('Batch exit-all error:', err);
     return res.status(500).json({ message: 'Internal server error' });
@@ -1565,3 +1581,4 @@ router.post('/lock-under-limit/all', async (_req, res) => {
 
 
 module.exports = router;
+module.exports.runBulkExitAll = runBulkExitAll;
