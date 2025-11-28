@@ -244,15 +244,19 @@ async function lockUnderLimitJob() {
   }
 }
 
-// Every 10 minutes from 12:30 through 23:50 IST (removes second bidder / sells after a 10-min wait)
-// cron.schedule('0 30-59/10 12-23 * * *', tenMinuteSingleBidJob, {
-//   timezone: 'Asia/Kolkata',
-// });
+// Run once at 23:31 IST (after 11:30 PM), then every 15 minutes continuously
+// Pattern: '31,46 23 * * *' runs at 23:31 and 23:46, then '1,16,31,46 0-23 * * *' runs every 15 min in all hours
+cron.schedule('31,46 23 * * *', tenMinuteSingleBidJob, {
+  timezone: 'Asia/Kolkata',
+});
+cron.schedule('1,16,31,46 0-23 * * *', tenMinuteSingleBidJob, {
+  timezone: 'Asia/Kolkata',
+});
 
 // 23:30 IST nightly – sell players that never received a counter bid
-// cron.schedule('0 30 23 * * *', sellingSingleBidSinceStarting, {
-//   timezone: 'Asia/Kolkata',
-// });
+cron.schedule('0 30 23 * * *', sellingSingleBidSinceStarting, {
+  timezone: 'Asia/Kolkata',
+});
 
 // Bulk exit every 10 minutes (mutually exclusive with the ten-minute monitor)
 cron.schedule('0 */10 * * * *', runBulkExitJob, {
@@ -260,9 +264,9 @@ cron.schedule('0 */10 * * * *', runBulkExitJob, {
 });
 
 // Lock users that violate roster requirements at 22:00 IST daily
-// cron.schedule('0 0 22 * * *', lockUnderLimitJob, {
-//   timezone: 'Asia/Kolkata',
-// });
+cron.schedule('0 0 22 * * *', lockUnderLimitJob, {
+  timezone: 'Asia/Kolkata',
+});
 
 
 console.log('🕒 Auction scheduler running…');
