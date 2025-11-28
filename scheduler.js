@@ -16,17 +16,19 @@
 
 const cron = require('node-cron');
 const axios = require('axios');
-const { runBulkExitAll } = require('./routes/bidRoutes');
+const { 
+  runBulkExitAll,
+  getSingleBidPlayers,
+  getUnsoldPlayers,
+  getBidderCount,
+  sellPlayer,
+  exitSecondHighestForPlayerSingle,
+  lockUnderLimitAll
+} = require('./routes/bidRoutes');
 
 const API_ENDPOINTS = process.env.SCHEDULER_API || 'https://cpl.in.net';
 
-const API_BASE = `${API_ENDPOINTS}/api/bids`;
-const EXIT_PATH = (id) => `${API_BASE}/${id}/exit-second-highest`;
-const SELL_PATH = (id) => `${API_BASE}/players/${id}/soldcrone`;
-const GET_UNSOLD_PLAYERS = `${API_BASE}/players?filter=unsold`;
-const GET_BID_COUNT = (id) => `${API_BASE}/players/${id}/bidders`;
-const LOCK_PATH = `${API_BASE}/lock-under-limit/all`;
-const SINGLE_BID_PATH = `${API_BASE}/players/singlebid`;
+// Settings endpoint still needs HTTP call (it's in a different route file)
 const SETTINGS_PATH = `${API_ENDPOINTS}/api/settings`;
 
 let cachedSettings = null;
@@ -103,8 +105,8 @@ async function processPlayer(pid) {
   console.log(`▶️ [${new Date().toISOString()}] Evaluating player ${pid}`);
   let count;
   try {
-    const res = await schedulerRequest('get', GET_BID_COUNT(pid));
-    count = res.data.count ?? 0;
+    const result = await getBidderCount(pid);
+    count = result.count ?? 0;
   } catch (err) {
     console.error(`   ⚠️ bid count error for ${pid}:`, err.message);
     return;
@@ -113,16 +115,20 @@ async function processPlayer(pid) {
   if (count === 0) {
     console.log(`   → Only one bidder remains, selling player ${pid}`);
     try {
-      await schedulerRequest('post', SELL_PATH(pid), { playerID: pid });
-      console.log(`   ✅ Sold player ${pid}`);
+      const result = await sellPlayer(pid, null);
+      if (result.status === 'success') {
+        console.log(`   ✅ Sold player ${pid}`);
+      } else {
+        console.error(`   ❌ sell error for ${pid}:`, result.message);
+      }
     } catch (err) {
       console.error(`   ❌ sell error for ${pid}:`, err.message);
     }
-  } else {
+    } else {
     console.log(`   → ${count} bidders found, removing the current second-highest for ${pid}`);
     try {
-      await schedulerRequest('post', EXIT_PATH(pid));
-      console.log(`   ↪️ Removed second-highest bidder for ${pid}`);
+      const result = await exitSecondHighestForPlayerSingle(pid, null);
+      console.log(`   ↪️ Removed second-highest bidder for ${pid}:`, result.message || 'processed');
     } catch (err) {
       console.error(`   ❌ exit-second-highest error for ${pid}:`, err.message);
     }
@@ -137,8 +143,8 @@ async function sellingSingleBidSinceStarting() {
 
   console.log(`⏱️ [${new Date().toISOString()}] Running 23:30 single-bid finalizer`);
   try {
-    const { data } = await schedulerRequest('post', SINGLE_BID_PATH);
-    const ids = data.resultMain;
+    const result = await getSingleBidPlayers();
+    const ids = result.resultMain;
 
     if (!Array.isArray(ids) || ids.length === 0) {
       console.log('   → No single-bid players to finalize.');
@@ -151,15 +157,19 @@ async function sellingSingleBidSinceStarting() {
       batchSize,
       async (playerId) => {
         try {
-          await schedulerRequest('post', SELL_PATH(playerId));
-          console.log(`   ✅ Sold player ${playerId}`);
+          const result = await sellPlayer(playerId, null);
+          if (result.status === 'success') {
+            console.log(`   ✅ Sold player ${playerId}`);
+          } else {
+            console.error(`   ❌ Error selling player ${playerId}:`, result.message);
+          }
         } catch (err) {
           console.error(`   ❌ Error selling player ${playerId}:`, err.message);
         }
       }
     );
   } catch (err) {
-    console.error('   ❌ Error in sellingSingleBidSinceStarting:', err.response?.data || err.message);
+    console.error('   ❌ Error in sellingSingleBidSinceStarting:', err.message);
   }
 }
 
@@ -176,8 +186,8 @@ async function tenMinuteSingleBidJob() {
 
   console.log(`⏱️ [${new Date().toISOString()}] Running ten-minute single-bid monitor`);
   try {
-    const { data } = await schedulerRequest('get', GET_UNSOLD_PLAYERS);
-    const players = data.players || [];
+    const result = await getUnsoldPlayers();
+    const players = result.players || [];
     console.log(`  • evaluating ${players.length} unsold player(s)`);
 
     const batchSize = parseInt(process.env.SCHEDULER_MONITOR_BATCH_SIZE, 10) || DEFAULT_BATCH_SIZE;
@@ -193,14 +203,7 @@ async function tenMinuteSingleBidJob() {
   }
 }
 
-async function exitSecondHighestForPlayer(playerId) {
-  try {
-    const { data } = await schedulerRequest('post', EXIT_PATH(playerId));
-    console.log(`      • player ${playerId}:`, data?.message || 'processed');
-  } catch (err) {
-    console.error(`      ⚠️ player ${playerId} exit error:`, err.message);
-  }
-}
+// This function is no longer needed - using exitSecondHighestForPlayerSingle directly
 
 async function runBulkExitJob() {
    
@@ -234,8 +237,8 @@ async function lockUnderLimitJob() {
 
   console.log(`⏱️ [${new Date().toISOString()}] Running lock-under-limit job`);
   try {
-    const { data } = await schedulerRequest('post', LOCK_PATH);
-    console.log('   →', data?.message || 'lock under limit completed');
+    const result = await lockUnderLimitAll();
+    console.log('   →', result?.message || 'lock under limit completed');
   } catch (err) {
     console.error('   ❌ lock-under-limit error:', err.message);
   }
