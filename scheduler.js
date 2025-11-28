@@ -17,17 +17,22 @@
 const cron = require('node-cron');
 const axios = require('axios');
 
-const API_ENDPOINTS = process.env.SCHEDULER_API || 'https://cpl.in.net';
-// const API_ENDPOINTS = 'http://localhost:3000';
+const API_BASES = [];
+if (process.env.SCHEDULER_API) {
+  API_BASES.push(process.env.SCHEDULER_API);
+}
+API_BASES.push('http://127.0.0.1:3000');
+if (!API_BASES.includes('https://cpl.in.net')) {
+  API_BASES.push('https://cpl.in.net');
+}
 
-const API_BASE = `${API_ENDPOINTS}/api/bids`;
-const EXIT_PATH = (id) => `${API_BASE}/${id}/exit-second-highest`;
-const SELL_PATH = (id) => `${API_BASE}/players/${id}/soldcrone`;
-const GET_UNSOLD_PLAYERS = `${API_BASE}/players?filter=unsold`;
-const GET_BID_COUNT = (id) => `${API_BASE}/players/${id}/bidders`;
-const LOCK_PATH = `${API_BASE}/lock-under-limit/all`;
-const SINGLE_BID_PATH = `${API_BASE}/players/singlebid`;
-const SETTINGS_PATH = `${API_ENDPOINTS}/api/settings`;
+const EXIT_PATH = (id) => `/api/bids/${id}/exit-second-highest`;
+const SELL_PATH = (id) => `/api/bids/players/${id}/soldcrone`;
+const GET_UNSOLD_PLAYERS = `/api/bids/players?filter=unsold`;
+const GET_BID_COUNT = (id) => `/api/bids/players/${id}/bidders`;
+const LOCK_PATH = `/api/bids/lock-under-limit/all`;
+const SINGLE_BID_PATH = `/api/bids/players/singlebid`;
+const SETTINGS_PATH = `/api/settings`;
 
 let cachedSettings = null;
 let settingsFetchedAt = 0;
@@ -37,6 +42,24 @@ const DEFAULT_BATCH_SIZE = parseInt(process.env.SCHEDULER_BATCH_SIZE, 10) || 10;
 const DEFAULT_BATCH_DELAY_MS = parseInt(process.env.SCHEDULER_BATCH_DELAY_MS, 10) || 250;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function schedulerRequest(method, path, data) {
+  const timeout = parseInt(process.env.SCHEDULER_TIMEOUT_MS, 10) || 45000;
+  let lastError;
+  for (const base of API_BASES) {
+    const url = `${base}${path}`;
+    try {
+      if (method === 'get') {
+        return await axios.get(url, { timeout });
+      }
+      return await axios.post(url, data, { timeout });
+    } catch (err) {
+      lastError = err;
+      console.error(`⚠️ Scheduler request failed (${url}):`, err.message);
+    }
+  }
+  throw lastError;
+}
 
 async function runInBatches(items, batchSize, handler, pauseMs = DEFAULT_BATCH_DELAY_MS) {
   if (!Array.isArray(items) || items.length === 0) return;
@@ -55,7 +78,7 @@ async function getCronSettings(force = false) {
     return cachedSettings;
   }
   try {
-    const { data } = await axios.get(SETTINGS_PATH);
+    const { data } = await schedulerRequest('get', SETTINGS_PATH);
     cachedSettings = data || {};
     settingsFetchedAt = now;
   } catch (err) {
@@ -72,7 +95,7 @@ async function isCronEnabled(flag) {
 
 async function fetchCronSettings() {
   try {
-    const { data } = await axios.get(SETTINGS_PATH);
+    const { data } = await schedulerRequest('get', SETTINGS_PATH);
     return data || {};
   } catch (err) {
     console.error('⚠️ Unable to fetch cron settings:', err.message);
@@ -84,7 +107,7 @@ async function processPlayer(pid) {
   console.log(`▶️ [${new Date().toISOString()}] Evaluating player ${pid}`);
   let count;
   try {
-    const res = await axios.get(GET_BID_COUNT(pid));
+    const res = await schedulerRequest('get', GET_BID_COUNT(pid));
     count = res.data.count ?? 0;
   } catch (err) {
     console.error(`   ⚠️ bid count error for ${pid}:`, err.message);
@@ -94,7 +117,7 @@ async function processPlayer(pid) {
   if (count === 0) {
     console.log(`   → Only one bidder remains, selling player ${pid}`);
     try {
-      await axios.post(SELL_PATH(pid), { playerID: pid });
+      await schedulerRequest('post', SELL_PATH(pid), { playerID: pid });
       console.log(`   ✅ Sold player ${pid}`);
     } catch (err) {
       console.error(`   ❌ sell error for ${pid}:`, err.message);
@@ -102,7 +125,7 @@ async function processPlayer(pid) {
   } else {
     console.log(`   → ${count} bidders found, removing the current second-highest for ${pid}`);
     try {
-      await axios.post(EXIT_PATH(pid));
+      await schedulerRequest('post', EXIT_PATH(pid));
       console.log(`   ↪️ Removed second-highest bidder for ${pid}`);
     } catch (err) {
       console.error(`   ❌ exit-second-highest error for ${pid}:`, err.message);
@@ -118,7 +141,7 @@ async function sellingSingleBidSinceStarting() {
 
   console.log(`⏱️ [${new Date().toISOString()}] Running 23:30 single-bid finalizer`);
   try {
-    const { data } = await axios.post(SINGLE_BID_PATH);
+    const { data } = await schedulerRequest('post', SINGLE_BID_PATH);
     const ids = data.resultMain;
 
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -132,7 +155,7 @@ async function sellingSingleBidSinceStarting() {
       batchSize,
       async (playerId) => {
         try {
-          await axios.post(SELL_PATH(playerId));
+          await schedulerRequest('post', SELL_PATH(playerId));
           console.log(`   ✅ Sold player ${playerId}`);
         } catch (err) {
           console.error(`   ❌ Error selling player ${playerId}:`, err.message);
@@ -157,7 +180,7 @@ async function tenMinuteSingleBidJob() {
 
   console.log(`⏱️ [${new Date().toISOString()}] Running ten-minute single-bid monitor`);
   try {
-    const { data } = await axios.get(GET_UNSOLD_PLAYERS);
+    const { data } = await schedulerRequest('get', GET_UNSOLD_PLAYERS);
     const players = data.players || [];
     console.log(`  • evaluating ${players.length} unsold player(s)`);
 
@@ -176,7 +199,7 @@ async function tenMinuteSingleBidJob() {
 
 async function exitSecondHighestForPlayer(playerId) {
   try {
-    const { data } = await axios.post(EXIT_PATH(playerId));
+    const { data } = await schedulerRequest('post', EXIT_PATH(playerId));
     console.log(`      • player ${playerId}:`, data?.message || 'processed');
   } catch (err) {
     console.error(`      ⚠️ player ${playerId} exit error:`, err.message);
@@ -198,7 +221,7 @@ async function runBulkExitJob() {
 
   console.log(`⏱️ [${new Date().toISOString()}] Running bulk exit-second-highest job`);
   try {
-    const { data } = await axios.get(GET_UNSOLD_PLAYERS);
+    const { data } = await schedulerRequest('get', GET_UNSOLD_PLAYERS);
     const players = data?.players || [];
     console.log(`   → processing ${players.length} unsold player(s) in batches`);
 
@@ -222,7 +245,7 @@ async function lockUnderLimitJob() {
 
   console.log(`⏱️ [${new Date().toISOString()}] Running lock-under-limit job`);
   try {
-    const { data } = await axios.post(LOCK_PATH);
+    const { data } = await schedulerRequest('post', LOCK_PATH);
     console.log('   →', data?.message || 'lock under limit completed');
   } catch (err) {
     console.error('   ❌ lock-under-limit error:', err.message);
