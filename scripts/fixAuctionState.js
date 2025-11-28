@@ -54,7 +54,7 @@ function printIssues(preview) {
 }
 
 async function run() {
-  await mongoose.connect(uri, { serverSelectionTimeoutMS: 5000, dbName: 'cpl_14' });
+  await mongoose.connect(uri, { serverSelectionTimeoutMS: 5000, dbName: 'cpl_17' });
   console.log('Connected to Mongo');
 
   const preview = await previewAuctionFixes();
