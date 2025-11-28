@@ -35,6 +35,8 @@ const matchResultsRoutes = require('./routes/matchResults');
 const adminToolsRoutes = require('./routes/adminTools');
 require('./scheduler');
 
+// Allow Express to trust proxy headers (needed to read real client IPs)
+app.set('trust proxy', true);
 
 app.set('io', io);
 // 🚀 OPTIMIZED MongoDB Connection Pooling Configuration
@@ -98,8 +100,10 @@ app.use(cors({
 }));
 
 // Add request logging middleware
+const { getClientIp } = require('./utils/network');
+
 app.use((req, res, next) => {
-  const clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+  const clientIP = getClientIp(req);
   const userAgent = req.get('User-Agent') || 'Unknown';
   const country = req.get('CF-IPCountry') || req.get('X-Country-Code') || 'Unknown';
   

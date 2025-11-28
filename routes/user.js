@@ -3,6 +3,7 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
 const router = express.Router();
+const { getClientIp, isLocalIp } = require('../utils/network');
 
 // Add middleware to log ALL requests to user routes
 router.use((req, res, next) => {
@@ -55,7 +56,7 @@ router.post('/signup', async (req, res) => {
 });
 // POST: User Login
 router.post('/login', async (req, res) => {
-  const clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+  const clientIP = getClientIp(req);
   const country = req.get('CF-IPCountry') || req.get('X-Country-Code') || 'Unknown';
   
   console.log(`🔐 LOGIN ATTEMPT from ${country} (IP: ${clientIP})`);
@@ -99,7 +100,9 @@ router.post('/login', async (req, res) => {
     let isNewDeviceLogin = false;
     const suspiciousReasons = [];
     
-    if (!user.isAdmin) {
+    const treatAsSafeIp = isLocalIp(clientIP);
+
+    if (!user.isAdmin && !treatAsSafeIp) {
       // Find other users who logged in from the same IP recently (within last 24 hours)
       const recentLoginTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const otherUsersSameIP = await User.find({
@@ -177,7 +180,7 @@ router.post('/login', async (req, res) => {
     if (!user.knownDevices.includes(deviceFingerprint)) {
       user.knownDevices.push(deviceFingerprint);
       if (user.knownDevices.length > 10) user.knownDevices.shift();
-      if (!user.isAdmin && user.knownDevices.length > 1) {
+      if (!user.isAdmin && !treatAsSafeIp && user.knownDevices.length > 1) {
         isNewDeviceLogin = true;
         suspiciousReasons.push('Login from a new device');
       }
@@ -190,7 +193,7 @@ router.post('/login', async (req, res) => {
     user.lastDeviceFingerprint = deviceFingerprint;
     
     // Increment suspicious count if multi-account detected
-    if (isSuspiciousMultiAccount || isNewDeviceLogin) {
+    if (!treatAsSafeIp && (isSuspiciousMultiAccount || isNewDeviceLogin)) {
       user.suspiciousActivityCount = (user.suspiciousActivityCount || 0) + 1;
     }
     

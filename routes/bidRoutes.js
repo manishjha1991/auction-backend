@@ -11,6 +11,7 @@ const BidNotification = require('../models/BidNotification');
 const authenticateJWT = require('../middleware/authJWT');
 const UserActivity = require('../models/UserActivity');
 const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
+const { getClientIp, isLocalIp } = require('../utils/network');
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
@@ -18,7 +19,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   const { bidder } = req.body;
   
   // Get IP address and device fingerprint from request
-  const clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+  const clientIP = getClientIp(req);
   const userAgent = req.get('User-Agent') || 'Unknown';
   const extraDeviceInfo = {
     acceptLanguage: req.get('accept-language') || '',
@@ -68,7 +69,9 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   let suspiciousReason = null;
   
   // Skip device/IP checks for admin accounts
-  if (!user.isAdmin) {
+  const treatAsSafeIp = isLocalIp(clientIP);
+
+  if (!user.isAdmin && !treatAsSafeIp) {
     // Check IP mismatch
     if (user.lastLoginIP && user.lastLoginIP !== clientIP) {
       isSuspiciousIP = true;
