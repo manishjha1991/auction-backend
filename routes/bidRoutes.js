@@ -12,6 +12,7 @@ const authenticateJWT = require('../middleware/authJWT');
 const UserActivity = require('../models/UserActivity');
 const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
 const { getClientIp } = require('../utils/network');
+const RetainedPlayer = require('../models/RetainedPlayer');
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
@@ -136,15 +137,33 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       Silver: 6,
     };
 
+    // Count all bought players of this type
     const boughtPlayersOfThisType = await Player.countDocuments({
       _id: { $in: user.boughtPlayers },
       type: player.type,
     });
+
+    // Count retained players of this type (these should NOT count towards the limit)
+    const retainedPlayersOfThisType = await RetainedPlayer.countDocuments({
+      userId: user._id,
+      playerType: player.type,
+      isActive: true,
+    });
+
+    // Count current bids of this type
     const currentBidPlayersOfThisType = await Player.countDocuments({
       _id: { $in: user.currentBids.map((bid) => bid.playerId) },
       type: player.type,
     });
-    const totalTypeCount = boughtPlayersOfThisType + currentBidPlayersOfThisType;
+
+    // Total count = (bought players - retained players) + current bids + retained players
+    // Formula: (non-retained bought) + (current bids) + (retained) = total
+    // This ensures: retained + bid ≤ limit (e.g., 1 retained + 7 bid = 8 total for Gold)
+    // Safeguard: Ensure nonRetainedBoughtPlayers never goes negative (shouldn't happen, but safety first)
+    const nonRetainedBoughtPlayers = Math.max(0, boughtPlayersOfThisType - retainedPlayersOfThisType);
+    // Total = non-retained bought + current bids + retained players
+    // This way: if user has 1 retained, they can bid on (8 - 1) = 7 more
+    const totalTypeCount = nonRetainedBoughtPlayers + currentBidPlayersOfThisType + retainedPlayersOfThisType;
 
     const alreadyBiddingThisPlayer = user.currentBids.some(
       (bid) => bid.playerId.toString() === playerId
@@ -152,7 +171,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
 
     if (totalTypeCount >= typeLimit[player.type] && !alreadyBiddingThisPlayer) {
       return res.status(400).json({
-        message: `You have already reached the maximum limit for ${player.type} players (limit: ${typeLimit[player.type]}).`,
+        message: `You have already reached the maximum limit for ${player.type} players (limit: ${typeLimit[player.type]}). You have ${retainedPlayersOfThisType} retained ${player.type} player(s), so you can bid on up to ${typeLimit[player.type] - retainedPlayersOfThisType} more.`,
       });
     }
 
@@ -186,16 +205,57 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       });
     }
     // ============================
-    // 6. Max 5 Current Bids
+    // 6. Concurrent Bid Limit (varies by player type)
     // ============================
-    if (
-      user.currentBids.length >= 6 &&
-      !user.currentBids.some((bid) => bid.playerId.toString() === playerId)
-    ) {
-      return res.status(400).json({
-        message:
-          "You can bid on a maximum of 5 players at a time. Exit an existing auction to bid on this player.",
+    // For Gold players: max concurrent bids = 8 - (retained + bought/sold)
+    //   Example: 1 retained + 2 sold = 3, so can bid on 5 more (1 + 2 + 5 = 8 total)
+    //   Example: 0 retained + 0 sold = 0, so can bid on 8 (0 + 8 = 8 total)
+    // For Silver players: max concurrent bids = 6 - (retained + bought/sold)
+    //   Example: 1 retained + 1 sold = 2, so can bid on 4 more (1 + 1 + 4 = 6 total)
+    // For other types: max 5 concurrent bids
+    
+    if (player.type === 'Gold' || player.type === 'Silver') {
+      // For Gold and Silver: Check type-specific concurrent bid limit
+      // Get all current bid player IDs
+      const currentBidPlayerIds = user.currentBids.map(bid => bid.playerId);
+      
+      // Count players of this type in current bids
+      const playersOfThisTypeInCurrentBids = await Player.countDocuments({
+        _id: { $in: currentBidPlayerIds },
+        type: player.type
       });
+      
+      // Count retained players of this type
+      const retainedCount = await RetainedPlayer.countDocuments({
+        userId: user._id,
+        playerType: player.type,
+        isActive: true
+      });
+      
+      // boughtPlayersOfThisType already includes retained players
+      // So total owned = boughtPlayersOfThisType (which includes retained + non-retained bought)
+      // Non-retained bought = boughtPlayersOfThisType - retainedCount
+      const nonRetainedBoughtCount = Math.max(0, boughtPlayersOfThisType - retainedCount);
+      const totalOwned = boughtPlayersOfThisType; // This is retained + non-retained bought
+      
+      // Max concurrent bids = typeLimit - totalOwned
+      // This ensures: (retained + non-retained bought) + concurrent bids ≤ typeLimit
+      // Example for Gold: 1 retained + 2 sold + 5 bidding = 8 total
+      const maxConcurrentBids = typeLimit[player.type] - totalOwned;
+      
+      if (playersOfThisTypeInCurrentBids >= maxConcurrentBids && !alreadyBiddingThisPlayer) {
+        return res.status(400).json({
+          message: `You can bid on a maximum of ${maxConcurrentBids} ${player.type} players at a time (you have ${retainedCount} retained + ${nonRetainedBoughtCount} bought = ${totalOwned} ${player.type} player${totalOwned !== 1 ? 's' : ''}, so ${totalOwned} + ${maxConcurrentBids} = ${typeLimit[player.type]} total). You currently have ${playersOfThisTypeInCurrentBids} ${player.type} bids. Exit an existing ${player.type} auction to bid on this player.`,
+        });
+      }
+    } else {
+      // For non-Gold/Silver players: max 5 concurrent bids (original logic - unchanged)
+      if (user.currentBids.length >= 6 && !alreadyBiddingThisPlayer) {
+        return res.status(400).json({
+          message:
+            "You can bid on a maximum of 5 players at a time. Exit an existing auction to bid on this player.",
+        });
+      }
     }
 
     // ============================
