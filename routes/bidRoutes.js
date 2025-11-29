@@ -156,26 +156,23 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       type: player.type,
     });
 
-    // Total count = (bought players - retained players) + current bids
-    // Retained players should NOT count towards the limit
-    // Formula: (non-retained bought) + current bids = total (retained excluded)
-    // This ensures: non-retained bought + current bids ≤ limit
-    // Example: 1 retained + 0 other bought + 7 bids = 7 total (can bid on 1 more) ✓
-    // Example: 1 retained + 2 other bought + 5 bids = 7 total (can bid on 1 more) ✓
-    // Safeguard: Ensure nonRetainedBoughtPlayers never goes negative
-    const nonRetainedBoughtPlayers = Math.max(0, boughtPlayersOfThisType - retainedPlayersOfThisType);
-    const totalTypeCount = nonRetainedBoughtPlayers + currentBidPlayersOfThisType;
+    // Total count = bought players + current bids
+    // Retained players ARE included in boughtPlayers, so they count towards the limit
+    // Formula: bought (includes retained) + current bids = total
+    // This ensures: bought + bidding ≤ limit
+    // Example: 1 retained + 0 other bought + 7 bids = 8 total (at limit) ✓
+    // Example: 1 retained + 2 other bought + 5 bids = 8 total (at limit) ✓
+    const totalTypeCount = boughtPlayersOfThisType + currentBidPlayersOfThisType;
 
     const alreadyBiddingThisPlayer = user.currentBids.some(
       (bid) => bid.playerId.toString() === playerId
     );
 
     if (totalTypeCount >= typeLimit[player.type] && !alreadyBiddingThisPlayer) {
-      // Calculate remaining slots (retained players don't count)
-      const nonRetainedBought = Math.max(0, boughtPlayersOfThisType - retainedPlayersOfThisType);
-      const maxAllowedBids = typeLimit[player.type] - nonRetainedBought;
+      // Calculate remaining slots
+      const remainingSlots = typeLimit[player.type] - totalTypeCount;
       return res.status(400).json({
-        message: `You have already reached the maximum limit for ${player.type} players (limit: ${typeLimit[player.type]}). You have ${retainedPlayersOfThisType} retained ${player.type} player(s) (not counted) + ${nonRetainedBought} bought + ${currentBidPlayersOfThisType} current bids = ${totalTypeCount} total. You can bid on up to ${maxAllowedBids} ${player.type} players (retained don't count).`,
+        message: `You have already reached the maximum limit for ${player.type} players (limit: ${typeLimit[player.type]}). You have ${boughtPlayersOfThisType} bought ${player.type} player(s) (including ${retainedPlayersOfThisType} retained) + ${currentBidPlayersOfThisType} current bids = ${totalTypeCount} total.`,
       });
     }
 
