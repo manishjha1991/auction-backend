@@ -709,6 +709,31 @@ async function createUserPlayerIndexes() {
       results.push({ index, status: 'error', error: error.message });
     }
   }
+
+  // Create unique partial index to prevent duplicate active sales
+  // This prevents the same player from being sold twice to the same user when isActive is true
+  try {
+    await UserPlayer.collection.createIndex(
+      { playerId: 1, userId: 1 },
+      { 
+        unique: true, 
+        partialFilterExpression: { isActive: true },
+        name: 'unique_active_player_user'
+      }
+    );
+    results.push({ 
+      index: { playerId: 1, userId: 1, unique: true, partialFilter: { isActive: true } }, 
+      status: 'created',
+      note: 'Unique partial index to prevent duplicate active sales'
+    });
+  } catch (error) {
+    results.push({ 
+      index: { playerId: 1, userId: 1, unique: true }, 
+      status: 'error', 
+      error: error.message 
+    });
+  }
+
   return results;
 }
 

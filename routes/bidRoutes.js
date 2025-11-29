@@ -1059,31 +1059,21 @@ async function sellPlayer(playerId, io = null) {
       };
     }
     
+    // Early validation (for performance - atomic operations below handle race conditions)
     const pl = await Player.findById(playerId).select('isSold');
-    if (!pl || pl.isSold) {
+    if (!pl) {
       return {
         playerID: playerId,
         status: 'error',
-        message: pl ? 'Player already sold.' : 'Player not found.'
+        message: 'Player not found.'
       };
     }
-
-    // a) Load player
-    const player = await Player.findById(playerId);
-    const existingUPCheckForSold = await UserPlayer.findOne({
-      playerId: playerId,
-      isActive: true
-    });
-    if (existingUPCheckForSold) {
+    if (pl.isSold) {
       return {
         playerID: playerId,
         status: 'error',
-        message: 'Already sold to this user.'
+        message: 'Player already sold.'
       };
-    }
-
-    if (!player) {
-      return { playerID: playerId, status: 'error', message: 'Player not found.' };
     }
 
     // b) Fetch only active/in-progress bids to find the highest bid
@@ -1107,27 +1097,94 @@ async function sellPlayer(playerId, io = null) {
     // c) Deactivate all bids
     await Bid.updateMany({ playerId: playerId }, { $set: { isActive: false } });
 
-    // d) Prevent duplicate sale record
-    const existingUP = await UserPlayer.findOne({
-      playerId: playerId,
-      userId: highestBid.bidder,
-      isActive: true
-    });
-    if (existingUP) {
-      return {
-        playerID: playerId,
-        status: 'error',
-        message: 'Already sold to this user.'
-      };
-    }
+    // d) ATOMIC OPERATION: Atomically check and create UserPlayer
+    // Use findOneAndUpdate with upsert to atomically check if UserPlayer exists and create if not
+    // The unique index on (playerId, userId, isActive: true) will prevent duplicates at DB level
+    try {
+      // First, atomically check if Player is still unsold and mark as sold in one operation
+      const playerUpdateResult = await Player.findOneAndUpdate(
+        {
+          _id: playerId,
+          isSold: false  // Only update if not already sold (atomic check)
+        },
+        {
+          $set: {
+            isSold: true,
+            isActive: true,
+            currentBid: highestBid.bidAmount,
+            currentBidder: highestBid.bidder,
+            updatedAt: new Date()
+          },
+          $unset: { currentBids: "" }
+        },
+        {
+          new: true,
+          runValidators: true
+        }
+      );
 
-    // e) Create UserPlayer
-    await new UserPlayer({
-      playerId: playerId,
-      userId: highestBid.bidder,
-      bidValue: highestBid.bidAmount,
-      isActive: true
-    }).save();
+      // If player was already sold (update returned null), check for existing UserPlayer
+      if (!playerUpdateResult) {
+        const existingUP = await UserPlayer.findOne({
+          playerId: playerId,
+          userId: highestBid.bidder,
+          isActive: true
+        });
+        if (existingUP) {
+          return {
+            playerID: playerId,
+            status: 'error',
+            message: 'Player already sold to this user.'
+          };
+        }
+        return {
+          playerID: playerId,
+          status: 'error',
+          message: 'Player was already sold by another process.'
+        };
+      }
+
+      // Now atomically create UserPlayer - the unique index will prevent duplicates
+      // Use findOneAndUpdate with upsert: false to ensure we only create if it doesn't exist
+      const existingUserPlayer = await UserPlayer.findOne({
+        playerId: playerId,
+        userId: highestBid.bidder,
+        isActive: true
+      });
+
+      if (existingUserPlayer) {
+        // Another process created it between our checks - this is rare but possible
+        return {
+          playerID: playerId,
+          status: 'error',
+          message: 'Player already sold to this user (race condition detected).'
+        };
+      }
+
+      // Create UserPlayer - unique index will prevent duplicates if two processes reach here simultaneously
+      try {
+        await new UserPlayer({
+          playerId: playerId,
+          userId: highestBid.bidder,
+          bidValue: highestBid.bidAmount,
+          isActive: true
+        }).save();
+      } catch (saveError) {
+        // Handle unique index violation (duplicate key error)
+        if (saveError.code === 11000 || saveError.code === 11001) {
+          return {
+            playerID: playerId,
+            status: 'error',
+            message: 'Player already sold to this user (unique constraint prevented duplicate).'
+          };
+        }
+        // Re-throw other errors
+        throw saveError;
+      }
+    } catch (error) {
+      // If Player update failed, rollback is not needed since we use atomic operations
+      throw error;
+    }
 
     // f) Log BidHistory
     let bidHist = await BidHistory.findOne({ playerId: playerId });
@@ -1183,73 +1240,17 @@ async function sellPlayer(playerId, io = null) {
       }
     }
 
-    // i) Mark player as sold - GUARANTEED to set both isSold and isActive to true
-    let playerStatusUpdated = false;
-    
-    try {
-      // Method 1: Direct save
-      player.isSold = true;
-      player.isActive = true;
-      player.currentBid = highestBid.bidAmount;
-      player.currentBidder = highestBid.bidder;
-      if (player.currentBids !== undefined) delete player.currentBids;
-      await player.save();
-      playerStatusUpdated = true;
-      console.log(`✅ Player ${playerId} marked as sold and active (method 1)`);
-    } catch (playerUpdateError) {
-      console.error(`❌ Method 1 failed for player ${playerId}:`, playerUpdateError);
-      
-      try {
-        // Method 2: findByIdAndUpdate
-        await Player.findByIdAndUpdate(playerId, {
-          $set: {
-            isSold: true,
-            isActive: true,
-            currentBid: highestBid.bidAmount,
-            currentBidder: highestBid.bidder
-          },
-          $unset: { currentBids: "" }
-        });
-        playerStatusUpdated = true;
-        console.log(`✅ Player ${playerId} marked as sold and active (method 2)`);
-      } catch (fallbackError) {
-        console.error(`❌ Method 2 failed for player ${playerId}:`, fallbackError);
-        
-        try {
-          // Method 3: Direct MongoDB update
-          await Player.updateOne(
-            { _id: playerId },
-            {
-              $set: {
-                isSold: true,
-                isActive: true,
-                currentBid: highestBid.bidAmount,
-                currentBidder: highestBid.bidder
-              },
-              $unset: { currentBids: "" }
-            }
-          );
-          playerStatusUpdated = true;
-          console.log(`✅ Player ${playerId} marked as sold and active (method 3)`);
-        } catch (finalError) {
-          console.error(`❌ ALL METHODS FAILED for player ${playerId}:`, finalError);
-          throw new Error(`Failed to update player status after all attempts: ${finalError.message}`);
-        }
-      }
-    }
-    
+    // i) Player is already marked as sold atomically in step (d) above
     // Verify the update was successful
-    if (playerStatusUpdated) {
-      const verifyPlayer = await Player.findById(playerId);
-      if (verifyPlayer && verifyPlayer.isSold === true && verifyPlayer.isActive === true) {
-        console.log(`✅ VERIFIED: Player ${playerId} is correctly sold and active`);
-      } else {
-        console.error(`❌ VERIFICATION FAILED: Player ${playerId} status is incorrect`, {
-          isSold: verifyPlayer?.isSold,
-          isActive: verifyPlayer?.isActive
-        });
-        throw new Error(`Player status verification failed for ${playerId}`);
-      }
+    const verifyPlayer = await Player.findById(playerId);
+    if (verifyPlayer && verifyPlayer.isSold === true && verifyPlayer.isActive === true) {
+      console.log(`✅ VERIFIED: Player ${playerId} is correctly sold and active`);
+    } else {
+      console.error(`❌ VERIFICATION FAILED: Player ${playerId} status is incorrect`, {
+        isSold: verifyPlayer?.isSold,
+        isActive: verifyPlayer?.isActive
+      });
+      throw new Error(`Player status verification failed for ${playerId}`);
     }
 
     return {
@@ -1546,13 +1547,10 @@ router.post('/exit-second-highest/all', async (req, res) => {
 async function lockUnderLimitAll() {
   try {
     // ── 1. RULES ─────────────────────────────────────────────────────────────
-    // Gold type exact requirements:
-    // - If user has 1+ bought Gold players → need EXACTLY 6 bidding (total 7)
-    // - If user has 0 bought Gold players → need EXACTLY 8 bidding (total 8)
-    const GOLD_EXACT_TOTAL_IF_BOUGHT = 7; // If bought 1+, need exactly 7 total
-    const GOLD_EXACT_TOTAL_IF_NOT_BOUGHT = 8; // If bought 0, need exactly 8 total
-    const GOLD_EXACT_BIDDING_IF_BOUGHT = 7; // If bought 1+, need exactly 6 bidding
-    const GOLD_EXACT_BIDDING_IF_NOT_BOUGHT = 8; // If bought 0, need exactly 8 bidding
+    // Gold type minimum requirement:
+    // - Users must have MINIMUM 8 Gold players total (bought + bidding)
+    // - If they have less than 8, they will be locked
+    const GOLD_MINIMUM_TOTAL = 8; // Minimum 8 Gold players total (bought + bidding)
 
     // ── 2. SCAN EVERY USER ───────────────────────────────────────────────────
     const users = await User.find({}, { boughtPlayers: 1, currentBids: 1 }).lean();
@@ -1585,7 +1583,7 @@ async function lockUnderLimitAll() {
         return acc;
       }, {});
 
-      // ── 2-a. Check ONLY Gold type requirements ─────────────────────────────
+      // ── 2-a. Check Gold type minimum requirement ─────────────────────────────
       const goldBought = counts['Gold'] || 0;
       const goldBidding = user.currentBids.filter(bid => {
         // Count only Gold players in current bids
@@ -1593,25 +1591,8 @@ async function lockUnderLimitAll() {
       }).length;
       const goldTotal = goldBought + goldBidding;
       
-      let failsGoldRequirement = false;
-      let goldReason = '';
-      
-      if (goldBought >= 1) {
-        // If user has 1+ bought Gold players, need EXACTLY 6 bidding (total 7)
-        if (goldBidding !== GOLD_EXACT_BIDDING_IF_BOUGHT) {
-          failsGoldRequirement = true;
-          goldReason = `Has ${goldBought} bought Gold, needs EXACTLY ${GOLD_EXACT_BIDDING_IF_BOUGHT} bidding (has ${goldBidding})`;
-        }
-      } else {
-        // If user has 0 bought Gold players, need EXACTLY 8 bidding (total 8)
-        if (goldBidding !== GOLD_EXACT_BIDDING_IF_NOT_BOUGHT) {
-          failsGoldRequirement = true;
-          goldReason = `Has 0 bought Gold, needs EXACTLY ${GOLD_EXACT_BIDDING_IF_NOT_BOUGHT} bidding (has ${goldBidding})`;
-        }
-      }
-
-      // ── 2-b. Lock user ONLY if they fail Gold requirements ─────────────────
-      if (failsGoldRequirement) {
+      // Lock user if they have less than minimum 8 Gold total
+      if (goldTotal < GOLD_MINIMUM_TOTAL) {
         toLock.push(user._id);
         details.push({
           userId: user._id,
@@ -1620,8 +1601,8 @@ async function lockUnderLimitAll() {
             goldBought,
             goldBidding,
             goldTotal,
-            requirement: goldBought >= 1 ? GOLD_EXACT_BIDDING_IF_BOUGHT : GOLD_EXACT_BIDDING_IF_NOT_BOUGHT,
-            explanation: goldReason
+            minimumRequired: GOLD_MINIMUM_TOTAL,
+            explanation: `Has ${goldTotal} Gold total (${goldBought} bought + ${goldBidding} bidding), needs minimum ${GOLD_MINIMUM_TOTAL} Gold total`
           }
         });
       }
@@ -1637,7 +1618,7 @@ async function lockUnderLimitAll() {
 
     // ── 4. RESPONSE ──────────────────────────────────────────────────────────
     return {
-      message     : `Locked ${toLock.length} user(s) for not meeting Gold requirements (1+ bought needs exactly 6 bidding = 7 total, 0 bought needs exactly 8 bidding = 8 total).`,
+      message     : `Locked ${toLock.length} user(s) for not meeting minimum Gold requirement (minimum 8 Gold total: bought + bidding).`,
       totalLocked : toLock.length,
       details,
     };

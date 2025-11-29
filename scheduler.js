@@ -81,7 +81,13 @@ async function getCronSettings(force = false) {
     settingsFetchedAt = now;
   } catch (err) {
     console.error('⚠️ Unable to fetch cron settings:', err.message);
-    if (!cachedSettings) cachedSettings = {};
+    // If fetch fails, use cached settings if available, otherwise empty object
+    if (!cachedSettings) {
+      cachedSettings = {};
+      console.error('   ⚠️ No cached settings available, using defaults');
+    } else {
+      console.error('   ℹ️ Using cached settings due to fetch failure');
+    }
   }
   return cachedSettings;
 }
@@ -206,26 +212,37 @@ async function tenMinuteSingleBidJob() {
 // This function is no longer needed - using exitSecondHighestForPlayerSingle directly
 
 async function runBulkExitJob() {
-   
-  const settings = await getCronSettings();
-  if (settings.cronSingleBidEnabled) {
-    console.log('⏸️ Bulk exit cron paused because the 10-minute monitor is active.');
-    return;
-  }
-  if (settings.cronBulkExitEnabled === false) {
-   
-    console.log('⏸️ Bulk exit cron disabled via admin settings.');
-    return;
-  }
-
-  console.log(`⏱️ [${new Date().toISOString()}] Running bulk exit-second-highest job`);
   try {
+    const settings = await getCronSettings();
+    
+    // Log current settings for debugging
+    console.log(`   📊 Settings: cronBulkExitEnabled=${settings.cronBulkExitEnabled}, cronSingleBidEnabled=${settings.cronSingleBidEnabled}`);
+    
+    // Check if explicitly disabled
+    if (settings.cronBulkExitEnabled === false) {
+      console.log('⏸️ Bulk exit cron disabled via admin settings.');
+      return;
+    }
+    
+    // Check if single-bid monitor is enabled (mutually exclusive)
+    if (settings.cronSingleBidEnabled === true) {
+      console.log('⏸️ Bulk exit cron paused because the 10-minute monitor is active.');
+      return;
+    }
+
+    // If cronBulkExitEnabled is undefined/null, default to enabled (backward compatibility)
+    if (settings.cronBulkExitEnabled === undefined || settings.cronBulkExitEnabled === null) {
+      console.log('   ℹ️ cronBulkExitEnabled not set, defaulting to enabled');
+    }
+
+    console.log(`⏱️ [${new Date().toISOString()}] Running bulk exit-second-highest job`);
     // Call the function directly instead of making HTTP request
     const result = await runBulkExitAll(null); // Pass null for io since we're in scheduler context
     console.log('   → bulk exit response:', result?.message || 'completed');
     console.log(`   → processed ${result?.details?.length || 0} user-player combinations`);
   } catch (err) {
     console.error('   ❌ bulk exit error:', err.message);
+    console.error('   Stack:', err.stack);
   }
 }
 
@@ -254,12 +271,16 @@ cron.schedule('1,16,31,46 0-23 * * *', tenMinuteSingleBidJob, {
 });
 
 // 23:30 IST nightly – sell players that never received a counter bid
-cron.schedule('0 40 23 * * *', sellingSingleBidSinceStarting, {
+cron.schedule('0 30 22 * * *', sellingSingleBidSinceStarting, {
   timezone: 'Asia/Kolkata',
 });
 
 // Bulk exit every 10 minutes (mutually exclusive with the ten-minute monitor)
-cron.schedule('0 */10 * * * *', runBulkExitJob, {
+// Schedule: runs at 0 seconds of every 10th minute (00:00, 00:10, 00:20, 00:30, 00:40, 00:50, 01:00, etc.)
+cron.schedule('0 */10 * * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit cron triggered (every 10 minutes)`);
+  runBulkExitJob();
+}, {
   timezone: 'Asia/Kolkata',
 });
 

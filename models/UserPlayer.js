@@ -14,4 +14,15 @@ UserPlayerSchema.index({ playerId: 1, isActive: 1 });
 UserPlayerSchema.index({ userId: 1, isActive: 1 });
 UserPlayerSchema.index({ isActive: 1 });
 
+// Unique index to prevent duplicate active sales (same player sold twice to same user)
+// This is a partial unique index that only applies when isActive is true
+UserPlayerSchema.index(
+  { playerId: 1, userId: 1 },
+  { 
+    unique: true, 
+    partialFilterExpression: { isActive: true },
+    name: 'unique_active_player_user'
+  }
+);
+
 module.exports = mongoose.model("UserPlayer", UserPlayerSchema);
