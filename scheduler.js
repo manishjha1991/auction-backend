@@ -261,9 +261,9 @@ async function lockUnderLimitJob() {
   }
 }
 
-// Run at 12:00 AM IST (midnight), then every 15 minutes continuously
-// Schedule: 00:00, 00:15, 00:30, 00:45, 01:00, 01:15, ... (every 15 minutes)
-cron.schedule('0,15,30,45 * * * *', tenMinuteSingleBidJob, {
+// Run at 12:05 AM IST, then every 15 minutes continuously
+// Schedule: 00:05, 00:20, 00:35, 00:50, 01:05, 01:20, ... (every 15 minutes)
+cron.schedule('5,20,35,50 * * * *', tenMinuteSingleBidJob, {
   timezone: 'Asia/Kolkata',
 });
 
