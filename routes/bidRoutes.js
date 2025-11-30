@@ -1704,6 +1704,59 @@ router.post('/lock-under-limit/all', async (_req, res) => {
 
 
 
+// Get all active bids for live dashboard
+router.get('/live-dashboard', async (req, res) => {
+  try {
+    // Get all active bids with player and bidder information
+    const activeBids = await Bid.find({ isActive: true, isBidOn: true })
+      .populate('playerId', 'name type role basePrice profilePicture')
+      .populate('bidder', 'name teamName')
+      .sort({ bidAmount: -1 })
+      .lean();
+
+    // Group bids by playerId to get top 2 bidders per player
+    const bidsByPlayer = {};
+    
+    activeBids.forEach(bid => {
+      const playerId = bid.playerId._id.toString();
+      if (!bidsByPlayer[playerId]) {
+        bidsByPlayer[playerId] = {
+          player: bid.playerId,
+          bids: []
+        };
+      }
+      bidsByPlayer[playerId].bids.push({
+        bidder: bid.bidder,
+        bidAmount: bid.bidAmount,
+        timestamp: bid.timestamp
+      });
+    });
+
+    // Sort bids for each player and get top 2
+    const result = Object.values(bidsByPlayer).map(({ player, bids }) => {
+      // Sort bids by amount descending
+      bids.sort((a, b) => b.bidAmount - a.bidAmount);
+      
+      return {
+        playerId: player._id,
+        playerName: player.name,
+        playerType: player.type,
+        playerRole: player.role,
+        basePrice: player.basePrice,
+        profilePicture: player.profilePicture,
+        highestBid: bids[0] || null,
+        secondBid: bids[1] || null,
+        bidCount: bids.length
+      };
+    });
+
+    res.json({ activeBids: result });
+  } catch (error) {
+    console.error('Error fetching live dashboard data:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 module.exports = router;
 module.exports.runBulkExitAll = runBulkExitAll;
 module.exports.getSingleBidPlayers = getSingleBidPlayers;
