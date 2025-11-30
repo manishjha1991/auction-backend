@@ -837,6 +837,15 @@ router.post("/bid/sold", async (req, res) => {
       }
     }
 
+    // Emit socket event for player sold (affects purse values)
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('player_sold', {
+        message: 'Player(s) sold - purse values updated',
+        timestamp: new Date()
+      });
+    }
+
     // Return the array of results for each player
     res.status(200).json({ results });
   } catch (error) {
@@ -1753,6 +1762,110 @@ router.get('/live-dashboard', async (req, res) => {
     res.json({ activeBids: result });
   } catch (error) {
     console.error('Error fetching live dashboard data:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Get all users with purse and active bids for user-grouped dashboard
+router.get('/users-dashboard', async (req, res) => {
+  try {
+    // Get all non-admin users with their purse and abbreviation
+    const users = await User.find({ isAdmin: { $ne: true } })
+      .select('name teamName purse _id abbreviation')
+      .lean();
+
+    // Get all active bids with player and bidder info (including abbreviation)
+    const activeBids = await Bid.find({ isActive: true, isBidOn: true })
+      .populate('playerId', 'name type role basePrice')
+      .populate('bidder', 'name teamName _id abbreviation')
+      .sort({ bidAmount: -1 })
+      .lean();
+
+    // First, group bids by player to find highest and second highest
+    const bidsByPlayer = {};
+    
+    activeBids.forEach(bid => {
+      const playerId = bid.playerId._id.toString();
+      if (!bidsByPlayer[playerId]) {
+        bidsByPlayer[playerId] = [];
+      }
+      bidsByPlayer[playerId].push({
+        bidderId: bid.bidder._id.toString(),
+        bidderAbbreviation: bid.bidder.abbreviation || bid.bidder.teamName?.substring(0, 3).toUpperCase() || bid.bidder.name?.substring(0, 3).toUpperCase() || 'N/A',
+        bidAmount: bid.bidAmount,
+        timestamp: bid.timestamp
+      });
+    });
+
+    // Sort bids for each player
+    Object.keys(bidsByPlayer).forEach(playerId => {
+      bidsByPlayer[playerId].sort((a, b) => b.bidAmount - a.bidAmount);
+    });
+
+    // Group active bids by bidder (user) with winning/losing status
+    const bidsByUser = {};
+    
+    activeBids.forEach(bid => {
+      const bidderId = bid.bidder._id.toString();
+      const playerId = bid.playerId._id.toString();
+      const playerBids = bidsByPlayer[playerId] || [];
+      
+      if (!bidsByUser[bidderId]) {
+        bidsByUser[bidderId] = [];
+      }
+      
+      // Find if this user is highest or second
+      const isHighest = playerBids[0]?.bidderId === bidderId;
+      const isSecond = playerBids[1]?.bidderId === bidderId;
+      
+      // Get the other bidder's abbreviation
+      let otherBidderAbbr = null;
+      if (isHighest && playerBids[1]) {
+        otherBidderAbbr = playerBids[1].bidderAbbreviation;
+      } else if (isSecond && playerBids[0]) {
+        otherBidderAbbr = playerBids[0].bidderAbbreviation;
+      }
+      
+      // Group by player - keep highest bid per player for this user
+      const existingPlayerBid = bidsByUser[bidderId].find(
+        b => b.playerId.toString() === playerId
+      );
+      
+      if (!existingPlayerBid || existingPlayerBid.bidAmount < bid.bidAmount) {
+        // Remove old bid for this player if exists
+        if (existingPlayerBid) {
+          const index = bidsByUser[bidderId].indexOf(existingPlayerBid);
+          bidsByUser[bidderId].splice(index, 1);
+        }
+        
+        bidsByUser[bidderId].push({
+          playerId: bid.playerId._id,
+          playerName: bid.playerId.name,
+          playerType: bid.playerId.type,
+          playerRole: bid.playerId.role,
+          basePrice: bid.playerId.basePrice,
+          bidAmount: bid.bidAmount,
+          timestamp: bid.timestamp,
+          isWinning: isHighest,
+          isLosing: isSecond,
+          otherBidderAbbr: otherBidderAbbr
+        });
+      }
+    });
+
+    // Combine users with their active bids
+    const result = users.map(user => ({
+      userId: user._id,
+      userName: user.name,
+      teamName: user.teamName || user.name,
+      abbreviation: user.abbreviation || user.teamName?.substring(0, 3).toUpperCase() || user.name?.substring(0, 3).toUpperCase() || 'N/A',
+      purse: parseFloat(user.purse.toString()),
+      activeBids: (bidsByUser[user._id.toString()] || []).slice(0, 8) // Limit to 8 bids
+    }));
+
+    res.json({ users: result });
+  } catch (error) {
+    console.error('Error fetching users dashboard data:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
