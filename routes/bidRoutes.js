@@ -1621,6 +1621,13 @@ async function lockUnderLimitAll() {
     // - Users must have MINIMUM 8 Gold players total (bought + bidding)
     // - If they have less than 8, they will be locked
     const GOLD_MINIMUM_TOTAL = 8; // Minimum 8 Gold players total (bought + bidding)
+    
+    // Silver type minimum requirement:
+    // - Users must have MINIMUM 6 Silver players total (bought + bidding)
+    // - If they have 1 retained Silver (in boughtPlayers), they need 5 bidding
+    // - If they have 0 retained, they need 6 bidding
+    // - Total must be 6 Silver players at any cost
+    const SILVER_MINIMUM_TOTAL = 6; // Minimum 6 Silver players total (bought + bidding)
 
     // ── 2. SCAN EVERY USER ───────────────────────────────────────────────────
     const users = await User.find({}, { boughtPlayers: 1, currentBids: 1 }).lean();
@@ -1676,6 +1683,45 @@ async function lockUnderLimitAll() {
           }
         });
       }
+
+      // ── 2-b. Check Silver type minimum requirement ────────────────────────────
+      // Count retained Silver players (they are in boughtPlayers)
+      const retainedSilverCount = await RetainedPlayer.countDocuments({
+        userId: user._id,
+        playerType: 'Silver',
+        isActive: true
+      });
+
+      // Count all Silver players in boughtPlayers (includes retained)
+      const silverBought = counts['Silver'] || 0;
+      
+      // Count Silver players in current bids
+      const silverBidding = user.currentBids.filter(bid => {
+        return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Silver';
+      }).length;
+      
+      const silverTotal = silverBought + silverBidding;
+      
+      // Lock user if they have less than minimum 6 Silver total
+      // Example: 1 retained + 5 bidding = 6 total ✓
+      // Example: 0 retained + 6 bidding = 6 total ✓
+      // Example: 1 retained + 4 bidding = 5 total ✗ (LOCK)
+      // Example: 0 retained + 5 bidding = 5 total ✗ (LOCK)
+      if (silverTotal < SILVER_MINIMUM_TOTAL) {
+        toLock.push(user._id);
+        details.push({
+          userId: user._id,
+          reason: 'silverRequirement',
+          data: {
+            retainedSilver: retainedSilverCount,
+            silverBought,
+            silverBidding,
+            silverTotal,
+            minimumRequired: SILVER_MINIMUM_TOTAL,
+            explanation: `Has ${silverTotal} Silver total (${retainedSilverCount} retained + ${silverBought - retainedSilverCount} other bought + ${silverBidding} bidding), needs minimum ${SILVER_MINIMUM_TOTAL} Silver total`
+          }
+        });
+      }
     }
 
     // ── 3. BULK UPDATE ───────────────────────────────────────────────────────
@@ -1687,8 +1733,11 @@ async function lockUnderLimitAll() {
     }
 
     // ── 4. RESPONSE ──────────────────────────────────────────────────────────
+    const goldLocked = details.filter(d => d.reason === 'goldRequirement').length;
+    const silverLocked = details.filter(d => d.reason === 'silverRequirement').length;
+    
     return {
-      message     : `Locked ${toLock.length} user(s) for not meeting minimum Gold requirement (minimum 8 Gold total: bought + bidding).`,
+      message     : `Locked ${toLock.length} user(s): ${goldLocked} for Gold requirement (minimum 8 Gold total), ${silverLocked} for Silver requirement (minimum 6 Silver total: bought + bidding).`,
       totalLocked : toLock.length,
       details,
     };
