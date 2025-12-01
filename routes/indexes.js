@@ -23,7 +23,6 @@ const AppSettings = require('../models/AppSettings');
 const RetainedPlayer = require('../models/RetainedPlayer');
 const MatchResult = require('../models/MatchResult');
 const Tournament = require('../models/Tournament');
-const UserActivity = require('../models/UserActivity');
 
 // Create all indexes for maximum performance
 router.post('/create-all', async (req, res) => {
@@ -110,10 +109,6 @@ router.post('/create-all', async (req, res) => {
     // 20. RETAINED PLAYER COLLECTION INDEXES
     console.log('🔒 Creating RetainedPlayer indexes...');
     results.retainedPlayers = await createRetainedPlayerIndexes();
-
-    // 21. USER ACTIVITY COLLECTION INDEXES
-    console.log('📊 Creating UserActivity indexes...');
-    results.userActivities = await createUserActivityIndexes();
 
     console.log('✅ All indexes created successfully!');
     res.status(200).json({
@@ -875,32 +870,6 @@ async function createRetainedPlayerIndexes() {
   for (const index of indexes) {
     try {
       await RetainedPlayer.collection.createIndex(index);
-      results.push({ index, status: 'created' });
-    } catch (error) {
-      results.push({ index, status: 'error', error: error.message });
-    }
-  }
-  return results;
-}
-
-// USER ACTIVITY COLLECTION INDEXES
-async function createUserActivityIndexes() {
-  const indexes = [
-    { userId: 1, timestamp: -1 },
-    { ipAddress: 1, timestamp: -1 },
-    { isSuspicious: 1, timestamp: -1 },
-    { action: 1, timestamp: -1 },
-    { userId: 1, isSuspicious: 1 },
-    { ipAddress: 1, isSuspicious: 1 },
-    { action: 1, isSuspicious: 1 },
-    { 'details.newDevice': 1, timestamp: -1 }
-  ];
-
-  const results = [];
-  for (const index of indexes) {
-    try {
-      const collection = mongoose.connection.db.collection('useractivities');
-      await collection.createIndex(index);
       results.push({ index, status: 'created' });
     } catch (error) {
       results.push({ index, status: 'error', error: error.message });

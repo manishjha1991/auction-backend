@@ -121,43 +121,6 @@ router.post('/login', async (req, res) => {
         isSuspiciousMultiAccount = true;
         const sharedList = [...new Set(otherUsersSameDevice.map(u => u.teamName || u.name))].join(', ');
         suspiciousReasons.push(`Shared device with: ${sharedList}`);
-        
-        // Log suspicious activity
-        try {
-          const UserActivity = require('../models/UserActivity');
-          await UserActivity.create({
-            userId: user._id,
-            action: 'login',
-            ipAddress: clientIP,
-            userAgent: userAgent,
-            details: { 
-              country, 
-              sessionId,
-              deviceFingerprint,
-              otherAccountsSameDevice: otherUsersSameDevice.map(u => ({ name: u.teamName || u.name, email: u.email }))
-            },
-            isSuspicious: true,
-            suspiciousReason: `Shared device with ${sharedList}`
-          });
-          
-          // Also log for other accounts
-          for (const otherUser of otherUsersSameDevice) {
-            await UserActivity.create({
-              userId: otherUser._id,
-              action: 'multi_account_detected',
-              ipAddress: clientIP,
-              userAgent: userAgent,
-              details: {
-                detectedAccount: user.teamName || user.name,
-                detectedEmail: user.email
-              },
-              isSuspicious: true,
-              suspiciousReason: `Account ${user.teamName || user.name} logged in from same device`
-            });
-          }
-        } catch (activityError) {
-          console.error('Error logging suspicious multi-account activity:', activityError);
-        }
       }
     }
     
@@ -190,31 +153,6 @@ router.post('/login', async (req, res) => {
     }
     
     await user.save();
-
-    // Log user activity (normal login)
-    try {
-      const UserActivity = require('../models/UserActivity');
-      await UserActivity.create({
-        userId: user._id,
-        action: 'login',
-        ipAddress: clientIP,
-        userAgent: userAgent,
-        details: { 
-          country, 
-          sessionId, 
-          deviceFingerprint,
-          newDevice: isNewDeviceLogin,
-          deviceSwitched: isDeviceSwitch,
-          previousDeviceFingerprint,
-          deviceInfo: extraDeviceInfo
-        },
-        isSuspicious: suspiciousReasons.length > 0,
-        suspiciousReason: suspiciousReasons.join(' | ') || null
-      });
-    } catch (activityError) {
-      console.error('Error logging user activity:', activityError);
-      // Don't fail login if activity logging fails
-    }
 
     // Generate JWT token
     const jwt = require('jsonwebtoken');

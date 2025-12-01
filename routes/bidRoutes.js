@@ -9,7 +9,6 @@ const User = require("../models/User.js");
 const mongoose = require("mongoose");
 const BidNotification = require('../models/BidNotification');
 const authenticateJWT = require('../middleware/authJWT');
-const UserActivity = require('../models/UserActivity');
 const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
 const { getClientIp } = require('../utils/network');
 const RetainedPlayer = require('../models/RetainedPlayer');
@@ -35,30 +34,6 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   const bidderId = bidder ? bidder.toString() : null;
   
   if (!bidderId || bidderId !== authenticatedUserId) {
-    // Log suspicious activity
-    try {
-      await UserActivity.create({
-        userId: req.authenticatedUser._id,
-        action: 'bid_attempt',
-        ipAddress: clientIP,
-        userAgent: userAgent,
-        details: { 
-          attemptedBidder: bidderId,
-          actualUser: authenticatedUserId,
-          playerId: playerId,
-          deviceFingerprint
-        },
-        isSuspicious: true,
-        suspiciousReason: 'Bidder ID mismatch - attempted to bid as different user'
-      });
-      
-      // Increment suspicious activity count
-      req.authenticatedUser.suspiciousActivityCount = (req.authenticatedUser.suspiciousActivityCount || 0) + 1;
-      await req.authenticatedUser.save();
-    } catch (activityError) {
-      console.error('Error logging suspicious activity:', activityError);
-    }
-    
     return res.status(403).json({ 
       message: 'Unauthorized: You can only bid on your own behalf. Bidder ID does not match authenticated user.' 
     });
@@ -387,28 +362,6 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     // Save notification to database
     const newNotification = new BidNotification(notificationData);
     await newNotification.save();
-
-    // Log user activity
-    try {
-      await UserActivity.create({
-        userId: user._id,
-        action: 'bid',
-        ipAddress: clientIP,
-        userAgent: userAgent,
-        details: {
-          playerId: playerId,
-          playerName: player.name,
-          bidAmount: bidAmount,
-          previousBid: highestBid ? highestBid.bidAmount : null,
-          deviceFingerprint: deviceFingerprint
-        },
-        isSuspicious: isSuspiciousIP,
-        suspiciousReason: suspiciousReason
-      });
-    } catch (activityError) {
-      console.error('Error logging user activity:', activityError);
-      // Don't fail bid if activity logging fails
-    }
 
     // Emit real-time notification
     const io = req.app.get('io');
