@@ -23,21 +23,63 @@ router.post('/initialize', async (req, res) => {
 
     if (mode === 'groups') {
       // GROUPS MODE: Top 3 from each group
-      // Get top 3 teams from Group A
-      const groupATeams = await User.find({ 
-        teamName: { $ne: "NA" },
-        group: 'A'
+      // Use same filters as point table: teamName exists, not NA, isActive, not admin
+      // Note: isTournamentReady filter removed to match point table logic
+      const groupARaw = await User.find({ 
+        teamName: { $exists: true, $ne: null, $ne: "NA" },
+        group: 'A',
+        isAdmin: false,
+        isActive: true
       })
-        .sort({ points: -1, fairness: -1 })
-        .limit(3);
+        .select('_id teamName points matchesPlayed fairnessPoint')
+        .lean();
+      
+      // Sort exactly like point table: points desc, fairness desc, matchesPlayed asc, teamName asc
+      const groupATeams = groupARaw.sort((a, b) => {
+        const pointsA = a.points || 0;
+        const pointsB = b.points || 0;
+        if (pointsB !== pointsA) return pointsB - pointsA;
+        
+        const fairnessA = a.fairnessPoint || 0;
+        const fairnessB = b.fairnessPoint || 0;
+        if (fairnessB !== fairnessA) return fairnessB - fairnessA;
+        
+        const matchesA = a.matchesPlayed || 0;
+        const matchesB = b.matchesPlayed || 0;
+        if (matchesA !== matchesB) return matchesA - matchesB;
+        
+        const nameA = (a.teamName || '').toLowerCase();
+        const nameB = (b.teamName || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      }).slice(0, 3);
 
-      // Get top 3 teams from Group B
-      const groupBTeams = await User.find({ 
-        teamName: { $ne: "NA" },
-        group: 'B'
+      const groupBRaw = await User.find({ 
+        teamName: { $exists: true, $ne: null, $ne: "NA" },
+        group: 'B',
+        isAdmin: false,
+        isActive: true
       })
-        .sort({ points: -1, fairness: -1 })
-        .limit(3);
+        .select('_id teamName points matchesPlayed fairnessPoint')
+        .lean();
+      
+      // Sort exactly like point table: points desc, fairness desc, matchesPlayed asc, teamName asc
+      const groupBTeams = groupBRaw.sort((a, b) => {
+        const pointsA = a.points || 0;
+        const pointsB = b.points || 0;
+        if (pointsB !== pointsA) return pointsB - pointsA;
+        
+        const fairnessA = a.fairnessPoint || 0;
+        const fairnessB = b.fairnessPoint || 0;
+        if (fairnessB !== fairnessA) return fairnessB - fairnessA;
+        
+        const matchesA = a.matchesPlayed || 0;
+        const matchesB = b.matchesPlayed || 0;
+        if (matchesA !== matchesB) return matchesA - matchesB;
+        
+        const nameA = (a.teamName || '').toLowerCase();
+        const nameB = (b.teamName || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      }).slice(0, 3);
 
       if (groupATeams.length < 3 || groupBTeams.length < 3) {
         return res.status(400).json({ 
@@ -134,10 +176,35 @@ router.post('/initialize', async (req, res) => {
 
     } else {
       // NORMAL MODE: Original format with top 6 overall teams
-      // Get top 6 teams from points table
-      const teams = await User.find({ teamName: { $ne: "NA" } })
-        .sort({ points: -1, fairness: -1 })
-        .limit(6);
+      // Use same filters and sorting as point table endpoint
+      // Filter: teamName exists, not NA, isActive, not admin
+      // Sort: points desc, fairness desc, matchesPlayed asc, teamName asc
+      const allTeams = await User.find({ 
+        teamName: { $exists: true, $ne: null, $ne: "NA" },
+        isAdmin: false,
+        isActive: true
+      })
+        .select('_id teamName points matchesPlayed fairnessPoint')
+        .lean();
+      
+      // Sort exactly like point table
+      const teams = allTeams.sort((a, b) => {
+        const pointsA = a.points || 0;
+        const pointsB = b.points || 0;
+        if (pointsB !== pointsA) return pointsB - pointsA;
+        
+        const fairnessA = a.fairnessPoint || 0;
+        const fairnessB = b.fairnessPoint || 0;
+        if (fairnessB !== fairnessA) return fairnessB - fairnessA;
+        
+        const matchesA = a.matchesPlayed || 0;
+        const matchesB = b.matchesPlayed || 0;
+        if (matchesA !== matchesB) return matchesA - matchesB;
+        
+        const nameA = (a.teamName || '').toLowerCase();
+        const nameB = (b.teamName || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      }).slice(0, 6);
 
       if (teams.length < 6) {
         return res.status(400).json({ message: 'Need at least 6 teams to initialize playoffs' });
