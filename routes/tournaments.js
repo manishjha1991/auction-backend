@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Tournament = require('../models/Tournament');
 const User = require('../models/User');
+const AppSettings = require('../models/AppSettings');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -575,12 +576,337 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
     // Auto-update point table when winner is set
     if (winner) {
       await updateTournamentPointTable(tournament._id);
+      
+      // Check if this is World Cup tournament and update final when semi-finals complete
+      if (tournament.name && tournament.name.startsWith('World Cup')) {
+        // Count round-robin fixtures (should be 28 for 8 teams)
+        const roundRobinFixtures = tournament.tournamentFixtures.filter(f => 
+          !f.team1?.includes('Winner of') && !f.team1?.includes('Top ')
+        );
+        
+        // Update final when semi-finals complete
+        const semiFinals = tournament.tournamentFixtures.filter(f => 
+          !f.team1?.includes('Winner of') && !f.team1?.includes('Top ') &&
+          tournament.tournamentFixtures.indexOf(f) >= roundRobinFixtures.length &&
+          tournament.tournamentFixtures.indexOf(f) < tournament.tournamentFixtures.length - 1
+        );
+        
+        if (semiFinals.length === 2 && semiFinals.every(sf => sf.winner)) {
+          const finalIndex = tournament.tournamentFixtures.findIndex(f => 
+            f.team1 === 'Winner of Semi-Final 1'
+          );
+          
+          if (finalIndex !== -1 && !tournament.tournamentFixtures[finalIndex].winner) {
+            const sf1Winner = semiFinals[0].winner;
+            const sf2Winner = semiFinals[1].winner;
+            
+            tournament.tournamentFixtures[finalIndex].team1 = sf1Winner;
+            tournament.tournamentFixtures[finalIndex].team2 = sf2Winner;
+            await tournament.save();
+            console.log('Updated World Cup final with semi-final winners');
+          }
+        }
+        
+        // Check if final is complete and update tournament winner
+        const finalFixture = tournament.tournamentFixtures.find(f => 
+          f.team1 !== 'Winner of Semi-Final 1' && 
+          tournament.tournamentFixtures.indexOf(f) === tournament.tournamentFixtures.length - 1
+        );
+        
+        if (finalFixture && finalFixture.winner && !tournament.winner?.teamName) {
+          // Find winner's team image
+          const winnerTeam = tournament.subscribedTeams.find(t => 
+            t.teamName === finalFixture.winner
+          );
+          
+          tournament.winner = {
+            teamName: finalFixture.winner,
+            teamImage: winnerTeam?.teamImage || null,
+            wonAt: new Date()
+          };
+          tournament.status = 'completed';
+          await tournament.save();
+          console.log(`Tournament ${tournament.name} winner set: ${finalFixture.winner}`);
+        }
+      }
     }
 
     res.json({ message: 'Fixture updated successfully', fixture: tournament.tournamentFixtures[fixtureIndex] });
   } catch (error) {
     console.error('Update tournament fixture error:', error);
     res.status(500).json({ error: 'Failed to update tournament fixture' });
+  }
+});
+
+// POST /api/tournaments/world-cup/initialize - Initialize World Cup tournament with top 8 teams
+router.post('/world-cup/initialize', isAdmin, async (req, res) => {
+  try {
+    // Check if World Cup mode is enabled
+    const settings = await AppSettings.findOne().lean();
+    if (!settings?.worldCupMode) {
+      return res.status(400).json({ error: 'World Cup mode is not enabled. Please enable it from admin panel first.' });
+    }
+
+    // Get top 8 teams from point table
+    const allTeams = await User.find({ 
+      teamName: { $exists: true, $ne: null, $ne: "NA" },
+      isAdmin: false,
+      isActive: true
+    })
+      .select('_id teamName points matchesPlayed fairnessPoint teamImage')
+      .lean();
+    
+    // Sort exactly like point table
+    const sortedTeams = allTeams.sort((a, b) => {
+      const pointsA = a.points || 0;
+      const pointsB = b.points || 0;
+      if (pointsB !== pointsA) return pointsB - pointsA;
+      
+      const fairnessA = a.fairnessPoint || 0;
+      const fairnessB = b.fairnessPoint || 0;
+      if (fairnessB !== fairnessA) return fairnessB - fairnessA;
+      
+      const matchesA = a.matchesPlayed || 0;
+      const matchesB = b.matchesPlayed || 0;
+      if (matchesA !== matchesB) return matchesA - matchesB;
+      
+      const nameA = (a.teamName || '').toLowerCase();
+      const nameB = (b.teamName || '').toLowerCase();
+      return nameA.localeCompare(nameB);
+    }).slice(0, 8);
+
+    if (sortedTeams.length < 8) {
+      return res.status(400).json({ error: 'Need at least 8 teams to initialize World Cup tournament' });
+    }
+
+    // Check if all top 8 teams have completed required games
+    const allTeamsCompletedGames = sortedTeams.every(team => (team.matchesPlayed || 0) >= 12);
+    
+    if (!allTeamsCompletedGames) {
+      const incompleteTeams = sortedTeams.filter(team => (team.matchesPlayed || 0) < 12);
+      return res.status(400).json({ 
+        error: 'All top 8 teams must complete 12 matches before initializing World Cup tournament',
+        incompleteTeams: incompleteTeams.map(team => ({
+          teamName: team.teamName,
+          matchesPlayed: team.matchesPlayed || 0
+        }))
+      });
+    }
+
+    // Check for existing World Cup tournaments and find the next number
+    const existingWorldCups = await Tournament.find({ 
+      name: { $regex: /^World Cup \d+$/ }
+    }).sort({ name: -1 });
+    
+    let worldCupNumber = 1;
+    if (existingWorldCups.length > 0) {
+      // Extract number from the latest World Cup (e.g., "World Cup 3" -> 3)
+      const latestMatch = existingWorldCups[0].name.match(/World Cup (\d+)/);
+      if (latestMatch) {
+        worldCupNumber = parseInt(latestMatch[1]) + 1;
+      } else {
+        // If pattern doesn't match, count existing ones
+        worldCupNumber = existingWorldCups.length + 1;
+      }
+    }
+    
+    const worldCupName = `World Cup ${worldCupNumber}`;
+
+    // Get admin user for createdBy
+    const adminUser = await User.findOne({ isAdmin: true });
+    if (!adminUser) {
+      return res.status(500).json({ error: 'No admin user found' });
+    }
+
+    // Create World Cup tournament
+    const tournament = new Tournament({
+      name: worldCupName,
+      description: 'Top 8 teams play round-robin, then top 4 play semi-finals and finals',
+      startDate: new Date(),
+      endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+      maxSlots: 8,
+      status: 'running',
+      createdBy: adminUser._id,
+      subscribedTeams: sortedTeams.map(team => ({
+        userId: team._id,
+        teamName: team.teamName,
+        teamImage: team.teamImage || null
+      }))
+    });
+
+    await tournament.save();
+
+    // Generate round-robin fixtures (28 matches: 8 * 7 / 2)
+    const fixtures = [];
+    for (let i = 0; i < sortedTeams.length; i++) {
+      for (let j = i + 1; j < sortedTeams.length; j++) {
+        fixtures.push({
+          team1: sortedTeams[i].teamName,
+          team2: sortedTeams[j].teamName,
+          winner: null,
+          margin: null,
+          team1Score: null,
+          team2Score: null,
+          team1Fairness: 0,
+          team2Fairness: 0,
+          mom: {
+            name: null,
+            score: null,
+            wickets: null
+          },
+          createdAt: new Date()
+        });
+      }
+    }
+
+    tournament.tournamentFixtures = fixtures;
+    await tournament.save();
+
+    // Initialize point table
+    await updateTournamentPointTable(tournament._id);
+
+    res.status(201).json({
+      message: 'World Cup tournament initialized successfully',
+      tournament: {
+        _id: tournament._id,
+        id: tournament._id,
+        name: tournament.name,
+        teamsCount: sortedTeams.length,
+        roundRobinFixtures: fixtures.length
+      }
+    });
+  } catch (error) {
+    console.error('Initialize World Cup tournament error:', error);
+    res.status(500).json({ error: 'Failed to initialize World Cup tournament' });
+  }
+});
+
+// GET /api/tournaments/:id/round-robin-status - Check if round-robin is complete
+router.get('/:id/round-robin-status', async (req, res) => {
+  try {
+    const tournament = await Tournament.findById(req.params.id);
+    if (!tournament) {
+      return res.status(404).json({ error: 'Tournament not found' });
+    }
+
+    // Count round-robin fixtures (exclude knockout fixtures)
+    const roundRobinFixtures = tournament.tournamentFixtures.filter(f => 
+      !f.team1?.includes('Winner of') && !f.team1?.includes('Top ')
+    );
+    
+    const completedRoundRobin = roundRobinFixtures.filter(f => f.winner);
+    const allComplete = roundRobinFixtures.length > 0 && completedRoundRobin.length === roundRobinFixtures.length;
+    
+    // Check if knockout fixtures already exist
+    const hasKnockout = tournament.tournamentFixtures.some(f => 
+      f.team1?.includes('Winner of') || f.team1?.includes('Top ')
+    );
+
+    res.json({
+      totalRoundRobin: roundRobinFixtures.length,
+      completedRoundRobin: completedRoundRobin.length,
+      allComplete,
+      hasKnockout,
+      canGenerateKnockout: allComplete && !hasKnockout
+    });
+  } catch (error) {
+    console.error('Get round-robin status error:', error);
+    res.status(500).json({ error: 'Failed to get round-robin status' });
+  }
+});
+
+// POST /api/tournaments/:id/generate-knockout - Generate semi-finals and finals after round-robin (admin only)
+router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
+  try {
+    const tournament = await Tournament.findById(req.params.id);
+    if (!tournament) {
+      return res.status(404).json({ error: 'Tournament not found' });
+    }
+
+    // Check if knockout fixtures already exist
+    const hasKnockoutFixtures = tournament.tournamentFixtures.some(f => 
+      f.team1?.includes('Top ') || f.team1?.includes('Winner of')
+    );
+    if (hasKnockoutFixtures) {
+      return res.status(400).json({ error: 'Knockout fixtures already generated' });
+    }
+
+    // Check if round-robin is complete
+    const roundRobinFixtures = tournament.tournamentFixtures.filter(f => 
+      !f.team1?.includes('Winner of') && !f.team1?.includes('Top ')
+    );
+    
+    const allRoundRobinComplete = roundRobinFixtures.length > 0 && roundRobinFixtures.every(f => f.winner);
+    if (!allRoundRobinComplete) {
+      return res.status(400).json({ error: 'All round-robin matches must be completed first' });
+    }
+
+    // Update point table first
+    await updateTournamentPointTable(tournament._id);
+
+    // Get top 4 teams from point table (sorted by points desc, then fairness desc)
+    const sortedPointTable = tournament.pointTable.sort((a, b) => {
+      if (b.points !== a.points) return b.points - a.points;
+      return b.fairness - a.fairness;
+    });
+
+    const top4 = sortedPointTable.slice(0, 4);
+    if (top4.length < 4) {
+      return res.status(400).json({ error: 'Need at least 4 teams in point table to generate knockout fixtures' });
+    }
+
+    // Add semi-finals: Top 1 vs Top 4, Top 2 vs Top 3
+    tournament.tournamentFixtures.push({
+      team1: top4[0].teamName, // Top 1
+      team2: top4[3].teamName, // Top 4
+      winner: null,
+      margin: null,
+      team1Score: null,
+      team2Score: null,
+      team1Fairness: 0,
+      team2Fairness: 0,
+      mom: { name: null, score: null, wickets: null },
+      createdAt: new Date()
+    });
+
+    tournament.tournamentFixtures.push({
+      team1: top4[1].teamName, // Top 2
+      team2: top4[2].teamName, // Top 3
+      winner: null,
+      margin: null,
+      team1Score: null,
+      team2Score: null,
+      team1Fairness: 0,
+      team2Fairness: 0,
+      mom: { name: null, score: null, wickets: null },
+      createdAt: new Date()
+    });
+
+    // Add final placeholder
+    tournament.tournamentFixtures.push({
+      team1: 'Winner of Semi-Final 1',
+      team2: 'Winner of Semi-Final 2',
+      winner: null,
+      margin: null,
+      team1Score: null,
+      team2Score: null,
+      team1Fairness: 0,
+      team2Fairness: 0,
+      mom: { name: null, score: null, wickets: null },
+      createdAt: new Date()
+    });
+
+    await tournament.save();
+
+    res.json({
+      message: 'Knockout fixtures generated successfully',
+      semiFinals: 2,
+      final: 1,
+      top4: top4.map(t => ({ teamName: t.teamName, points: t.points, fairness: t.fairness }))
+    });
+  } catch (error) {
+    console.error('Generate knockout fixtures error:', error);
+    res.status(500).json({ error: 'Failed to generate knockout fixtures' });
   }
 });
 

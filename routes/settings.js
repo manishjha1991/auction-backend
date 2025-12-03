@@ -22,13 +22,14 @@ router.get('/', async (_req, res) => {
       cronSingleBidFinalizerEnabled: doc.cronSingleBidFinalizerEnabled,
       cronBulkExitEnabled: doc.cronBulkExitEnabled,
       cronLockEnabled: doc.cronLockEnabled,
+      worldCupMode: doc.worldCupMode,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });
 
 router.post('/', async (req, res) => {
   try {
-    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled } = req.body;
+    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, worldCupMode } = req.body;
     const admin = await User.findById(adminUserId);
     if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update settings' });
     const doc = await getSettingsDoc();
@@ -41,6 +42,7 @@ router.post('/', async (req, res) => {
     if (typeof cronSingleBidFinalizerEnabled === 'boolean') doc.cronSingleBidFinalizerEnabled = cronSingleBidFinalizerEnabled;
     if (typeof cronBulkExitEnabled === 'boolean') doc.cronBulkExitEnabled = cronBulkExitEnabled;
     if (typeof cronLockEnabled === 'boolean') doc.cronLockEnabled = cronLockEnabled;
+    if (typeof worldCupMode === 'boolean') doc.worldCupMode = worldCupMode;
     await doc.save();
     res.json({ 
       enableTradeCenter: doc.enableTradeCenter, 
@@ -52,6 +54,7 @@ router.post('/', async (req, res) => {
       cronSingleBidFinalizerEnabled: doc.cronSingleBidFinalizerEnabled,
       cronBulkExitEnabled: doc.cronBulkExitEnabled,
       cronLockEnabled: doc.cronLockEnabled,
+      worldCupMode: doc.worldCupMode,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });

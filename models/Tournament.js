@@ -88,7 +88,12 @@ const TournamentSchema = new mongoose.Schema({
     lost: { type: Number, default: 0 },
     points: { type: Number, default: 0 },
     fairness: { type: Number, default: 0 }
-  }]
+  }],
+  winner: {
+    teamName: { type: String, default: null },
+    teamImage: { type: String, default: null },
+    wonAt: { type: Date, default: null }
+  }
 }, {
   timestamps: true
 });

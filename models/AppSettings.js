@@ -21,6 +21,8 @@ const AppSettingsSchema = new mongoose.Schema(
     cronSingleBidFinalizerEnabled: { type: Boolean, default: true },
     cronBulkExitEnabled: { type: Boolean, default: true },
     cronLockEnabled: { type: Boolean, default: true },
+    // World Cup mode: Top 8 teams play round-robin, then top 4 play semis and finals
+    worldCupMode: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

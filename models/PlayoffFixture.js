@@ -4,12 +4,30 @@ const playoffFixtureSchema = new mongoose.Schema({
   matchId: {
     type: String,
     required: true,
-    enum: ['A', 'B', 'C', 'D', 'E', 'F', 'Q1', 'Q2', 'SF1', 'SF2']
+    enum: [
+      // Normal mode
+      'A', 'B', 'C', 'D', 'E', 'F', 
+      // Groups mode
+      'Q1', 'Q2', 'SF1', 'SF2',
+      // World Cup mode - round-robin (28 matches)
+      'WC1', 'WC2', 'WC3', 'WC4', 'WC5', 'WC6', 'WC7', 'WC8', 'WC9', 'WC10',
+      'WC11', 'WC12', 'WC13', 'WC14', 'WC15', 'WC16', 'WC17', 'WC18', 'WC19', 'WC20',
+      'WC21', 'WC22', 'WC23', 'WC24', 'WC25', 'WC26', 'WC27', 'WC28',
+      // World Cup mode - semi-finals and final
+      'WCSF1', 'WCSF2', 'WCF'
+    ]
   },
   stage: {
     type: String,
     required: true,
-    enum: ['ELIMINATOR ROUND', 'QUALIFIER 1', 'ELIMINATOR 2', 'QUALIFIER 2', 'FINALS', 'SEMI-FINAL 1', 'SEMI-FINAL 2', 'FINAL']
+    enum: [
+      // Normal mode
+      'ELIMINATOR ROUND', 'QUALIFIER 1', 'ELIMINATOR 2', 'QUALIFIER 2', 'FINALS',
+      // Groups mode
+      'SEMI-FINAL 1', 'SEMI-FINAL 2', 'FINAL',
+      // World Cup mode
+      'WORLD CUP ROUND-ROBIN', 'WORLD CUP SEMI-FINAL 1', 'WORLD CUP SEMI-FINAL 2', 'WORLD CUP FINAL'
+    ]
   },
   team1: {
     type: String,
