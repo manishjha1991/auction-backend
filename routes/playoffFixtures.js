@@ -123,6 +123,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'QUALIFIER 1',
           team1: A2.teamName, // A2
           team2: B3.teamName, // B3
+          team1UserId: A2._id, // userId-based
+          team2UserId: B3._id, // userId-based
           team1Score: 'TBD',
           team2Score: 'TBD',
           description: 'A2 vs B3'
@@ -132,6 +134,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'QUALIFIER 2',
           team1: B2.teamName, // B2
           team2: A3.teamName, // A3
+          team1UserId: B2._id, // userId-based
+          team2UserId: A3._id, // userId-based
           team1Score: 'TBD',
           team2Score: 'TBD',
           description: 'B2 vs A3'
@@ -141,6 +145,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'SEMI-FINAL 1',
           team1: A1.teamName, // A1
           team2: 'Winner of Qualifier 1',
+          team1UserId: A1._id, // userId-based
+          team2UserId: null, // Will be updated when Q1 winner is determined
           team1Score: 'TBD',
           team2Score: 'TBD',
           description: 'A1 vs Winner of Q1'
@@ -150,6 +156,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'SEMI-FINAL 2',
           team1: B1.teamName, // B1
           team2: 'Winner of Qualifier 2',
+          team1UserId: B1._id, // userId-based
+          team2UserId: null, // Will be updated when Q2 winner is determined
           team1Score: 'TBD',
           team2Score: 'TBD',
           description: 'B1 vs Winner of Q2'
@@ -159,6 +167,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'FINAL',
           team1: 'Winner of Semi-Final 1',
           team2: 'Winner of Semi-Final 2',
+          team1UserId: null, // Will be updated when SF1 winner is determined
+          team2UserId: null, // Will be updated when SF2 winner is determined
           team1Score: 'TBD',
           team2Score: 'TBD',
           description: 'Winner of SF1 vs Winner of SF2'
@@ -236,6 +246,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'ELIMINATOR ROUND',
           team1: team3.teamName,
           team2: team6.teamName,
+          team1UserId: team3._id, // userId-based
+          team2UserId: team6._id, // userId-based
           team1Score: 'TBD',
           team2Score: 'TBD'
         },
@@ -244,6 +256,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'ELIMINATOR ROUND',
           team1: team4.teamName,
           team2: team5.teamName,
+          team1UserId: team4._id, // userId-based
+          team2UserId: team5._id, // userId-based
           team1Score: 'TBD',
           team2Score: 'TBD'
         },
@@ -252,6 +266,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'QUALIFIER 1',
           team1: team1.teamName,
           team2: team2.teamName,
+          team1UserId: team1._id, // userId-based
+          team2UserId: team2._id, // userId-based
           team1Score: 'TBD',
           team2Score: 'TBD'
         },
@@ -260,6 +276,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'ELIMINATOR 2',
           team1: 'Winner of Match A',
           team2: 'Winner of Match B',
+          team1UserId: null, // Will be updated when Match A winner is determined
+          team2UserId: null, // Will be updated when Match B winner is determined
           team1Score: 'TBD',
           team2Score: 'TBD'
         },
@@ -268,6 +286,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'QUALIFIER 2',
           team1: 'Loser of Match C',
           team2: 'Winner of Match D',
+          team1UserId: null, // Will be updated when Match C loser is determined
+          team2UserId: null, // Will be updated when Match D winner is determined
           team1Score: 'TBD',
           team2Score: 'TBD'
         },
@@ -276,6 +296,8 @@ router.post('/initialize', async (req, res) => {
           stage: 'FINALS',
           team1: 'Winner of Match C',
           team2: 'Winner of Match E',
+          team1UserId: null, // Will be updated when Match C winner is determined
+          team2UserId: null, // Will be updated when Match E winner is determined
           team1Score: 'TBD',
           team2Score: 'TBD'
         }
@@ -298,7 +320,30 @@ router.post('/initialize', async (req, res) => {
 router.post('/update/:matchId', async (req, res) => {
   try {
     const { matchId } = req.params;
-    const updateData = req.body;
+    const updateData = { ...req.body };
+
+    // If winner is being updated, also update winnerUserId
+    if (updateData.winner && !updateData.winnerUserId) {
+      const winnerUser = await User.findOne({ teamName: updateData.winner, isActive: true });
+      if (winnerUser) {
+        updateData.winnerUserId = winnerUser._id;
+      }
+    }
+
+    // If team1 or team2 is being updated, also update userIds
+    if (updateData.team1 && !updateData.team1UserId && !updateData.team1.includes('Winner of') && !updateData.team1.includes('Loser of')) {
+      const team1User = await User.findOne({ teamName: updateData.team1, isActive: true });
+      if (team1User) {
+        updateData.team1UserId = team1User._id;
+      }
+    }
+
+    if (updateData.team2 && !updateData.team2UserId && !updateData.team2.includes('Winner of') && !updateData.team2.includes('Loser of')) {
+      const team2User = await User.findOne({ teamName: updateData.team2, isActive: true });
+      if (team2User) {
+        updateData.team2UserId = team2User._id;
+      }
+    }
 
     console.log(`Updating playoff fixture ${matchId} with data:`, updateData);
     const playoffFixture = await PlayoffFixture.findOneAndUpdate(
@@ -335,9 +380,21 @@ router.post('/update/:matchId', async (req, res) => {
   }
 });
 
+// Helper function to get userId from team name
+async function getUserIdFromTeamName(teamName) {
+  if (!teamName || teamName.includes('Winner of') || teamName.includes('Loser of')) {
+    return null;
+  }
+  const user = await User.findOne({ teamName, isActive: true });
+  return user?._id || null;
+}
+
 // Helper function to update dependent matches
 async function updateDependentMatches(matchId, winner) {
   try {
+    // Get winner userId
+    const winnerUserId = await getUserIdFromTeamName(winner);
+    
     // Check if this is groups mode or normal mode based on matchId
     // Groups mode uses: Q1, Q2, SF1, SF2, F (with stage "FINAL")
     // Normal mode uses: A, B, C, D, E, F (with stage "FINALS")
@@ -358,38 +415,50 @@ async function updateDependentMatches(matchId, winner) {
       switch (matchId) {
         case 'Q1':
           // Update Semi-Final 1 team2 (Winner of Qualifier 1)
-          console.log(`Updating SF1 team2 to: ${winner}`);
+          console.log(`Updating SF1 team2 to: ${winner} (userId: ${winnerUserId})`);
           const sf1Update = await PlayoffFixture.findOneAndUpdate(
             { matchId: 'SF1' },
-            { team2: winner },
+            { 
+              team2: winner,
+              team2UserId: winnerUserId // userId-based
+            },
             { new: true }
           );
           console.log(`SF1 update result:`, sf1Update);
           break;
         case 'Q2':
           // Update Semi-Final 2 team2 (Winner of Qualifier 2)
-          console.log(`Updating SF2 team2 to: ${winner}`);
+          console.log(`Updating SF2 team2 to: ${winner} (userId: ${winnerUserId})`);
           const sf2Update = await PlayoffFixture.findOneAndUpdate(
             { matchId: 'SF2' },
-            { team2: winner },
+            { 
+              team2: winner,
+              team2UserId: winnerUserId // userId-based
+            },
             { new: true }
           );
           console.log(`SF2 update result:`, sf2Update);
           break;
         case 'SF1':
           // Update Final team1 (Winner of Semi-Final 1)
-          console.log(`Updating F team1 to: ${winner}`);
+          console.log(`Updating F team1 to: ${winner} (userId: ${winnerUserId})`);
           await PlayoffFixture.findOneAndUpdate(
             { matchId: 'F' },
-            { team1: winner }
+            { 
+              team1: winner,
+              team1UserId: winnerUserId // userId-based
+            }
           );
           break;
         case 'SF2':
           // Update Final team2 (Winner of Semi-Final 2)
-          console.log(`Updating F team2 to: ${winner}`);
+          console.log(`Updating F team2 to: ${winner} (userId: ${winnerUserId})`);
           await PlayoffFixture.findOneAndUpdate(
             { matchId: 'F' },
-            { team2: winner }
+            { 
+              team2: winner,
+              team2UserId: winnerUserId // userId-based
+            }
           );
           break;
       }
@@ -400,42 +469,61 @@ async function updateDependentMatches(matchId, winner) {
           // Update Match D team1
           await PlayoffFixture.findOneAndUpdate(
             { matchId: 'D' },
-            { team1: winner }
+            { 
+              team1: winner,
+              team1UserId: winnerUserId // userId-based
+            }
           );
           break;
         case 'B':
           // Update Match D team2
           await PlayoffFixture.findOneAndUpdate(
             { matchId: 'D' },
-            { team2: winner }
+            { 
+              team2: winner,
+              team2UserId: winnerUserId // userId-based
+            }
           );
           break;
         case 'C':
           // Update Match E team1 (loser) and Match F team1 (winner)
           const matchC = await PlayoffFixture.findOne({ matchId: 'C' });
           const loser = matchC.team1 === winner ? matchC.team2 : matchC.team1;
+          const loserUserId = await getUserIdFromTeamName(loser);
           
           await PlayoffFixture.findOneAndUpdate(
             { matchId: 'E' },
-            { team1: loser }
+            { 
+              team1: loser,
+              team1UserId: loserUserId // userId-based
+            }
           );
           await PlayoffFixture.findOneAndUpdate(
             { matchId: 'F' },
-            { team1: winner }
+            { 
+              team1: winner,
+              team1UserId: winnerUserId // userId-based
+            }
           );
           break;
         case 'D':
           // Update Match E team2
           await PlayoffFixture.findOneAndUpdate(
             { matchId: 'E' },
-            { team2: winner }
+            { 
+              team2: winner,
+              team2UserId: winnerUserId // userId-based
+            }
           );
           break;
         case 'E':
           // Update Match F team2
           await PlayoffFixture.findOneAndUpdate(
             { matchId: 'F' },
-            { team2: winner }
+            { 
+              team2: winner,
+              team2UserId: winnerUserId // userId-based
+            }
           );
           break;
       }

@@ -496,10 +496,11 @@ router.post('/:id/generate-fixtures', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Tournament not found' });
     }
 
-    // Get all subscribed team names
-    const teams = tournament.subscribedTeams.map(team => 
-      team.userId?.teamName || team.teamName
-    );
+    // Get all subscribed teams with userId and teamName
+    const teams = tournament.subscribedTeams.map(team => ({
+      userId: team.userId?._id || team.userId,
+      teamName: team.userId?.teamName || team.teamName
+    }));
 
     if (teams.length < 2) {
       return res.status(400).json({ error: 'At least 2 teams required to generate fixtures' });
@@ -510,8 +511,10 @@ router.post('/:id/generate-fixtures', isAdmin, async (req, res) => {
     for (let i = 0; i < teams.length; i++) {
       for (let j = i + 1; j < teams.length; j++) {
         const fixture = {
-          team1: teams[i],
-          team2: teams[j],
+          team1: teams[i].teamName,
+          team2: teams[j].teamName,
+          team1UserId: teams[i].userId, // userId-based
+          team2UserId: teams[j].userId, // userId-based
           winner: null,
           margin: null,
           team1Score: null,
@@ -600,8 +603,18 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
             const sf1Winner = semiFinals[0].winner;
             const sf2Winner = semiFinals[1].winner;
             
+            // Find userIds for winners
+            const getUserIdFromTeamName = (teamName) => {
+              const subscribedTeam = tournament.subscribedTeams.find(
+                team => team.teamName === teamName
+              );
+              return subscribedTeam?.userId || null;
+            };
+            
             tournament.tournamentFixtures[finalIndex].team1 = sf1Winner;
             tournament.tournamentFixtures[finalIndex].team2 = sf2Winner;
+            tournament.tournamentFixtures[finalIndex].team1UserId = getUserIdFromTeamName(sf1Winner);
+            tournament.tournamentFixtures[finalIndex].team2UserId = getUserIdFromTeamName(sf2Winner);
             await tournament.save();
             console.log('Updated World Cup final with semi-final winners');
           }
@@ -743,6 +756,8 @@ router.post('/world-cup/initialize', isAdmin, async (req, res) => {
         fixtures.push({
           team1: sortedTeams[i].teamName,
           team2: sortedTeams[j].teamName,
+          team1UserId: sortedTeams[i]._id, // userId-based
+          team2UserId: sortedTeams[j]._id, // userId-based
           winner: null,
           margin: null,
           team1Score: null,
@@ -855,10 +870,25 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Need at least 4 teams in point table to generate knockout fixtures' });
     }
 
+    // Find userIds for top 4 teams from subscribedTeams
+    const getUserIdFromTeamName = (teamName) => {
+      const subscribedTeam = tournament.subscribedTeams.find(
+        team => team.teamName === teamName
+      );
+      return subscribedTeam?.userId || null;
+    };
+
     // Add semi-finals: Top 1 vs Top 4, Top 2 vs Top 3
+    const top1UserId = getUserIdFromTeamName(top4[0].teamName);
+    const top4UserId = getUserIdFromTeamName(top4[3].teamName);
+    const top2UserId = getUserIdFromTeamName(top4[1].teamName);
+    const top3UserId = getUserIdFromTeamName(top4[2].teamName);
+
     tournament.tournamentFixtures.push({
       team1: top4[0].teamName, // Top 1
       team2: top4[3].teamName, // Top 4
+      team1UserId: top1UserId, // userId-based
+      team2UserId: top4UserId, // userId-based
       winner: null,
       margin: null,
       team1Score: null,
@@ -872,6 +902,8 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
     tournament.tournamentFixtures.push({
       team1: top4[1].teamName, // Top 2
       team2: top4[2].teamName, // Top 3
+      team1UserId: top2UserId, // userId-based
+      team2UserId: top3UserId, // userId-based
       winner: null,
       margin: null,
       team1Score: null,
@@ -882,10 +914,12 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
       createdAt: new Date()
     });
 
-    // Add final placeholder
+    // Add final placeholder (no userIds for placeholders)
     tournament.tournamentFixtures.push({
       team1: 'Winner of Semi-Final 1',
       team2: 'Winner of Semi-Final 2',
+      team1UserId: null, // Will be updated when semi-final winners are determined
+      team2UserId: null, // Will be updated when semi-final winners are determined
       winner: null,
       margin: null,
       team1Score: null,

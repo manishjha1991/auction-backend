@@ -28,11 +28,16 @@ router.get('/', async (req, res) => {
     // 2) Fetch all active fixtures (which store team1/team2 as strings)
     const existingFixtures = await Fixture.find({ isActive: true });
 
-    // Deduplicate existing fixtures with the same pair of team names
+    // Deduplicate existing fixtures - check by userId if available, otherwise by teamName
     const uniqueFixtureMap = new Set();
     for (const fixture of existingFixtures) {
-      // Both team1 and team2 are strings, so just do:
-      const sortedKey = [fixture.team1, fixture.team2].sort().join('-');
+      // Prefer userId for duplicate detection, fall back to teamName
+      let sortedKey;
+      if (fixture.team1UserId && fixture.team2UserId) {
+        sortedKey = [fixture.team1UserId.toString(), fixture.team2UserId.toString()].sort().join('-');
+      } else {
+        sortedKey = [fixture.team1, fixture.team2].sort().join('-');
+      }
 
       if (uniqueFixtureMap.has(sortedKey)) {
         // If we already have this pair, 
@@ -55,11 +60,19 @@ router.get('/', async (req, res) => {
     const ungroupedTeams = teams.filter(team => !team.group || team.group === null);
 
     // 5) Build a set of fixture keys from existing fixtures
-    const fixtureMap = new Set(
-      cleanedFixtures.map((f) =>
-        [f.team1, f.team2].sort().join('-')
-      )
-    );
+    // Check by userId if available, otherwise fall back to teamName
+    const fixtureMap = new Set();
+    cleanedFixtures.forEach((f) => {
+      if (f.team1UserId && f.team2UserId) {
+        // Use userId for duplicate detection (preferred)
+        const userIdKey = [f.team1UserId.toString(), f.team2UserId.toString()].sort().join('-');
+        fixtureMap.add(userIdKey);
+      } else {
+        // Fall back to teamName for backward compatibility
+        const teamNameKey = [f.team1, f.team2].sort().join('-');
+        fixtureMap.add(teamNameKey);
+      }
+    });
 
     // 6) Generate new fixtures based on mode
     const newFixtures = [];
@@ -74,12 +87,19 @@ router.get('/', async (req, res) => {
           for (let j = i + 1; j < groupA.length; j++) {
             const t1 = groupA[i].teamName;
             const t2 = groupA[j].teamName;
-            const fixtureKey = [t1, t2].sort().join('-');
+            const t1Id = groupA[i]._id;
+            const t2Id = groupA[j]._id;
+            // Use userId for duplicate detection (preferred)
+            const fixtureKey = [t1Id.toString(), t2Id.toString()].sort().join('-');
+            // Also check teamName for backward compatibility
+            const teamNameKey = [t1, t2].sort().join('-');
 
-            if (!fixtureMap.has(fixtureKey)) {
+            if (!fixtureMap.has(fixtureKey) && !fixtureMap.has(teamNameKey)) {
               newFixtures.push({ 
                 team1: t1, 
-                team2: t2, 
+                team2: t2,
+                team1UserId: t1Id, // userId-based
+                team2UserId: t2Id, // userId-based
                 group: 'A',
                 matchType: 'group'
               });
@@ -95,12 +115,19 @@ router.get('/', async (req, res) => {
           for (let j = i + 1; j < groupB.length; j++) {
             const t1 = groupB[i].teamName;
             const t2 = groupB[j].teamName;
-            const fixtureKey = [t1, t2].sort().join('-');
+            const t1Id = groupB[i]._id;
+            const t2Id = groupB[j]._id;
+            // Use userId for duplicate detection (preferred)
+            const fixtureKey = [t1Id.toString(), t2Id.toString()].sort().join('-');
+            // Also check teamName for backward compatibility
+            const teamNameKey = [t1, t2].sort().join('-');
 
-            if (!fixtureMap.has(fixtureKey)) {
+            if (!fixtureMap.has(fixtureKey) && !fixtureMap.has(teamNameKey)) {
               newFixtures.push({ 
                 team1: t1, 
-                team2: t2, 
+                team2: t2,
+                team1UserId: t1Id, // userId-based
+                team2UserId: t2Id, // userId-based
                 group: 'B',
                 matchType: 'group'
               });
@@ -116,12 +143,19 @@ router.get('/', async (req, res) => {
           for (let j = i + 1; j < ungroupedTeams.length; j++) {
             const t1 = ungroupedTeams[i].teamName;
             const t2 = ungroupedTeams[j].teamName;
-            const fixtureKey = [t1, t2].sort().join('-');
+            const t1Id = ungroupedTeams[i]._id;
+            const t2Id = ungroupedTeams[j]._id;
+            // Use userId for duplicate detection (preferred)
+            const fixtureKey = [t1Id.toString(), t2Id.toString()].sort().join('-');
+            // Also check teamName for backward compatibility
+            const teamNameKey = [t1, t2].sort().join('-');
 
-            if (!fixtureMap.has(fixtureKey)) {
+            if (!fixtureMap.has(fixtureKey) && !fixtureMap.has(teamNameKey)) {
               newFixtures.push({ 
                 team1: t1, 
-                team2: t2, 
+                team2: t2,
+                team1UserId: t1Id, // userId-based
+                team2UserId: t2Id, // userId-based
                 group: null,
                 matchType: 'normal'
               });
@@ -134,23 +168,29 @@ router.get('/', async (req, res) => {
       // NORMAL MODE: Generate fixtures for all teams (everyone plays everyone)
       console.log('🏏 Generating NORMAL fixtures...');
       console.log(`📊 Found ${teams.length} teams for normal mode fixture generation`);
-      const teamNames = teams.map((team) => team.teamName);
       
       // Calculate expected number of fixtures (n choose 2)
       const expectedFixtures = (teams.length * (teams.length - 1)) / 2;
       console.log(`📊 Expected fixtures for ${teams.length} teams: ${expectedFixtures} (every team plays each other once)`);
       
       // Generate fixtures for ALL teams regardless of group assignment
-      for (let i = 0; i < teamNames.length; i++) {
-        for (let j = i + 1; j < teamNames.length; j++) {
-          const t1 = teamNames[i];
-          const t2 = teamNames[j];
-          const fixtureKey = [t1, t2].sort().join('-');
+      for (let i = 0; i < teams.length; i++) {
+        for (let j = i + 1; j < teams.length; j++) {
+          const t1 = teams[i].teamName;
+          const t2 = teams[j].teamName;
+          const t1Id = teams[i]._id;
+          const t2Id = teams[j]._id;
+          // Use userId for duplicate detection (preferred)
+          const fixtureKey = [t1Id.toString(), t2Id.toString()].sort().join('-');
+          // Also check teamName for backward compatibility
+          const teamNameKey = [t1, t2].sort().join('-');
 
-          if (!fixtureMap.has(fixtureKey)) {
+          if (!fixtureMap.has(fixtureKey) && !fixtureMap.has(teamNameKey)) {
             newFixtures.push({ 
               team1: t1, 
-              team2: t2, 
+              team2: t2,
+              team1UserId: t1Id, // userId-based
+              team2UserId: t2Id, // userId-based
               group: null,
               matchType: 'normal'
             });
@@ -244,13 +284,41 @@ router.post('/save', async (req, res) => {
       matchType,
     } = req.body;
 
-    let fixture = await Fixture.findOne({ team1, team2 });
+    // Find fixture by userId if available, otherwise by teamName
+    let fixture = null;
+    if (team1 && team2) {
+      // Try to find userIds for teams
+      const team1User = await User.findOne({ teamName: team1, isActive: true });
+      const team2User = await User.findOne({ teamName: team2, isActive: true });
+      
+      if (team1User && team2User) {
+        // Try to find by userId first (preferred)
+        fixture = await Fixture.findOne({
+          $or: [
+            { team1UserId: team1User._id, team2UserId: team2User._id },
+            { team1UserId: team2User._id, team2UserId: team1User._id }
+          ],
+          isActive: true
+        });
+      }
+      
+      // Fall back to teamName if not found by userId
+      if (!fixture) {
+        fixture = await Fixture.findOne({ team1, team2, isActive: true });
+      }
+    }
 
     // If no existing fixture, create a new one
     if (!fixture) {
+      // Get userIds for teams
+      const team1User = await User.findOne({ teamName: team1, isActive: true });
+      const team2User = await User.findOne({ teamName: team2, isActive: true });
+      
       fixture = new Fixture({
         team1,
         team2,
+        team1UserId: team1User?._id || null, // userId-based
+        team2UserId: team2User?._id || null, // userId-based
         winner,
         margin,
         mom,
@@ -273,6 +341,20 @@ router.post('/save', async (req, res) => {
       // Update group and matchType if provided
       if (group !== undefined) fixture.group = group;
       if (matchType !== undefined) fixture.matchType = matchType;
+      
+      // Update userIds if missing (for backward compatibility)
+      if (!fixture.team1UserId || !fixture.team2UserId) {
+        const team1User = await User.findOne({ teamName: fixture.team1, isActive: true });
+        const team2User = await User.findOne({ teamName: fixture.team2, isActive: true });
+        if (team1User && !fixture.team1UserId) fixture.team1UserId = team1User._id;
+        if (team2User && !fixture.team2UserId) fixture.team2UserId = team2User._id;
+      }
+      
+      // Update winnerUserId if winner is set
+      if (fixture.winner && !fixture.winnerUserId) {
+        const winnerUser = await User.findOne({ teamName: fixture.winner, isActive: true });
+        if (winnerUser) fixture.winnerUserId = winnerUser._id;
+      }
     }
 
     await fixture.save();

@@ -37,6 +37,16 @@ const playoffFixtureSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  team1UserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
+  },
+  team2UserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
+  },
   description: {
     type: String,
     default: null
@@ -51,6 +61,11 @@ const playoffFixtureSchema = new mongoose.Schema({
   },
   winner: {
     type: String,
+    default: null
+  },
+  winnerUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
     default: null
   },
   margin: {

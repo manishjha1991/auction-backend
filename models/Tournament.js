@@ -66,9 +66,28 @@ const TournamentSchema = new mongoose.Schema({
     default: false 
   },
   tournamentFixtures: [{
+    // Team names (kept for backward compatibility and display)
     team1: { type: String, required: true },
     team2: { type: String, required: true },
+    
+    // User IDs (new - for referential integrity)
+    team1UserId: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: 'User', 
+      required: false // Not required initially for backward compatibility
+    },
+    team2UserId: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: 'User', 
+      required: false // Not required initially for backward compatibility
+    },
+    
     winner: { type: String, default: null },
+    winnerUserId: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: 'User', 
+      default: null 
+    },
     margin: { type: String, default: null },
     team1Score: { type: String, default: null },
     team2Score: { type: String, default: null },
