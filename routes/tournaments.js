@@ -96,6 +96,7 @@ router.get('/', isAuthenticated, async (req, res) => {
     const tournaments = await Tournament.find(query)
       .populate('subscribedTeams.userId', 'name teamName teamImage')
       .populate('createdBy', 'name teamName')
+      .select('name description startDate endDate maxSlots status tournamentImage subscribedTeams createdBy isActive isLocked winner tournamentFixtures pointTable createdAt updatedAt')
       .sort({ startDate: 1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
@@ -116,7 +117,9 @@ router.get('/', isAuthenticated, async (req, res) => {
         userId: team.userId._id,
         teamName: team.userId.teamName || team.teamName,
         teamImage: team.userId.teamImage || team.teamImage
-      }))
+      })),
+      // Ensure winner field is included and properly formatted
+      winner: tournament.winner || null
     }));
 
     res.json({
