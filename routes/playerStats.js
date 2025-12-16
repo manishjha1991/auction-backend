@@ -88,13 +88,13 @@ const computeInsightPayload = (player, ownerTeam, stats) => {
 
   const recentAvg = lastFive.length ? lastFiveTotals.battingRuns / lastFive.length : 0;
   const recentStrikeRate =
-    lastFiveTotals.battingBalls > 0
+    lastFiveTotals.battingBalls >= 10
       ? (lastFiveTotals.battingRuns / lastFiveTotals.battingBalls) * 100
       : 0;
 
   const overallAvg = matchCount > 0 ? totals.battingRuns / matchCount : 0;
   const overallStrikeRate =
-    totals.battingBalls > 0 ? (totals.battingRuns / totals.battingBalls) * 100 : 0;
+    totals.battingBalls >= 10 ? (totals.battingRuns / totals.battingBalls) * 100 : 0;
 
   const economy =
     totals.ballsBowled > 0 ? totals.runsGiven / (totals.ballsBowled / 6 || 1) : 0;
@@ -153,7 +153,7 @@ const computeInsightPayload = (player, ownerTeam, stats) => {
         matchLabel: `Match ${matchCount - index}`,
         opponent,
         runs,
-        strikeRate: balls ? roundNumber((runs / balls) * 100) : null,
+        strikeRate: balls >= 10 ? roundNumber((runs / balls) * 100) : null,
         wickets,
         highlight,
         date: stat.createdAt,
@@ -1001,7 +1001,8 @@ router.get('/stats-overview', async (req, res) => {
 
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
-      if (!balls || balls < 6) return 0;
+      // Minimum 10 balls required for realistic strike rate calculation
+      if (!balls || balls < 10) return 0;
       return (runs / balls) * 100;
     };
     const calcEconomy = (runsGiven, ballsBowled) => {
@@ -1381,7 +1382,8 @@ router.get('/player-details/:playerId', async (req, res) => {
 
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
-      if (!balls || balls < 1) return 0;
+      // Minimum 10 balls required for realistic strike rate calculation
+      if (!balls || balls < 10) return 0;
       return (runs / balls) * 100;
     };
 
