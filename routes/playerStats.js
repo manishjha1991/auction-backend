@@ -1,9 +1,13 @@
 const express = require('express');
 const router = express.Router();
+const NodeCache = require('node-cache');
 const PlayerStats = require('../models/PlayerStats'); // Adjust the path as needed
 const Player = require('../models/Player'); // Adjust the path
 const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
+
+// 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats)
+const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 // Load list of players with playerId and userId
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -509,6 +513,9 @@ const savePlayerStatsEntry = async (payload = {}) => {
     await existingStats.save();
     await applyPlayerStatDelta(playerId, deltaTotals);
 
+    // 🚀 PERFORMANCE: Invalidate stats-overview cache when stats are updated
+    cache.del('stats-overview');
+
     return { action: 'updated', doc: existingStats };
   }
 
@@ -541,10 +548,13 @@ const savePlayerStatsEntry = async (payload = {}) => {
     },
   });
 
-  await newStats.save();
-  await applyPlayerStatDelta(playerId, deltaTotals);
+    await newStats.save();
+    await applyPlayerStatDelta(playerId, deltaTotals);
 
-  return { action: 'created', doc: newStats };
+    // 🚀 PERFORMANCE: Invalidate stats-overview cache when new stats are added
+    cache.del('stats-overview');
+
+    return { action: 'created', doc: newStats };
 };
 
 router.get('/list', async (req, res) => {
@@ -552,12 +562,13 @@ router.get('/list', async (req, res) => {
     const { userId } = req.query;
 
     // Check if the user exists and populate the boughtPlayers field
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const user = await User.findById(userId).populate({
       path: 'boughtPlayers',
       match: { isSold: true, isActive: true },
       select:
         '_id name type role basePrice style overallScore profilePicture isSold isActive'
-    });
+    }).lean();
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
@@ -573,10 +584,11 @@ router.get('/list', async (req, res) => {
 
     if (isAdmin) {
       // Admin sees all active sold players from the Player collection
+      // 🚀 PERFORMANCE: Use .lean() for faster queries
       playersToSend = await Player.find(
         { isSold: true, isActive: true },
         '_id name type role basePrice style overallScore profilePicture isSold isActive'
-      );
+      ).lean();
     } else {
       // Normal user sees only the players they have bought
       playersToSend = user.boughtPlayers || [];
@@ -594,7 +606,8 @@ router.get('/list', async (req, res) => {
     const playersWithDetails = await Promise.all(
       playersToSend.map(async (player) => {
         // Fetch match stats for this player
-        const stats = await PlayerStats.find({ playerId: player._id });
+        // 🚀 PERFORMANCE: Use .lean() for faster queries
+        const stats = await PlayerStats.find({ playerId: player._id }).lean();
 
         // Calculate batting performance per match
         const battingStats = await Promise.all(
@@ -745,6 +758,9 @@ router.post('/store', async (req, res) => {
     return res.status(statusCode).json({
       message: error.message || 'Error saving player stats',
     });
+  } finally {
+    // 🚀 PERFORMANCE: Invalidate stats-overview cache when stats are saved/updated
+    cache.del('stats-overview');
   }
 });
 
@@ -772,6 +788,9 @@ router.post('/bulk-store', async (req, res) => {
         });
       }
     }
+
+    // 🚀 PERFORMANCE: Invalidate stats-overview cache when stats are saved
+    cache.del('stats-overview');
 
     return res.status(errors.length ? 207 : 200).json({
       message: 'Bulk player stats processed',
@@ -903,6 +922,9 @@ router.post('/bulk-store', async (req, res) => {
       successCount += 1;
     }
 
+    // 🚀 PERFORMANCE: Invalidate stats-overview cache when stats are saved
+    cache.del('stats-overview');
+
     return res.status(200).json({
       message: 'Player stats saved successfully',
       count: successCount,
@@ -972,7 +994,16 @@ router.get('/stats/:playerId', async (req, res) => {
 // GET /stats-overview
 router.get('/stats-overview', async (req, res) => {
   try {
+    // 🚀 PERFORMANCE: Check cache first
+    const cacheKey = 'stats-overview';
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log('✅ Stats overview served from cache');
+      return res.status(200).json(cached);
+    }
+
     // 1) Fetch all PlayerStats docs, populating references
+    // 🚀 PERFORMANCE: Use .lean() for faster queries (returns plain JS objects)
     const allStats = await PlayerStats.find()
       .populate({
         path: 'playerId',
@@ -988,7 +1019,8 @@ router.get('/stats-overview', async (req, res) => {
         path: 'opponentUserId',
         model: User,
         select: 'name teamName isActive isTournamentReady',
-      });
+      })
+      .lean();
 
     // Filter stats for Stats Overview - only show current tournament (tournament-ready teams)
     // This keeps Stats Overview focused on the running tournament
@@ -1391,6 +1423,10 @@ router.get('/stats-overview', async (req, res) => {
       top5BestBattingAverage,
     };
 
+    // 🚀 PERFORMANCE: Cache the response for 5 minutes
+    cache.set(cacheKey, response, 300);
+    console.log('✅ Stats overview calculated and cached');
+
     return res.status(200).json(response);
   } catch (err) {
     console.error('Error generating StatsOverview:', err);
@@ -1423,13 +1459,15 @@ router.get('/player-details/:playerId', async (req, res) => {
     }
 
     // Get all stats for this player
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const stats = await PlayerStats.find({ playerId })
       .populate({
         path: 'opponentUserId',
         model: User,
         select: 'teamName'
       })
-      .sort({ createdAt: 1 });
+      .sort({ createdAt: 1 })
+      .lean();
 
     // Calculate totals and averages
     let totalRuns = 0;

@@ -4,6 +4,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 
 const cors = require('cors');
+const compression = require('compression');
 const http = require('http');
 const { Server } = require('socket.io');
 
@@ -90,6 +91,9 @@ mongoose.connect(process.env.MONGO_URI, mongooseOptions)
   });
 
 app.use('/uploads', express.static('uploads'));
+
+// 🚀 PERFORMANCE: Add compression middleware (reduces response size by 60-80%)
+app.use(compression());
 
 // Enhanced CORS configuration for geographic access
 app.use(cors({

@@ -189,8 +189,9 @@ router.get("/:userId/details", async (req, res) => {
     console.log(`🚀 Starting user details API for user: ${userId}`);
     
     // 1) Fetch user data
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const userStart = Date.now();
-    const user = await User.findById(userId).includeInactive();
+    const user = await User.findById(userId).includeInactive().lean();
     console.log(`⏱️ User fetch took: ${Date.now() - userStart}ms`);
     if (!user) {
       return res.status(404).json({ message: "User not found." });
@@ -199,17 +200,21 @@ router.get("/:userId/details", async (req, res) => {
     console.log('Fetched user timezone from database:', user.timezone);
 
     // 2) Fetch sold players for the user
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const soldPlayersStart = Date.now();
     const soldPlayers = await UserPlayer.find({ userId, isActive: true })
       .populate("playerId", "name type role basePrice over overallScore totalRuns totalWickets")
+      .lean()
       .exec();
     console.log(`⏱️ Sold players fetch took: ${Date.now() - soldPlayersStart}ms`);
 
     // 3) Fetch all bids for the user
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const bidsStart = Date.now();
     const userBids = await Bid.find({ bidder: userId })
       .populate("playerId", "name type role basePrice")
       .sort({ timestamp: -1 })
+      .lean()
       .exec();
     console.log(`⏱️ User bids fetch took: ${Date.now() - bidsStart}ms`);
 
@@ -288,11 +293,12 @@ router.get("/:userId/details", async (req, res) => {
     );
 
     // OPTIMIZATION: Get all opponent users in ONE query instead of N queries
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const opponentUsersStart = Date.now();
     const opponentUsers = await User.find({ 
       teamName: { $in: opponentTeamNames },
       isTournamentReady: true 
-    }).select('teamName');
+    }).select('teamName').lean();
     console.log(`⏱️ Opponent users fetch took: ${Date.now() - opponentUsersStart}ms`);
 
     // Create a set for O(1) lookup
@@ -370,6 +376,7 @@ router.get("/purses", async (req, res) => {
     console.log('🚀 Starting purses API optimization...');
     
     // OPTIMIZATION: Fetch all data in parallel with single queries (excluding admin users)
+    // 🚀 PERFORMANCE: All queries already use .lean() - optimized!
     const [users, allUserPlayers, allActiveBids, matchResults] = await Promise.all([
       User.find({ isAdmin: { $ne: true } }).select("name teamName purse _id").lean(),
       UserPlayer.find({ isActive: true }).populate("playerId", "name type role").lean(),
