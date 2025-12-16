@@ -1050,6 +1050,7 @@ router.get('/stats-overview', async (req, res) => {
 
       // Basic checks
       const playerName = playerId?.name ?? 'Unknown Player';
+      const playerType = playerId?.type ?? null;
       const teamName = userId?.teamName ?? 'Unknown Team';
       const opponentName = opponentUserId?.teamName ?? 'Unknown Opponent';
 
@@ -1068,6 +1069,7 @@ router.get('/stats-overview', async (req, res) => {
         highestSRValue = sr;
         highestStrikeRateDoc = {
           playerName,
+          playerType,
           teamName,
           strikeRate: parseFloat(sr.toFixed(2)),
           opponentTeam: opponentName,
@@ -1093,6 +1095,7 @@ router.get('/stats-overview', async (req, res) => {
         bestEconValue = economy;
         bestEconomicalBowler = {
           playerName,
+          playerType,
           teamName,
           economy: parseFloat(economy.toFixed(2)),
           opponentTeam: opponentName,
@@ -1107,6 +1110,7 @@ router.get('/stats-overview', async (req, res) => {
         highestWicketsCount = wickets;
         highestWicketsDoc = {
           playerName,
+          playerType,
           teamName,
           wickets,
           opponentTeam: opponentName,
@@ -1121,6 +1125,7 @@ router.get('/stats-overview', async (req, res) => {
         const matchSR = balls > 0 ? parseFloat(((runs / balls) * 100).toFixed(2)) : 0;
         highestScoreDoc = {
           playerName,
+          playerType,
           teamName,
           opponentTeam: opponentName,
           score: runs,
@@ -1155,6 +1160,7 @@ router.get('/stats-overview', async (req, res) => {
       if (wickets >= 5) {
         highestFiveWicketHauls.push({
           playerName,
+          playerType,
           teamName,
           opponentTeam: opponentName,
           wickets,
@@ -1167,6 +1173,7 @@ router.get('/stats-overview', async (req, res) => {
       if (wickets === 4) {
         highestFourWicketHauls.push({
           playerName,
+          playerType,
           teamName,
           opponentTeam: opponentName,
           wickets,
@@ -1179,6 +1186,7 @@ router.get('/stats-overview', async (req, res) => {
       if (runs >= 100) {
         centuries.push({
           playerName,
+          playerType,
           teamName,
           againstTeam: opponentName,
           runs,
@@ -1190,6 +1198,7 @@ router.get('/stats-overview', async (req, res) => {
       else if (runs >= 50 && runs < 100) {
         halfCenturies.push({
           playerName,
+          playerType,
           teamName,
           againstTeam: opponentName,
           runs,
@@ -1209,12 +1218,14 @@ router.get('/stats-overview', async (req, res) => {
     for (let playerStat of filteredStats) {
       const pid = String(playerStat.playerId._id);
       const playerName = playerStat.playerId?.name ?? 'Unknown Player';
+      const playerType = playerStat.playerId?.type ?? null;
       const teamName = playerStat.userId?.teamName ?? 'Unknown Team';
 
       if (totalRunsMap[pid] > maxRuns) {
         maxRuns = totalRunsMap[pid];
         leadingRunScorer = {
           playerName,
+          playerType,
           teamName,
           totalRuns: maxRuns,
         };
@@ -1223,6 +1234,7 @@ router.get('/stats-overview', async (req, res) => {
         maxWickets = totalWicketsMap[pid];
         leadingWicketTaker = {
           playerName,
+          playerType,
           teamName,
           totalWickets: maxWickets,
         };
@@ -1236,6 +1248,7 @@ router.get('/stats-overview', async (req, res) => {
       if (!playerInfoMap[pid]) {
         playerInfoMap[pid] = {
           playerName: statDoc.playerId?.name || 'Unknown Player',
+          playerType: statDoc.playerId?.type || null,
           teamName: statDoc.userId?.teamName || 'Unknown Team',
         };
       }
@@ -1246,6 +1259,7 @@ router.get('/stats-overview', async (req, res) => {
       return {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        playerType: playerInfoMap[pid]?.playerType || null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         runs,
       };
@@ -1258,6 +1272,7 @@ router.get('/stats-overview', async (req, res) => {
       return {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        playerType: playerInfoMap[pid]?.playerType || null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         wickets,
       };
@@ -1270,6 +1285,7 @@ router.get('/stats-overview', async (req, res) => {
       return {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        playerType: playerInfoMap[pid]?.playerType || null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         momCount: count,
       };
@@ -1288,6 +1304,7 @@ router.get('/stats-overview', async (req, res) => {
       return {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        playerType: playerInfoMap[pid]?.playerType || null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         strikeRate,
       };
@@ -1304,6 +1321,7 @@ router.get('/stats-overview', async (req, res) => {
       return {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        playerType: playerInfoMap[pid]?.playerType || null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         matches: matchCount,
         totalRuns: runs,
