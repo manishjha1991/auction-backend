@@ -990,11 +990,12 @@ router.get('/stats-overview', async (req, res) => {
         select: 'name teamName isActive isTournamentReady',
       });
 
-    // Filter out stats from users who aren't tournament ready
+    // Filter out stats from inactive users only (not tournament-ready)
+    // This ensures rankings show cumulative stats from ALL tournaments, not just current one
     const filteredStats = allStats.filter(stat => {
-      const userReady = stat.userId?.isTournamentReady;
-      const opponentReady = stat.opponentUserId?.isTournamentReady;
-      return userReady && opponentReady;
+      const userActive = stat.userId?.isActive;
+      const opponentActive = stat.opponentUserId?.isActive;
+      return userActive && opponentActive;
     });
 
     // Helper functions
