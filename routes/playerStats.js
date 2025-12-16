@@ -1070,16 +1070,35 @@ router.get('/stats-overview', async (req, res) => {
           playerName,
           teamName,
           strikeRate: parseFloat(sr.toFixed(2)),
+          opponentTeam: opponentName,
+          runs,
+          balls,
         };
       }
 
-      // 2) Best Economy
-      if (economy < bestEconValue) {
+      // 2) Best Economy - Only consider realistic spells
+      // Require: minimum 18 balls (3 overs) for normal cases (runsGiven > 0)
+      // If 0 runs given, require either:
+      //   - Minimum 30 balls (5 overs) OR
+      //   - At least 2 wickets (to ensure it's a meaningful spell)
+      // Also require at least 1 wicket
+      const isRealisticEconomySpell = 
+        wickets >= 1 && 
+        ballsBowled >= 12 && 
+        (runsGiven > 0 
+          ? ballsBowled >= 18 
+          : (ballsBowled >= 30 || wickets >= 2));
+      
+      if (isRealisticEconomySpell && economy < bestEconValue && economy !== 99_999) {
         bestEconValue = economy;
         bestEconomicalBowler = {
           playerName,
           teamName,
           economy: parseFloat(economy.toFixed(2)),
+          opponentTeam: opponentName,
+          wickets,
+          runsGiven,
+          ballsBowled,
         };
       }
 
@@ -1091,17 +1110,22 @@ router.get('/stats-overview', async (req, res) => {
           teamName,
           wickets,
           opponentTeam: opponentName,
+          runsGiven,
+          ballsBowled,
         };
       }
 
       // 4) Highest Score (single match)
       if (runs > highestScoreRuns) {
         highestScoreRuns = runs;
+        const matchSR = balls > 0 ? parseFloat(((runs / balls) * 100).toFixed(2)) : 0;
         highestScoreDoc = {
           playerName,
           teamName,
           opponentTeam: opponentName,
           score: runs,
+          balls,
+          strikeRate: matchSR,
         };
       }
 
@@ -1134,6 +1158,8 @@ router.get('/stats-overview', async (req, res) => {
           teamName,
           opponentTeam: opponentName,
           wickets,
+          runsGiven,
+          ballsBowled,
           date: createdAt,
         });
       }
@@ -1144,6 +1170,8 @@ router.get('/stats-overview', async (req, res) => {
           teamName,
           opponentTeam: opponentName,
           wickets,
+          runsGiven,
+          ballsBowled,
           date: createdAt,
         });
       }
@@ -1154,6 +1182,7 @@ router.get('/stats-overview', async (req, res) => {
           teamName,
           againstTeam: opponentName,
           runs,
+          balls,
           date: createdAt,
         });
       }
@@ -1164,6 +1193,7 @@ router.get('/stats-overview', async (req, res) => {
           teamName,
           againstTeam: opponentName,
           runs,
+          balls,
           date: createdAt,
         });
       }
@@ -1289,23 +1319,34 @@ router.get('/stats-overview', async (req, res) => {
         playerName: '',
         teamName: '',
         strikeRate: 0,
+        opponentTeam: '',
+        runs: 0,
+        balls: 0,
       },
       bestEconomicalBowler: bestEconomicalBowler || {
         playerName: '',
         teamName: '',
         economy: 0,
+        opponentTeam: '',
+        wickets: 0,
+        runsGiven: 0,
+        ballsBowled: 0,
       },
       highestWicketTakerInMatch: highestWicketsDoc || {
         playerName: '',
         teamName: '',
         wickets: 0,
         opponentTeam: '',
+        runsGiven: 0,
+        ballsBowled: 0,
       },
       highestScore: highestScoreDoc || {
         playerName: '',
         teamName: '',
         opponentTeam: '',
         score: 0,
+        balls: 0,
+        strikeRate: 0,
       },
       leadingWicketTaker: leadingWicketTaker || {
         playerName: '',
