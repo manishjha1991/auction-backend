@@ -1241,39 +1241,7 @@ router.get('/stats-overview', async (req, res) => {
     });
 
     // 6) Find overall leading wicket taker & run scorer
-    let leadingWicketTaker = null;
-    let maxWickets = 0;
-
-    let leadingRunScorer = null;
-    let maxRuns = 0;
-
-    for (let playerStat of filteredStats) {
-      const pid = String(playerStat.playerId._id);
-      const playerName = playerStat.playerId?.name ?? 'Unknown Player';
-      const playerType = playerStat.playerId?.type ?? null;
-      const teamName = playerStat.userId?.teamName ?? 'Unknown Team';
-
-      if (totalRunsMap[pid] > maxRuns) {
-        maxRuns = totalRunsMap[pid];
-        leadingRunScorer = {
-          playerName,
-          playerType,
-          teamName,
-          totalRuns: maxRuns,
-        };
-      }
-      if (totalWicketsMap[pid] > maxWickets) {
-        maxWickets = totalWicketsMap[pid];
-        leadingWicketTaker = {
-          playerName,
-          playerType,
-          teamName,
-          totalWickets: maxWickets,
-        };
-      }
-    }
-
-    // Build map of player info
+    // Build map of player info first (more efficient)
     const playerInfoMap = {};
     filteredStats.forEach((statDoc) => {
       const pid = String(statDoc.playerId._id);
@@ -1285,6 +1253,43 @@ router.get('/stats-overview', async (req, res) => {
         };
       }
     });
+
+    // Now find leading run scorer and wicket taker by iterating through unique player IDs
+    let leadingWicketTaker = null;
+    let maxWickets = 0;
+
+    let leadingRunScorer = null;
+    let maxRuns = 0;
+
+    // Iterate through unique player IDs from the maps
+    const uniquePlayerIds = new Set([...Object.keys(totalRunsMap), ...Object.keys(totalWicketsMap)]);
+    
+    for (const pid of uniquePlayerIds) {
+      const playerInfo = playerInfoMap[pid];
+      if (!playerInfo) continue;
+
+      const runs = totalRunsMap[pid] || 0;
+      const wickets = totalWicketsMap[pid] || 0;
+
+      if (runs > maxRuns) {
+        maxRuns = runs;
+        leadingRunScorer = {
+          playerName: playerInfo.playerName,
+          playerType: playerInfo.playerType,
+          teamName: playerInfo.teamName,
+          totalRuns: maxRuns,
+        };
+      }
+      if (wickets > maxWickets) {
+        maxWickets = wickets;
+        leadingWicketTaker = {
+          playerName: playerInfo.playerName,
+          playerType: playerInfo.playerType,
+          teamName: playerInfo.teamName,
+          totalWickets: maxWickets,
+        };
+      }
+    }
 
     // Top 5 run scorers
     const runArray = Object.entries(totalRunsMap).map(([pid, runs]) => {

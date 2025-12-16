@@ -101,15 +101,18 @@ router.get("/:playerId/bids", async (req, res) => {
   const { playerId } = req.params;
   try {
     // 1. Check if the player exists
-    const player = await Player.findById(playerId);
+    // 🚀 PERFORMANCE: Use .lean() for faster queries (read-only)
+    const player = await Player.findById(playerId).lean();
     if (!player) {
       return res.status(404).json({ message: "Player not found." });
     }
 
     // 2. Fetch all bids for the player
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const allBids = await Bid.find({ playerId })
       .populate("bidder", "name email") // Populate bidder's name and email
       .sort({ bidAmount: -1 }) // Sort by bid value (descending)
+      .lean()
       .exec();
 
     // 3. Get the top two bids

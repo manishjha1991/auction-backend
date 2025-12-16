@@ -83,14 +83,26 @@ const isAuthenticated = async (req, res, next) => {
   }
 };
 
-// GET /api/tournaments - Get all tournaments with filters
-router.get('/', isAuthenticated, async (req, res) => {
+// GET /api/tournaments - Get all tournaments with filters (optional authentication)
+router.get('/', async (req, res) => {
   try {
     const { status, page = 1, limit = 10 } = req.query;
     const query = { isActive: true };
     
     if (status && ['upcoming', 'running', 'completed'].includes(status)) {
       query.status = status;
+    }
+
+    // Try to get user if authenticated (optional)
+    let user = null;
+    const userId = req.headers['user-id'];
+    if (userId && userId !== 'undefined' && userId !== 'null') {
+      try {
+        user = await User.findById(userId).lean();
+      } catch (err) {
+        // User not found or invalid, continue without authentication
+        console.log('User authentication optional, continuing without user');
+      }
     }
 
     const tournaments = await Tournament.find(query)
@@ -104,30 +116,40 @@ router.get('/', isAuthenticated, async (req, res) => {
 
     const total = await Tournament.countDocuments(query);
 
-    // Add subscription status for current user
+    // Add subscription status for current user (if authenticated)
     const tournamentsWithUserStatus = tournaments.map(tournament => ({
       ...tournament,
       subscriptionCount: tournament.subscribedTeams.length,
       slotsLeft: tournament.maxSlots - tournament.subscribedTeams.length,
-      isUserSubscribed: tournament.subscribedTeams.some(
-        team => team.userId._id.toString() === req.user._id.toString()
-      ),
+      isUserSubscribed: user ? tournament.subscribedTeams.some(
+        team => team.userId && team.userId._id && team.userId._id.toString() === user._id.toString()
+      ) : false,
       subscribedTeams: tournament.subscribedTeams.map(team => ({
         ...team,
-        userId: team.userId._id,
-        teamName: team.userId.teamName || team.teamName,
-        teamImage: team.userId.teamImage || team.teamImage
+        userId: team.userId?._id || team.userId,
+        teamName: team.userId?.teamName || team.teamName,
+        teamImage: team.userId?.teamImage || team.teamImage
       })),
       // Ensure winner field is included and properly formatted
       winner: tournament.winner || null
     }));
 
-    res.json({
-      tournaments: tournamentsWithUserStatus,
-      totalPages: Math.ceil(total / limit),
-      currentPage: parseInt(page),
-      total
-    });
+    // Return format: 
+    // - Always return array for GET requests without explicit pagination (for frontend compatibility)
+    // - Only return paginated object if explicitly requested with limit < 100
+    const hasExplicitLimit = req.query.limit !== undefined && parseInt(req.query.limit) < 100;
+    
+    if (hasExplicitLimit) {
+      return res.json({
+        tournaments: tournamentsWithUserStatus,
+        totalPages: Math.ceil(total / limit),
+        currentPage: parseInt(page),
+        total
+      });
+    }
+
+    // Default: return array directly (for frontend components that expect array)
+    res.json(tournamentsWithUserStatus);
   } catch (error) {
     console.error('Get tournaments error:', error);
     res.status(500).json({ error: 'Failed to fetch tournaments' });

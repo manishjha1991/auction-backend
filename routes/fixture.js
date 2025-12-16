@@ -15,6 +15,7 @@ router.get('/', async (req, res) => {
     console.log(`🏏 Fixture generation mode: ${mode}`);
     
     // 1) Fetch teams (users) that have a valid teamName, are active, tournament ready, and are not admin.
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const teams = await User.find({
       teamName: { $exists: true, $ne: null, $ne: 'NA' },
       isActive: true,
@@ -22,11 +23,13 @@ router.get('/', async (req, res) => {
       isAdmin: { $ne: true } // Exclude admin teams
     })
       .populate('boughtPlayers')
-      .select('_id teamName teamImage boughtPlayers group'); 
+      .select('_id teamName teamImage boughtPlayers group')
+      .lean(); 
       // Include _id so we can reference owner user IDs for OCR dropdowns
 
     // 2) Fetch all active fixtures (which store team1/team2 as strings)
-    const existingFixtures = await Fixture.find({ isActive: true });
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
+    const existingFixtures = await Fixture.find({ isActive: true }).lean();
 
     // Deduplicate existing fixtures - check by userId if available, otherwise by teamName
     const uniqueFixtureMap = new Set();
@@ -52,7 +55,8 @@ router.get('/', async (req, res) => {
     }
 
     // 3) Re-fetch cleaned active fixtures
-    const cleanedFixtures = await Fixture.find({ isActive: true });
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
+    const cleanedFixtures = await Fixture.find({ isActive: true }).lean();
 
     // 4) Separate teams by groups
     const groupA = teams.filter(team => team.group === 'A');
@@ -211,9 +215,10 @@ router.get('/', async (req, res) => {
     console.log(`📊 Total active fixtures in database: ${totalActiveFixtures}`);
 
     // 8) Fetch *all* active fixtures sorted by createdAt
-    const allFixtures = await Fixture.find({ isActive: true }).sort({
-      createdAt: 1,
-    });
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
+    const allFixtures = await Fixture.find({ isActive: true })
+      .sort({ createdAt: 1 })
+      .lean();
 
     // 9) Enhance each fixture with user/team details, matched by teamName
     const enhancedFixtures = allFixtures.map((fixture) => {
@@ -241,12 +246,11 @@ router.get('/', async (req, res) => {
         players: team2Details.boughtPlayers || [],
       };
 
+      // Note: Since we use .lean(), fixture is a plain object, not a Mongoose document
+      // So we spread fixture directly (not fixture._doc)
       return {
-        ...fixture._doc,
+        ...fixture,
         // Keep the original team1/team2 in place 
-        // or override them if you'd like, e.g.:
-        // team1: team1Details.teamName || fixture.team1,
-        // team2: team2Details.teamName || fixture.team2,
         team1: fixture.team1,
         team2: fixture.team2,
 
@@ -288,11 +292,13 @@ router.post('/save', async (req, res) => {
     let fixture = null;
     if (team1 && team2) {
       // Try to find userIds for teams
-      const team1User = await User.findOne({ teamName: team1, isActive: true });
-      const team2User = await User.findOne({ teamName: team2, isActive: true });
+      // 🚀 PERFORMANCE: Use .lean() for faster queries
+      const team1User = await User.findOne({ teamName: team1, isActive: true }).lean();
+      const team2User = await User.findOne({ teamName: team2, isActive: true }).lean();
       
       if (team1User && team2User) {
         // Try to find by userId first (preferred)
+        // Note: Don't use .lean() here because we need to modify and save this fixture
         fixture = await Fixture.findOne({
           $or: [
             { team1UserId: team1User._id, team2UserId: team2User._id },
@@ -304,8 +310,10 @@ router.post('/save', async (req, res) => {
       
       // Fall back to teamName if not found by userId
       if (!fixture) {
+        // Note: Don't use .lean() here because we need to modify and save this fixture
         fixture = await Fixture.findOne({ team1, team2, isActive: true });
       }
+      // Note: fixture is already a Mongoose document (not lean) so we can save it directly
     }
 
     // If no existing fixture, create a new one
@@ -343,6 +351,7 @@ router.post('/save', async (req, res) => {
       if (matchType !== undefined) fixture.matchType = matchType;
       
       // Update userIds if missing (for backward compatibility)
+      // Note: These queries need to return Mongoose documents (not lean) because we modify them
       if (!fixture.team1UserId || !fixture.team2UserId) {
         const team1User = await User.findOne({ teamName: fixture.team1, isActive: true });
         const team2User = await User.findOne({ teamName: fixture.team2, isActive: true });
@@ -420,7 +429,8 @@ router.get('/filter', async (req, res) => {
       query.matchType = matchType;
     }
     
-    const fixtures = await Fixture.find(query).sort({ createdAt: 1 });
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
+    const fixtures = await Fixture.find(query).sort({ createdAt: 1 }).lean();
     
     res.status(200).json(fixtures);
   } catch (error) {
@@ -432,10 +442,11 @@ router.get('/filter', async (req, res) => {
 // Get group stage fixtures only
 router.get('/group-stage', async (req, res) => {
   try {
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const fixtures = await Fixture.find({ 
       isActive: true, 
       matchType: 'group' 
-    }).sort({ createdAt: 1 });
+    }).sort({ createdAt: 1 }).lean();
     
     res.status(200).json(fixtures);
   } catch (error) {
@@ -447,10 +458,11 @@ router.get('/group-stage', async (req, res) => {
 // Get normal fixtures only
 router.get('/normal', async (req, res) => {
   try {
+    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const fixtures = await Fixture.find({ 
       isActive: true, 
       matchType: 'normal' 
-    }).sort({ createdAt: 1 });
+    }).sort({ createdAt: 1 }).lean();
     
     res.status(200).json(fixtures);
   } catch (error) {

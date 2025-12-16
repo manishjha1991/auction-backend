@@ -2,12 +2,83 @@ const express = require('express');
 const router = express.Router();
 const PlayoffFixture = require('../models/PlayoffFixture');
 const User = require('../models/User');
+const Tournament = require('../models/Tournament');
+const AppSettings = require('../models/AppSettings');
 
 // Get all playoff fixtures
 router.get('/', async (req, res) => {
   try {
-    const playoffFixtures = await PlayoffFixture.find().sort({ matchId: 1 });
-    console.log('Fetching playoff fixtures:', playoffFixtures.map(f => `${f.matchId}: ${f.team1} vs ${f.team2}`));
+    // Check if World Cup mode is enabled
+    const settings = await AppSettings.findOne().lean();
+    const isWorldCupMode = settings?.worldCupMode === true;
+    
+    let playoffFixtures = [];
+    
+    if (isWorldCupMode) {
+      // If World Cup mode is enabled, fetch World Cup tournament fixtures
+      const worldCupTournament = await Tournament.findOne({
+        name: { $regex: /^World Cup \d+$/ },
+        status: 'running'
+      }).lean();
+      
+      if (worldCupTournament && worldCupTournament.tournamentFixtures) {
+        // Convert all tournament fixtures (round-robin + knockout) to PlayoffFixture format
+        let matchIndex = 1;
+        playoffFixtures = worldCupTournament.tournamentFixtures.map((fixture, index) => {
+          // Determine stage based on fixture content
+          let stage = 'WORLD CUP ROUND-ROBIN';
+          let matchId = `WC${matchIndex}`;
+          
+          // Check if this is a knockout fixture
+          if (fixture.team1?.includes('Top ') || fixture.team1?.includes('Winner of')) {
+            if (fixture.team1?.includes('Top 1') || fixture.team1?.includes('Top 4')) {
+              stage = 'WORLD CUP SEMI-FINAL 1';
+              matchId = 'WCSF1';
+            } else if (fixture.team1?.includes('Top 2') || fixture.team1?.includes('Top 3')) {
+              stage = 'WORLD CUP SEMI-FINAL 2';
+              matchId = 'WCSF2';
+            } else if (fixture.team1?.includes('Winner of Semi-Final 1') || 
+                       fixture.team1?.includes('Winner of WCSF1')) {
+              stage = 'WORLD CUP FINAL';
+              matchId = 'WCF';
+            }
+          } else {
+            matchIndex++;
+          }
+          
+          return {
+            _id: fixture._id || `wc-${index}`,
+            matchId: matchId,
+            stage: stage,
+            team1: fixture.team1,
+            team2: fixture.team2,
+            team1UserId: fixture.team1UserId,
+            team2UserId: fixture.team2UserId,
+            team1Score: fixture.team1Score || 'TBD',
+            team2Score: fixture.team2Score || 'TBD',
+            winner: fixture.winner || null,
+            winnerUserId: fixture.winnerUserId || null,
+            margin: fixture.margin || null,
+            mom: fixture.mom || { name: null, score: null, wickets: null },
+            team1Fairness: fixture.team1Fairness || 0,
+            team2Fairness: fixture.team2Fairness || 0,
+            description: fixture.team1?.includes('Top ') || fixture.team1?.includes('Winner of') 
+              ? `${fixture.team1} vs ${fixture.team2}`
+              : `${fixture.team1} vs ${fixture.team2}`,
+            createdAt: fixture.createdAt || new Date()
+          };
+        });
+        
+        console.log('Fetching World Cup fixtures:', playoffFixtures.length, 'fixtures');
+      } else {
+        console.log('World Cup mode enabled but no running World Cup tournament found');
+      }
+    } else {
+      // Normal mode: fetch regular playoff fixtures
+      playoffFixtures = await PlayoffFixture.find().sort({ matchId: 1 }).lean();
+      console.log('Fetching playoff fixtures:', playoffFixtures.map(f => `${f.matchId}: ${f.team1} vs ${f.team2}`));
+    }
+    
     res.json(playoffFixtures);
   } catch (error) {
     console.error('Error fetching playoff fixtures:', error);
