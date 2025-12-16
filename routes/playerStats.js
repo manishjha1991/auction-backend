@@ -97,11 +97,11 @@ const computeInsightPayload = (player, ownerTeam, stats) => {
     totals.battingBalls >= 10 ? (totals.battingRuns / totals.battingBalls) * 100 : 0;
 
   const economy =
-    totals.ballsBowled > 0 ? totals.runsGiven / (totals.ballsBowled / 6 || 1) : 0;
+    totals.ballsBowled >= 12 && totals.wickets >= 1 ? totals.runsGiven / (totals.ballsBowled / 6 || 1) : 0;
   const bowlingStrikeRate =
     totals.wickets > 0 ? totals.ballsBowled / totals.wickets : 0;
   const recentEconomy =
-    lastFiveTotals.ballsBowled > 0
+    lastFiveTotals.ballsBowled >= 12 && lastFiveTotals.wickets >= 1
       ? lastFiveTotals.runsGiven / (lastFiveTotals.ballsBowled / 6 || 1)
       : 0;
 
@@ -1005,8 +1005,9 @@ router.get('/stats-overview', async (req, res) => {
       if (!balls || balls < 10) return 0;
       return (runs / balls) * 100;
     };
-    const calcEconomy = (runsGiven, ballsBowled) => {
-      if (!ballsBowled || ballsBowled < 6) return 99_999;
+    const calcEconomy = (runsGiven, ballsBowled, wickets = 0) => {
+      // Minimum 12 balls (2 overs) AND at least 1 wicket required for realistic economy calculation
+      if (!ballsBowled || ballsBowled < 12 || wickets < 1) return 99_999;
       return (runsGiven / (ballsBowled / 6));
     };
 
@@ -1060,7 +1061,7 @@ router.get('/stats-overview', async (req, res) => {
       const runsGiven = bowlingStats?.runsGiven || 0;
       const ballsBowled = bowlingStats?.ballsBowled || 0;
       const wickets = bowlingStats?.wickets || 0;
-      const economy = calcEconomy(runsGiven, ballsBowled);
+      const economy = calcEconomy(runsGiven, ballsBowled, wickets);
 
       // 1) Highest Strike Rate
       if (sr > highestSRValue) {
@@ -1387,8 +1388,9 @@ router.get('/player-details/:playerId', async (req, res) => {
       return (runs / balls) * 100;
     };
 
-    const calcEconomy = (runsGiven, ballsBowled) => {
-      if (!ballsBowled || ballsBowled < 6) return 0;
+    const calcEconomy = (runsGiven, ballsBowled, wickets = 0) => {
+      // Minimum 12 balls (2 overs) AND at least 1 wicket required for realistic economy calculation
+      if (!ballsBowled || ballsBowled < 12 || wickets < 1) return 0;
       return (runsGiven / (ballsBowled / 6));
     };
 
@@ -1429,7 +1431,7 @@ router.get('/player-details/:playerId', async (req, res) => {
     // Calculate averages
     const average = matchCount > 0 ? totalRuns / matchCount : 0;
     const strikeRate = calcStrikeRate(totalRuns, totalBalls);
-    const economy = calcEconomy(totalRunsGiven, totalBallsBowled);
+    const economy = calcEconomy(totalRunsGiven, totalBallsBowled, totalWickets);
     const bowlingStrikeRate = calcBowlingStrikeRate(totalBallsBowled, totalWickets);
 
     // Determine if this is batting or bowling focused
