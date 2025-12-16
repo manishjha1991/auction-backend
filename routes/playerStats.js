@@ -210,14 +210,26 @@ const generatePlayerInsight = async (playerId) => {
     .select('teamName')
     .lean();
 
-  const stats = await PlayerStats.find({ playerId })
+  // Fetch all stats, then filter to only current tournament (tournament-ready teams)
+  const allStats = await PlayerStats.find({ playerId })
+    .populate({
+      path: 'userId',
+      select: 'isTournamentReady teamName'
+    })
     .populate({
       path: 'opponentUserId',
       model: User,
-      select: 'teamName',
+      select: 'isTournamentReady teamName',
     })
     .sort({ createdAt: 1 })
     .lean();
+  
+  // Filter to only include stats from tournament-ready teams (current tournament)
+  const stats = allStats.filter(stat => {
+    const userReady = stat.userId?.isTournamentReady;
+    const opponentReady = stat.opponentUserId?.isTournamentReady;
+    return userReady && opponentReady;
+  });
 
   const insight = computeInsightPayload(
     player,
@@ -591,10 +603,26 @@ router.get('/list', async (req, res) => {
     };
 
     // Fetch match performance stats for each player
+    // Only show stats from current tournament (tournament-ready teams)
     const playersWithDetails = await Promise.all(
       playersToSend.map(async (player) => {
-        // Fetch match stats for this player
-        const stats = await PlayerStats.find({ playerId: player._id });
+        // Fetch match stats for this player - filter by tournament-ready teams only
+        const allStats = await PlayerStats.find({ playerId: player._id })
+          .populate({
+            path: 'userId',
+            select: 'isTournamentReady'
+          })
+          .populate({
+            path: 'opponentUserId',
+            select: 'isTournamentReady'
+          });
+        
+        // Filter to only include stats from tournament-ready teams (current tournament)
+        const stats = allStats.filter(stat => {
+          const userReady = stat.userId?.isTournamentReady;
+          const opponentReady = stat.opponentUserId?.isTournamentReady;
+          return userReady && opponentReady;
+        });
 
         // Calculate batting performance per match
         const battingStats = await Promise.all(
@@ -925,10 +953,23 @@ router.get('/stats/:playerId', async (req, res) => {
   const { playerId } = req.params;
 
   try {
-    // Fetch stats for the given playerId
-    const stats = await PlayerStats.find({ playerId })
-      .populate('userId', 'name') // Populate user details
-      .populate('opponentUserId', 'name'); // Populate opponent details
+    // Fetch stats for the given playerId - filter by tournament-ready teams only (current tournament)
+    const allStats = await PlayerStats.find({ playerId })
+      .populate({
+        path: 'userId',
+        select: 'name isTournamentReady'
+      })
+      .populate({
+        path: 'opponentUserId',
+        select: 'name isTournamentReady'
+      });
+    
+    // Filter to only include stats from tournament-ready teams (current tournament)
+    const stats = allStats.filter(stat => {
+      const userReady = stat.userId?.isTournamentReady;
+      const opponentReady = stat.opponentUserId?.isTournamentReady;
+      return userReady && opponentReady;
+    });
 
     // Calculate total stats
     let totalRuns = 0;
@@ -1362,14 +1403,25 @@ router.get('/player-details/:playerId', async (req, res) => {
       return res.status(404).json({ message: 'Player owner not found' });
     }
 
-    // Get all stats for this player
-    const stats = await PlayerStats.find({ playerId })
+    // Get all stats for this player - filter by tournament-ready teams only (current tournament)
+    const allStats = await PlayerStats.find({ playerId })
+      .populate({
+        path: 'userId',
+        select: 'isTournamentReady teamName'
+      })
       .populate({
         path: 'opponentUserId',
         model: User,
-        select: 'teamName'
+        select: 'isTournamentReady teamName'
       })
       .sort({ createdAt: 1 });
+    
+    // Filter to only include stats from tournament-ready teams (current tournament)
+    const stats = allStats.filter(stat => {
+      const userReady = stat.userId?.isTournamentReady;
+      const opponentReady = stat.opponentUserId?.isTournamentReady;
+      return userReady && opponentReady;
+    });
 
     // Calculate totals and averages
     let totalRuns = 0;
