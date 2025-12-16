@@ -219,15 +219,6 @@ router.get("/players/data", async (req, res) => {
         }
       },
       {
-        // Lookup PlayerStats to calculate totals on-the-fly (fixes stats vanishing issue)
-        $lookup: {
-          from: 'playerstats',
-          localField: '_id',
-          foreignField: 'playerId',
-          as: 'playerStats'
-        }
-      },
-      {
         $project: {
           id: '$_id',
           name: 1,
@@ -279,32 +270,9 @@ router.get("/players/data", async (req, res) => {
               else: 'Unsold'
             }
           },
-          // Calculate totals from PlayerStats (on-the-fly) instead of stored values
-          // This ensures stats persist across database changes and show cumulative totals from all tournaments
-          totalRuns: {
-            $ifNull: [
-              {
-                $sum: '$playerStats.battingStats.runs'
-              },
-              0
-            ]
-          },
-          totalWickets: {
-            $ifNull: [
-              {
-                $sum: '$playerStats.bowlingStats.wickets'
-              },
-              0
-            ]
-          },
-          matchesPlayed: {
-            $ifNull: [
-              {
-                $size: '$playerStats'
-              },
-              0
-            ]
-          },
+          totalRuns: { $ifNull: ['$totalRuns', 0] },
+          totalWickets: { $ifNull: ['$totalWickets', 0] },
+          matchesPlayed: { $ifNull: ['$matchesPlayed', 0] },
           overallScore: { $ifNull: ['$overallScore', 0] },
           teamLogo: {
             $cond: {
