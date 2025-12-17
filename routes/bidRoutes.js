@@ -366,9 +366,31 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     const newNotification = new BidNotification(notificationData);
     await newNotification.save();
 
-    // Emit real-time notification
+    // 🚀 NOTIFICATION: Emit real-time notification ONLY to active bidders
     const io = req.app.get('io');
-    io.emit('bid_notification', notificationData);
+    const { getSocketIdsForUsers } = require('../utils/socketUserMap');
+    
+    // Re-fetch active bidders AFTER the new bid is saved to include the new bidder
+    const currentActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).lean();
+    const currentActiveBidders = [...new Set(currentActiveBids.map((bid) => bid.bidder.toString()))];
+    
+    // Exclude the current bidder (they don't need notification about their own bid)
+    const otherActiveBidders = currentActiveBidders.filter(bidderId => bidderId !== bidder.toString());
+    
+    // Get socket IDs for other active bidders (excluding the one who just bid)
+    const activeBidderSocketIds = getSocketIdsForUsers(otherActiveBidders);
+    
+    if (activeBidderSocketIds.length > 0) {
+      // Send notification only to active bidders
+      activeBidderSocketIds.forEach(socketId => {
+        io.to(socketId).emit('bid_notification', notificationData);
+      });
+      console.log(`📢 Bid notification sent to ${activeBidderSocketIds.length} active bidders for player ${player.name}`);
+    } else {
+      // Fallback: if no sockets found, broadcast (shouldn't happen in normal flow)
+      console.warn(`⚠️ No active bidder sockets found, broadcasting to all`);
+      io.emit('bid_notification', notificationData);
+    }
     res.json({
       message: "Bid placed successfully",
       currentBid: player.currentBid,
@@ -513,8 +535,26 @@ router.post("/:playerId/exit", async (req, res) => {
     const newNotification = new BidNotification(notificationData);
     await newNotification.save();
 
-    // Emit real-time notification
-    io.emit('bid_exit_notification', notificationData);
+    // 🚀 NOTIFICATION: Emit real-time notification ONLY to remaining bidders (not the exited user)
+    const { getSocketIdsForUsers } = require('../utils/socketUserMap');
+    
+    // Get remaining active bidders (excluding the exited user)
+    const remainingActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).lean();
+    const remainingBidders = remainingActiveBids.map(bid => bid.bidder.toString());
+    
+    // Only notify remaining bidders (exclude the user who exited)
+    const socketIds = getSocketIdsForUsers(remainingBidders);
+    
+    if (socketIds.length > 0) {
+      socketIds.forEach(socketId => {
+        io.to(socketId).emit('bid_exit_notification', notificationData);
+      });
+      console.log(`📢 Exit notification sent to ${socketIds.length} remaining bidders for player ${player.name}`);
+    } else {
+      // Fallback: if no sockets found, broadcast
+      console.warn(`⚠️ No remaining bidder sockets found, broadcasting to all`);
+      io.emit('bid_exit_notification', notificationData);
+    }
     res.json({
       message: "You have exited the bid successfully. Locked amount refunded.",
       currentBid: player.currentBid,
@@ -1500,8 +1540,27 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null) {
   const newNotification = new BidNotification(notificationData);
   await newNotification.save();
   
+  // 🚀 NOTIFICATION: Emit real-time notification ONLY to relevant users
   if (io) {
-    io.emit('bid_exit_notification', notificationData);
+    const { getSocketIdsForUsers } = require('../utils/socketUserMap');
+    
+    // Get remaining active bidders (excluding the exited user)
+    const remainingActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).lean();
+    const remainingBidders = remainingActiveBids.map(bid => bid.bidder.toString());
+    
+    // Only notify remaining bidders (exclude the user who exited - they don't need notification about their own exit)
+    const socketIds = getSocketIdsForUsers(remainingBidders);
+    
+    if (socketIds.length > 0) {
+      socketIds.forEach(socketId => {
+        io.to(socketId).emit('bid_exit_notification', notificationData);
+      });
+      console.log(`📢 Exit notification sent to ${socketIds.length} users for player ${player.name}`);
+    } else {
+      // Fallback: if no sockets found, broadcast
+      console.warn(`⚠️ No user sockets found, broadcasting to all`);
+      io.emit('bid_exit_notification', notificationData);
+    }
   }
 
   return {

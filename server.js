@@ -172,8 +172,22 @@ app.use('/api/admin-tools', adminToolsRoutes);
 app.use('/api/monitoring', monitoringRoutes);
 
 
+// 🚀 NOTIFICATION: Socket user mapping for targeted notifications
+const { registerUserSocket, unregisterSocket } = require('./utils/socketUserMap');
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
+
+  // When user identifies themselves (sends userId)
+  socket.on('user_identify', (data) => {
+    const userId = data?.userId || data?.user_id || data?.id;
+    if (userId) {
+      registerUserSocket(userId, socket.id);
+      // Store userId in socket session for later use
+      socket.userId = userId;
+      console.log(`✅ User ${userId} identified with socket ${socket.id}`);
+    }
+  });
 
   socket.on('place_bid', (data) => {
     // Handle real-time bid logic here
@@ -182,6 +196,8 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
+    // Clean up socket mapping
+    unregisterSocket(socket.id);
   });
 });
 
