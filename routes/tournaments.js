@@ -309,8 +309,8 @@ router.put('/:id', isAdmin, upload.single('tournamentImage'), async (req, res) =
   }
 });
 
-// POST /api/tournaments/:id/subscribe - Subscribe to tournament
-router.post('/:id/subscribe', isAuthenticated, async (req, res) => {
+// POST /api/tournaments/:id/subscribe - Add team to tournament (admin only)
+router.post('/:id/subscribe', isAdmin, async (req, res) => {
   try {
     const tournament = await Tournament.findById(req.params.id);
     if (!tournament) {
@@ -318,45 +318,100 @@ router.post('/:id/subscribe', isAuthenticated, async (req, res) => {
     }
 
     if (tournament.status === 'completed') {
-      return res.status(400).json({ error: 'Cannot subscribe to completed tournament' });
+      return res.status(400).json({ error: 'Cannot add team to completed tournament' });
     }
 
-    if (tournament.isUserSubscribed(req.user._id)) {
-      return res.status(400).json({ error: 'Already subscribed to this tournament' });
+    // Get team userId from request body (admin specifies which team to add)
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID (userId) is required to add team' });
     }
 
-    // Admin cannot subscribe to tournaments
-    if (req.user.isAdmin) {
-      return res.status(400).json({ error: 'Admin users cannot subscribe to tournaments' });
+    const teamUser = await User.findById(userId);
+    if (!teamUser) {
+      return res.status(404).json({ error: 'Team user not found' });
     }
 
-    // Check subscription limit (max 2 tournaments per user)
-    const userTournamentCount = await Tournament.countDocuments({
-      'subscribedTeams.userId': req.user._id,
-      isActive: true
-    });
+    if (tournament.isUserSubscribed(teamUser._id)) {
+      return res.status(400).json({ error: 'Team is already subscribed to this tournament' });
+    }
 
-    if (userTournamentCount >= 2) {
-      return res.status(400).json({ 
-        error: 'Maximum tournament subscription limit reached. You can only subscribe to 2 tournaments at a time. Please withdraw from one tournament first.' 
-      });
+    if (tournament.subscribedTeams.length >= tournament.maxSlots) {
+      return res.status(400).json({ error: 'Tournament is full' });
     }
 
     await tournament.subscribeUser(
-      req.user._id,
-      req.user.teamName || req.user.name,
-      req.user.teamImage
+      teamUser._id,
+      teamUser.teamName || teamUser.name,
+      teamUser.teamImage
     );
 
-    res.json({ message: 'Successfully subscribed to tournament' });
+    // Regenerate fixtures if they already exist (to include new team)
+    if (tournament.tournamentFixtures && tournament.tournamentFixtures.length > 0) {
+      // Check if fixtures are round-robin (not knockout)
+      const hasKnockoutFixtures = tournament.tournamentFixtures.some(f => 
+        f.team1?.includes('Winner of') || f.team1?.includes('Top ')
+      );
+      
+      if (!hasKnockoutFixtures) {
+        // Regenerate round-robin fixtures with all subscribed teams
+        const subscribedTeamNames = tournament.subscribedTeams.map(t => t.teamName);
+        const newFixtures = [];
+        
+        for (let i = 0; i < subscribedTeamNames.length; i++) {
+          for (let j = i + 1; j < subscribedTeamNames.length; j++) {
+            // Check if this fixture already exists
+            const existingFixture = tournament.tournamentFixtures.find(f => 
+              (f.team1 === subscribedTeamNames[i] && f.team2 === subscribedTeamNames[j]) ||
+              (f.team1 === subscribedTeamNames[j] && f.team2 === subscribedTeamNames[i])
+            );
+            
+            if (!existingFixture) {
+              // Find userIds for teams
+              const team1Data = tournament.subscribedTeams.find(t => t.teamName === subscribedTeamNames[i]);
+              const team2Data = tournament.subscribedTeams.find(t => t.teamName === subscribedTeamNames[j]);
+              
+              newFixtures.push({
+                team1: subscribedTeamNames[i],
+                team2: subscribedTeamNames[j],
+                team1UserId: team1Data?.userId || null,
+                team2UserId: team2Data?.userId || null,
+                winner: null,
+                margin: null,
+                team1Score: null,
+                team2Score: null,
+                team1Fairness: 0,
+                team2Fairness: 0,
+                mom: {
+                  name: null,
+                  score: null,
+                  wickets: null
+                },
+                createdAt: new Date()
+              });
+            }
+          }
+        }
+        
+        // Add new fixtures to tournament
+        tournament.tournamentFixtures.push(...newFixtures);
+        await tournament.save();
+        console.log(`✅ Added ${newFixtures.length} new fixtures for newly added team`);
+      }
+    }
+
+    // Update point table to include new team
+    await updateTournamentPointTable(tournament._id);
+
+    res.json({ message: 'Team successfully added to tournament' });
   } catch (error) {
-    console.error('Subscribe error:', error);
-    res.status(500).json({ error: error.message || 'Failed to subscribe to tournament' });
+    console.error('Add team to tournament error:', error);
+    res.status(500).json({ error: error.message || 'Failed to add team to tournament' });
   }
 });
 
-// DELETE /api/tournaments/:id/subscribe - Unsubscribe from tournament
-router.delete('/:id/subscribe', isAuthenticated, async (req, res) => {
+// DELETE /api/tournaments/:id/subscribe - Remove team from tournament (admin only)
+router.delete('/:id/subscribe', isAdmin, async (req, res) => {
   try {
     const tournament = await Tournament.findById(req.params.id);
     if (!tournament) {
@@ -364,23 +419,53 @@ router.delete('/:id/subscribe', isAuthenticated, async (req, res) => {
     }
 
     if (tournament.status === 'completed') {
-      return res.status(400).json({ error: 'Cannot unsubscribe from completed tournament' });
+      return res.status(400).json({ error: 'Cannot remove team from completed tournament' });
     }
 
-    if (tournament.isLocked) {
-      return res.status(400).json({ error: 'Cannot withdraw from locked tournament' });
+    // Get team userId from query params or body (admin specifies which team to remove)
+    const { userId } = req.query.userId ? { userId: req.query.userId } : req.body;
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID (userId) is required to remove team' });
     }
 
-    if (!tournament.isUserSubscribed(req.user._id)) {
-      return res.status(400).json({ error: 'Not subscribed to this tournament' });
+    const teamUser = await User.findById(userId);
+    if (!teamUser) {
+      return res.status(404).json({ error: 'Team user not found' });
     }
 
-    await tournament.unsubscribeUser(req.user._id);
+    if (!tournament.isUserSubscribed(teamUser._id)) {
+      return res.status(400).json({ error: 'Team is not subscribed to this tournament' });
+    }
 
-    res.json({ message: 'Successfully unsubscribed from tournament' });
+    await tournament.unsubscribeUser(teamUser._id);
+
+    // Remove fixtures involving the removed team (only if not completed)
+    if (tournament.tournamentFixtures && tournament.tournamentFixtures.length > 0) {
+      const teamName = teamUser.teamName || teamUser.name;
+      const initialLength = tournament.tournamentFixtures.length;
+      
+      // Remove fixtures where this team is involved and match is not completed
+      tournament.tournamentFixtures = tournament.tournamentFixtures.filter(fixture => {
+        // Keep fixtures that are completed (have winner)
+        if (fixture.winner) return true;
+        // Remove fixtures involving the removed team
+        return fixture.team1 !== teamName && fixture.team2 !== teamName;
+      });
+      
+      const removedCount = initialLength - tournament.tournamentFixtures.length;
+      if (removedCount > 0) {
+        await tournament.save();
+        console.log(`✅ Removed ${removedCount} fixtures involving removed team: ${teamName}`);
+      }
+    }
+
+    // Update point table to remove the team
+    await updateTournamentPointTable(tournament._id);
+
+    res.json({ message: 'Team successfully removed from tournament' });
   } catch (error) {
-    console.error('Unsubscribe error:', error);
-    res.status(500).json({ error: error.message || 'Failed to unsubscribe from tournament' });
+    console.error('Remove team from tournament error:', error);
+    res.status(500).json({ error: error.message || 'Failed to remove team from tournament' });
   }
 });
 
@@ -392,7 +477,35 @@ router.delete('/:id/teams/:userId', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Tournament not found' });
     }
 
+    const teamUser = await User.findById(req.params.userId);
+    if (!teamUser) {
+      return res.status(404).json({ error: 'Team user not found' });
+    }
+
     await tournament.removeTeamSubscription(req.params.userId);
+
+    // Remove fixtures involving the removed team (only if not completed)
+    if (tournament.tournamentFixtures && tournament.tournamentFixtures.length > 0) {
+      const teamName = teamUser.teamName || teamUser.name;
+      const initialLength = tournament.tournamentFixtures.length;
+      
+      // Remove fixtures where this team is involved and match is not completed
+      tournament.tournamentFixtures = tournament.tournamentFixtures.filter(fixture => {
+        // Keep fixtures that are completed (have winner)
+        if (fixture.winner) return true;
+        // Remove fixtures involving the removed team
+        return fixture.team1 !== teamName && fixture.team2 !== teamName;
+      });
+      
+      const removedCount = initialLength - tournament.tournamentFixtures.length;
+      if (removedCount > 0) {
+        await tournament.save();
+        console.log(`✅ Removed ${removedCount} fixtures involving removed team: ${teamName}`);
+      }
+    }
+
+    // Update point table to remove the team
+    await updateTournamentPointTable(tournament._id);
 
     res.json({ message: 'Team removed from tournament' });
   } catch (error) {
@@ -607,6 +720,44 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
     if (winner) {
       await updateTournamentPointTable(tournament._id);
       
+      // Check if final match is complete (for any tournament type)
+      const currentFixture = tournament.tournamentFixtures[fixtureIndex];
+      const isFinalMatch = (() => {
+        // Check if this is the last fixture in the tournament
+        const isLastFixture = fixtureIndex === tournament.tournamentFixtures.length - 1;
+        
+        // Check if it's a knockout final (not round-robin)
+        const isKnockoutFinal = currentFixture.team1?.includes('Winner of') || 
+                               currentFixture.team1?.includes('Top ') ||
+                               (fixtureIndex > 0 && 
+                                tournament.tournamentFixtures.slice(0, fixtureIndex).some(f => 
+                                  f.team1?.includes('Winner of') || f.team1?.includes('Top ')
+                                ));
+        
+        // For round-robin only tournaments, check if all fixtures are complete
+        const allFixturesComplete = tournament.tournamentFixtures.every(f => f.winner);
+        
+        return isLastFixture || isKnockoutFinal || (isLastFixture && allFixturesComplete);
+      })();
+      
+      // If final match is complete, mark tournament as completed and update end date
+      if (isFinalMatch && !tournament.winner?.teamName) {
+        const completionDate = new Date();
+        const winnerTeam = tournament.subscribedTeams.find(t => 
+          t.teamName === winner
+        );
+        
+        tournament.winner = {
+          teamName: winner,
+          teamImage: winnerTeam?.teamImage || null,
+          wonAt: completionDate
+        };
+        tournament.status = 'completed';
+        tournament.endDate = completionDate;
+        await tournament.save();
+        console.log(`✅ Tournament ${tournament.name} completed! Winner: ${winner}, End date updated to: ${completionDate.toISOString()}`);
+      }
+      
       // Check if this is World Cup tournament and update final when semi-finals complete
       if (tournament.name && tournament.name.startsWith('World Cup')) {
         // Count round-robin fixtures (should be 28 for 8 teams)
@@ -659,14 +810,17 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
             t.teamName === finalFixture.winner
           );
           
+          const completionDate = new Date();
           tournament.winner = {
             teamName: finalFixture.winner,
             teamImage: winnerTeam?.teamImage || null,
-            wonAt: new Date()
+            wonAt: completionDate
           };
           tournament.status = 'completed';
+          // Update end date to the day when final was completed
+          tournament.endDate = completionDate;
           await tournament.save();
-          console.log(`Tournament ${tournament.name} winner set: ${finalFixture.winner}`);
+          console.log(`✅ Tournament ${tournament.name} completed! Winner: ${finalFixture.winner}, End date updated to: ${completionDate.toISOString()}`);
         }
       }
     }

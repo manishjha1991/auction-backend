@@ -12,6 +12,7 @@ const authenticateJWT = require('../middleware/authJWT');
 const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
 const { getClientIp } = require('../utils/network');
 const RetainedPlayer = require('../models/RetainedPlayer');
+const { invalidateCache } = require('../utils/cache');
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
@@ -391,6 +392,19 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       console.warn(`⚠️ No active bidder sockets found, broadcasting to all`);
       io.emit('bid_notification', notificationData);
     }
+    // 🚀 PERFORMANCE: Invalidate caches when bid is placed
+    invalidateCache('user-purses');
+    invalidateCache('players:data');
+    
+    // 🚀 REALTIME: Broadcast player bid update to all clients
+    io.emit('player_bid_update', {
+      playerId: playerId.toString(),
+      currentBid: player.currentBid,
+      currentBidder: player.currentBidder,
+      bidAmount: bidAmount,
+      playerName: player.name
+    });
+    
     res.json({
       message: "Bid placed successfully",
       currentBid: player.currentBid,
@@ -555,6 +569,19 @@ router.post("/:playerId/exit", async (req, res) => {
       console.warn(`⚠️ No remaining bidder sockets found, broadcasting to all`);
       io.emit('bid_exit_notification', notificationData);
     }
+    
+    // 🚀 PERFORMANCE: Invalidate caches when bid is exited
+    invalidateCache('user-purses');
+    invalidateCache('players:data');
+    
+    // 🚀 REALTIME: Broadcast player bid update to all clients
+    io.emit('player_bid_update', {
+      playerId: playerId.toString(),
+      currentBid: player.currentBid,
+      currentBidder: player.currentBidder,
+      playerName: player.name
+    });
+    
     res.json({
       message: "You have exited the bid successfully. Locked amount refunded.",
       currentBid: player.currentBid,
@@ -842,6 +869,20 @@ router.post("/bid/sold", async (req, res) => {
       });
     }
 
+    // 🚀 PERFORMANCE: Invalidate caches when player is sold
+    invalidateCache('user-purses');
+    invalidateCache('players:data');
+    
+    // 🚀 REALTIME: Broadcast player sold updates to all clients
+    if (io) {
+      idsToSell.forEach(pid => {
+        io.emit('player_sold_update', {
+          playerId: pid.toString(),
+          status: 'Sold'
+        });
+      });
+    }
+    
     // Return the array of results for each player
     res.status(200).json({ results });
   } catch (error) {

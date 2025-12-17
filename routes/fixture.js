@@ -284,7 +284,32 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.post('/save', async (req, res) => {
+// Middleware to check if user is admin
+const isAdmin = async (req, res, next) => {
+  try {
+    const userId = req.headers['user-id'];
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      return res.status(401).json({ error: 'User ID required' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!user.isAdmin) {
+      return res.status(403).json({ error: 'Only admin can perform this action' });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+router.post('/save', isAdmin, async (req, res) => {
   try {
     const {
       team1,

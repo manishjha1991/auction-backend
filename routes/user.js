@@ -387,6 +387,15 @@ router.get("/:userId/details", async (req, res) => {
 
 router.get("/purses", async (req, res) => {
   const startTime = Date.now();
+  
+  // 🚀 PERFORMANCE: Check cache first (2 minute cache for purses)
+  const cacheKey = 'user-purses';
+  const cached = cacheConfig.medium.get(cacheKey);
+  if (cached) {
+    console.log(`✅ User purses cache HIT`);
+    return res.status(200).json(cached);
+  }
+  
   try {
     console.log('🚀 Starting purses API optimization...');
     
@@ -523,6 +532,49 @@ router.get("/purses", async (req, res) => {
       });
     });
 
+    // 🚀 PERFORMANCE: Pre-calculate competitor bidder info for all players
+    const playerCompetitorMap = new Map();
+    allActiveBids.forEach(bid => {
+      const playerId = bid.playerId._id.toString();
+      const playerName = bid.playerId.name;
+      
+      if (!playerCompetitorMap.has(playerId)) {
+        playerCompetitorMap.set(playerId, []);
+      }
+      
+      playerCompetitorMap.get(playerId).push({
+        bidderId: bid.bidder._id.toString(),
+        bidderName: bid.bidder.name,
+        bidAmount: bid.bidAmount
+      });
+    });
+    
+    // Sort bids for each player and extract competitor info
+    const competitorInfoMap = new Map();
+    playerCompetitorMap.forEach((bids, playerId) => {
+      const sortedBids = bids.sort((a, b) => b.bidAmount - a.bidAmount);
+      sortedBids.forEach((bid, index) => {
+        const key = `${bid.bidderId}-${playerId}`;
+        let competitorName = null;
+        
+        if (index === 0 && sortedBids.length > 1) {
+          // Highest bidder - competitor is second highest
+          competitorName = sortedBids[1].bidderName;
+        } else if (index === 1) {
+          // Second highest - competitor is highest
+          competitorName = sortedBids[0].bidderName;
+        } else if (index > 1) {
+          // Lower position - competitor is highest
+          competitorName = sortedBids[0].bidderName;
+        }
+        
+        competitorInfoMap.set(key, {
+          competitorName,
+          position: index + 1
+        });
+      });
+    });
+
     // OPTIMIZATION: Apply bidding status using pre-calculated map
     const enhancedUserData = userData.map((user) => {
       const enhancedPlayers = user.players.map((player) => {
@@ -536,10 +588,19 @@ router.get("/purses", async (req, res) => {
           position: 1,
           totalBidders: 1
         };
+        
+        // Get competitor info
+        const competitorKey = `${user.id}-${player.id}`;
+        const competitorInfo = competitorInfoMap.get(competitorKey) || {
+          competitorName: null,
+          position: biddingStatus.position
+        };
 
         return {
           ...player,
-          biddingStatus
+          biddingStatus,
+          competitorName: competitorInfo.competitorName,
+          bidPosition: competitorInfo.position
         };
       });
 
