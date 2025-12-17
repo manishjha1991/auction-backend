@@ -638,7 +638,9 @@ router.get('/list', async (req, res) => {
           }))
         );
 
-        // Calculate total stats
+        // Calculate total stats (for response only - do NOT update Player collection)
+        // Note: Player totals are updated via applyPlayerStatDelta when stats are saved
+        // This endpoint should only READ data, not modify it
         const totalBattingRuns = battingStats.reduce(
           (sum, match) => sum + match.runs,
           0
@@ -647,17 +649,7 @@ router.get('/list', async (req, res) => {
           (sum, match) => sum + match.wickets,
           0
         );
-        // 4. Update the Player document with these new totals
-        await Player.findByIdAndUpdate(
-          player._id,
-          {
-            $set: {
-              totalRuns: totalBattingRuns,
-              totalWickets: totalWickets
-            }
-          },
-          { new: true } // so it returns updated doc if you need it
-        );
+        
         return {
           _id: player._id,
           name: player.name,
