@@ -395,7 +395,8 @@ router.post('/update/:matchId', async (req, res) => {
 
     // If winner is being updated, also update winnerUserId
     if (updateData.winner && !updateData.winnerUserId) {
-      const winnerUser = await User.findOne({ teamName: updateData.winner, isActive: true });
+      // 🚀 PERFORMANCE: Use .lean() for read-only query
+      const winnerUser = await User.findOne({ teamName: updateData.winner, isActive: true }).lean();
       if (winnerUser) {
         updateData.winnerUserId = winnerUser._id;
       }
@@ -403,14 +404,16 @@ router.post('/update/:matchId', async (req, res) => {
 
     // If team1 or team2 is being updated, also update userIds
     if (updateData.team1 && !updateData.team1UserId && !updateData.team1.includes('Winner of') && !updateData.team1.includes('Loser of')) {
-      const team1User = await User.findOne({ teamName: updateData.team1, isActive: true });
+      // 🚀 PERFORMANCE: Use .lean() for read-only query
+      const team1User = await User.findOne({ teamName: updateData.team1, isActive: true }).lean();
       if (team1User) {
         updateData.team1UserId = team1User._id;
       }
     }
 
     if (updateData.team2 && !updateData.team2UserId && !updateData.team2.includes('Winner of') && !updateData.team2.includes('Loser of')) {
-      const team2User = await User.findOne({ teamName: updateData.team2, isActive: true });
+      // 🚀 PERFORMANCE: Use .lean() for read-only query
+      const team2User = await User.findOne({ teamName: updateData.team2, isActive: true }).lean();
       if (team2User) {
         updateData.team2UserId = team2User._id;
       }
@@ -437,7 +440,8 @@ router.post('/update/:matchId', async (req, res) => {
       await updateDependentMatches(matchId, updateData.winner);
       
       // Log the updated dependent matches
-      const updatedFixtures = await PlayoffFixture.find({}).sort({ matchId: 1 });
+      // 🚀 PERFORMANCE: Use .lean() for read-only query
+      const updatedFixtures = await PlayoffFixture.find({}).sort({ matchId: 1 }).lean();
       console.log('All playoff fixtures after update:', updatedFixtures.map(f => `${f.matchId}: ${f.team1} vs ${f.team2}`));
     } else {
       console.log(`❌ Not updating dependent matches - winner: ${updateData.winner}, isCompleted: ${updateData.isCompleted}`);

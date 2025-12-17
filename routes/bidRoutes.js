@@ -64,7 +64,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       isAdmin: false,
       lastDeviceFingerprint: deviceFingerprint,
       lastLoginTime: { $gte: recentLoginTime }
-    }).select('name email teamName').limit(3);
+    }).select('name email teamName').limit(3).lean();
     
     if (otherUsersSameDevice.length > 0) {
       isSuspiciousIP = true;
@@ -79,7 +79,8 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
 
   try {
     // 1. Fetch the player
-    const player = await Player.findById(playerId);
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
+    const player = await Player.findById(playerId).lean();
     if (!player) {
       return res.status(404).json({ message: "Player not found" });
     }
@@ -170,7 +171,8 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       });
     }
     // Fetch active bids on this player
-    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true });
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
+    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).lean();
 
     // Ensure only two bidders can actively bid on the player
     const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
@@ -237,9 +239,10 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     // ============================
     // 7. Fetch the highest active bid for the player
     // ============================
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
     const highestBid = await Bid.findOne({ playerId, isActive: true })
       .sort({ bidAmount: -1 })
-      .exec();
+      .lean();
 
     // 8. Determine the new bid amount
     let bidAmount;

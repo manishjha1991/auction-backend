@@ -6,6 +6,7 @@ const Bid = require("../models/Bid");
 const User = require("../models/User");
 const UserPlayer = require("../models/UserPlayer");
 const ReleaseRequest = require("../models/ReleaseRequest");
+const { cacheConfig, invalidateCache } = require('../utils/cache');
 const router = express.Router();
 const formatPrice = (value) => {
   if (value >= 10000000) {
@@ -156,6 +157,14 @@ router.get("/:playerId/bids", async (req, res) => {
 
 
 router.get("/players/data", async (req, res) => {
+  // 🚀 PERFORMANCE: Check cache first (2 minute cache for players data)
+  const cacheKey = 'players:data';
+  const cached = cacheConfig.medium.get(cacheKey);
+  if (cached) {
+    console.log(`✅ Players data cache HIT`);
+    return res.status(200).json(cached);
+  }
+
   try {
     // Use aggregation pipeline for better performance
     const players = await Player.aggregate([
@@ -300,6 +309,10 @@ router.get("/players/data", async (req, res) => {
       },
       { $sort: { sortOrder: 1 } }
     ]);
+
+    // 🚀 PERFORMANCE: Cache the response (2 minute cache)
+    cacheConfig.medium.set(cacheKey, players);
+    console.log(`💾 Players data cached`);
 
     res.status(200).json(players);
   } catch (error) {

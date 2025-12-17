@@ -34,6 +34,7 @@ const retainedPlayerRoutes = require('./routes/retainedPlayers');
 const tournamentRoutes = require('./routes/tournaments');
 const matchResultsRoutes = require('./routes/matchResults');
 const adminToolsRoutes = require('./routes/adminTools');
+const monitoringRoutes = require('./routes/monitoring');
 // require('./scheduler');
 
 // Allow Express to trust proxy headers (needed to read real client IPs)
@@ -119,6 +120,12 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+// 🚀 PERFORMANCE: Add performance monitoring middleware (only in development)
+if (process.env.NODE_ENV !== 'production') {
+  const { performanceMonitor } = require('./utils/performanceMonitor');
+  app.use(performanceMonitor);
+}
+
 // Test endpoint to check if requests are reaching the server
 app.get('/api/test', (req, res) => {
   const clientIP = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
@@ -162,6 +169,7 @@ app.use('/api/retained-players', retainedPlayerRoutes);
 app.use('/api/tournaments', tournamentRoutes);
 app.use('/api/match-results', matchResultsRoutes);
 app.use('/api/admin-tools', adminToolsRoutes);
+app.use('/api/monitoring', monitoringRoutes);
 
 
 io.on('connection', (socket) => {

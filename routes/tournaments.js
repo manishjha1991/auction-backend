@@ -174,9 +174,11 @@ router.get('/subscription-count', isAuthenticated, async (req, res) => {
 // GET /api/tournaments/:id - Get single tournament
 router.get('/:id', isAuthenticated, async (req, res) => {
   try {
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
     const tournament = await Tournament.findById(req.params.id)
       .populate('subscribedTeams.userId', 'name teamName teamImage')
-      .populate('createdBy', 'name teamName');
+      .populate('createdBy', 'name teamName')
+      .lean();
 
     if (!tournament) {
       return res.status(404).json({ error: 'Tournament not found' });

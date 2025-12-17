@@ -5,8 +5,9 @@ const PlayerStats = require('../models/PlayerStats'); // Adjust the path as need
 const Player = require('../models/Player'); // Adjust the path
 const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
+const { cacheConfig, invalidateCache } = require('../utils/cache');
 
-// 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats)
+// 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats) - keeping for backward compatibility
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 // Load list of players with playerId and userId
 
@@ -558,8 +559,16 @@ const savePlayerStatsEntry = async (payload = {}) => {
 };
 
 router.get('/list', async (req, res) => {
+  // 🚀 PERFORMANCE: Check cache first (2 minute cache for player stats list)
+  const { userId } = req.query;
+  const cacheKey = `player-stats-list:${userId}`;
+  const cached = cacheConfig.medium.get(cacheKey);
+  if (cached) {
+    console.log(`✅ Player stats list cache HIT for user: ${userId}`);
+    return res.status(200).json(cached);
+  }
+
   try {
-    const { userId } = req.query;
 
     // Check if the user exists and populate the boughtPlayers field
     // 🚀 PERFORMANCE: Use .lean() for faster queries
@@ -582,18 +591,6 @@ router.get('/list', async (req, res) => {
     const isAdmin = user.isAdmin;
     let playersToSend = [];
 
-    if (isAdmin) {
-      // Admin sees all active sold players from the Player collection
-      // 🚀 PERFORMANCE: Use .lean() for faster queries
-      playersToSend = await Player.find(
-        { isSold: true, isActive: true },
-        '_id name type role basePrice style overallScore profilePicture isSold isActive'
-      ).lean();
-    } else {
-      // Normal user sees only the players they have bought
-      playersToSend = user.boughtPlayers || [];
-    }
-
     // Helper function to convert balls into overs (X.Y format)
     const convertBallsToOvers = (balls) => {
       const b = balls || 0;
@@ -602,84 +599,124 @@ router.get('/list', async (req, res) => {
       return `${overs}.${remainder}`;
     };
 
-    // Fetch match performance stats for each player
-    const playersWithDetails = await Promise.all(
-      playersToSend.map(async (player) => {
-        // Fetch match stats for this player
-        // 🚀 PERFORMANCE: Use .lean() for faster queries
-        const stats = await PlayerStats.find({ playerId: player._id }).lean();
-
-        // Calculate batting performance per match
-        const battingStats = await Promise.all(
-          stats.map(async (stat) => ({
-            match: stat.matchName,
-            runs: stat.battingStats?.runs || 0,
-            balls: stat.battingStats?.balls || 0,
-            mom: stat.isMom || false,
-            // Lookup the opponent's team name from the User model
-            against:
-              (await User.findById(stat.opponentUserId).select('teamName'))
-                ?.teamName || 'Unknown'
-          }))
-        );
-
-        // Calculate bowling performance per match
-        const bowlingStats = await Promise.all(
-          stats.map(async (stat) => ({
-            match: stat.matchName,
-            overs: convertBallsToOvers(stat.bowlingStats?.ballsBowled),
-            wickets: stat.bowlingStats?.wickets || 0,
-            runs: stat.bowlingStats?.runsGiven || 0,
-            mom: stat.isMom || false,
-            // Lookup the opponent's team name from the User model
-            against:
-              (await User.findById(stat.opponentUserId).select('teamName'))
-                ?.teamName || 'Unknown'
-          }))
-        );
-
-        // Calculate total stats (for response only - do NOT update Player collection)
-        // Note: Player totals are updated via applyPlayerStatDelta when stats are saved
-        // This endpoint should only READ data, not modify it
-        const totalBattingRuns = battingStats.reduce(
-          (sum, match) => sum + match.runs,
-          0
-        );
-        const totalWickets = bowlingStats.reduce(
-          (sum, match) => sum + match.wickets,
-          0
-        );
-        
-        return {
-          _id: player._id,
-          name: player.name,
-          type: player.type,
-          role: player.role,
-          team: user.teamName, // Get team name from the user document
-          matchPerformance: {
-            batting: battingStats,
-            bowling: bowlingStats
-          },
-          totalStats: {
-            batting: { runs: totalBattingRuns },
-            bowling: { wickets: totalWickets }
-          }
-        };
+    // 🚀 PERFORMANCE: Run queries in parallel for faster execution
+    const [playersResult, playoffTeamsResult] = await Promise.all([
+      // Fetch players (admin or user's bought players)
+      isAdmin 
+        ? Player.find(
+            { isSold: true, isActive: true },
+            '_id name type role basePrice style overallScore profilePicture isSold isActive'
+          ).lean()
+        : Promise.resolve(user.boughtPlayers || []),
+      // Fetch playoff teams in parallel (not dependent on players)
+      User.find({
+        isActive: true,
+        teamName: { $exists: true, $ne: null, $ne: 'NA' }
       })
-    );
+        .sort({ teamName: 1 })
+        .limit(5)
+        .lean()
+    ]);
+
+    playersToSend = playersResult;
+
+    // 🚀 PERFORMANCE: Batch fetch all PlayerStats for all players at once (instead of N queries)
+    const allPlayerIds = playersToSend.map(p => p._id);
+    const allStats = allPlayerIds.length > 0 
+      ? await PlayerStats.find({ 
+          playerId: { $in: allPlayerIds } 
+        }).lean()
+      : [];
+    
+    // 🚀 PERFORMANCE: Batch fetch all opponent users at once (instead of N*M queries)
+    const allOpponentIds = [...new Set(allStats.map(s => s.opponentUserId).filter(Boolean))];
+    const opponentUsers = allOpponentIds.length > 0
+      ? await User.find({ 
+          _id: { $in: allOpponentIds } 
+        }).select('_id teamName').lean()
+      : [];
+    
+    // Create a map for O(1) lookup
+    const opponentMap = {};
+    opponentUsers.forEach(u => {
+      opponentMap[String(u._id)] = u.teamName || 'Unknown';
+    });
+
+    // 🚀 PERFORMANCE: Create stats index by playerId for O(1) lookup instead of O(N) filter
+    const statsByPlayerId = new Map();
+    allStats.forEach(stat => {
+      const playerIdStr = String(stat.playerId);
+      if (!statsByPlayerId.has(playerIdStr)) {
+        statsByPlayerId.set(playerIdStr, []);
+      }
+      statsByPlayerId.get(playerIdStr).push(stat);
+    });
+
+    // 🚀 PERFORMANCE: Process synchronously (no async needed, just data transformation)
+    const playersWithDetails = playersToSend.map((player) => {
+      // Get stats for this player from pre-indexed data (O(1) lookup)
+      const stats = statsByPlayerId.get(String(player._id)) || [];
+
+      // Calculate batting performance per match (using pre-fetched opponent data)
+      const battingStats = stats.map((stat) => ({
+        match: stat.matchName,
+        runs: stat.battingStats?.runs || 0,
+        balls: stat.battingStats?.balls || 0,
+        mom: stat.isMom || false,
+        // Use pre-fetched opponent map (no database query)
+        against: stat.opponentUserId 
+          ? (opponentMap[String(stat.opponentUserId)] || 'Unknown')
+          : 'Unknown'
+      }));
+
+      // Calculate bowling performance per match (using pre-fetched opponent data)
+      const bowlingStats = stats.map((stat) => ({
+        match: stat.matchName,
+        overs: convertBallsToOvers(stat.bowlingStats?.ballsBowled),
+        wickets: stat.bowlingStats?.wickets || 0,
+        runs: stat.bowlingStats?.runsGiven || 0,
+        mom: stat.isMom || false,
+        // Use pre-fetched opponent map (no database query)
+        against: stat.opponentUserId 
+          ? (opponentMap[String(stat.opponentUserId)] || 'Unknown')
+          : 'Unknown'
+      }));
+
+      // Calculate total stats (for response only - do NOT update Player collection)
+      // Note: Player totals are updated via applyPlayerStatDelta when stats are saved
+      // This endpoint should only READ data, not modify it
+      const totalBattingRuns = battingStats.reduce(
+        (sum, match) => sum + match.runs,
+        0
+      );
+      const totalWickets = bowlingStats.reduce(
+        (sum, match) => sum + match.wickets,
+        0
+      );
+      
+      return {
+        _id: player._id,
+        name: player.name,
+        type: player.type,
+        role: player.role,
+        team: user.teamName, // Get team name from the user document
+        matchPerformance: {
+          batting: battingStats,
+          bowling: bowlingStats
+        },
+        totalStats: {
+          batting: { runs: totalBattingRuns },
+          bowling: { wickets: totalWickets }
+        }
+      };
+    });
 
     // ---------------------------
     // Create Playoff Fixtures
     // ---------------------------
     // For this example, we are simply querying the top five teams (active teams with a valid teamName).
-    // Adjust the sorting field based on your ranking system.
-    const playoffTeams = await User.find({
-      isActive: true,
-      teamName: { $exists: true, $ne: null, $ne: 'NA' }
-    })
-      .sort({ teamName: 1 }) // Replace with your ranking criteria if available
-      .limit(5);
-
+    // Adjust the sorting field based on your ranking criteria if available.
+    const playoffTeams = playoffTeamsResult;
     let playoffFixtures = [];
     if (playoffTeams.length === 5) {
       playoffFixtures = [
@@ -718,7 +755,13 @@ router.get('/list', async (req, res) => {
     }
     // ---------------------------
 
-    res.json({ players: playersWithDetails, playoffFixtures });
+    const response = { players: playersWithDetails, playoffFixtures };
+    
+    // 🚀 PERFORMANCE: Cache the response (2 minute cache)
+    cacheConfig.medium.set(cacheKey, response);
+    console.log(`💾 Player stats list cached for user: ${userId}`);
+    
+    res.json(response);
   } catch (error) {
     console.error('Error fetching player list:', error);
     res.status(500).json({ message: 'Error fetching player list', error });
@@ -781,8 +824,9 @@ router.post('/bulk-store', async (req, res) => {
       }
     }
 
-    // 🚀 PERFORMANCE: Invalidate stats-overview cache when stats are saved
+    // 🚀 PERFORMANCE: Invalidate stats-overview and player-stats-list cache when stats are saved
     cache.del('stats-overview');
+    invalidateCache('player-stats-list');
 
     return res.status(errors.length ? 207 : 200).json({
       message: 'Bulk player stats processed',
@@ -914,8 +958,9 @@ router.post('/bulk-store', async (req, res) => {
       successCount += 1;
     }
 
-    // 🚀 PERFORMANCE: Invalidate stats-overview cache when stats are saved
+    // 🚀 PERFORMANCE: Invalidate stats-overview and player-stats-list cache when stats are saved
     cache.del('stats-overview');
+    invalidateCache('player-stats-list');
 
     return res.status(200).json({
       message: 'Player stats saved successfully',

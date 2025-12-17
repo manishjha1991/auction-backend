@@ -19,10 +19,12 @@ async function buildReleaseInsight(requestDoc) {
 
     const [activeCount, ownership, freshUser] = await Promise.all([
       UserPlayer.countDocuments({ userId, isActive: true }),
-      UserPlayer.findOne({ userId, playerId, isActive: true }).select('bidValue'),
+      // 🚀 PERFORMANCE: Use .lean() for read-only query
+      UserPlayer.findOne({ userId, playerId, isActive: true }).select('bidValue').lean(),
       request.user && typeof request.user.purse !== 'undefined'
         ? null
-        : User.findById(userId).select('purse'),
+        // 🚀 PERFORMANCE: Use .lean() for read-only query
+        : User.findById(userId).select('purse').lean(),
     ]);
 
     const refundValue = Number(ownership?.bidValue || 0);
@@ -84,19 +86,24 @@ router.post('/', async (req, res) => {
     const { userId, playerId } = req.body;
     if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
     // Guard: user cannot exceed 4 total trades (trade + release combined)
-    const u = await (await require('../models/User')).findById(userId).select('tradesUsed');
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
+    const u = await (await require('../models/User')).findById(userId).select('tradesUsed').lean();
     if (u && Number(u.tradesUsed || 0) >= 6) {
       return res.status(400).json({ message: 'You have used all 4 trades.' });
     }
-    const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true });
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
+    const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true }).lean();
     if (!ownership) return res.status(400).json({ message: 'You do not own this player' });
     const rr = await ReleaseRequest.create({ user: userId, player: playerId, status: 'pending', history: [{ byUser: userId, action: 'propose' }] });
 
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
     const populated = await ReleaseRequest.findById(rr._id)
       .populate('player', 'name type role')
-      .populate('user', 'name teamName purse');
+      .populate('user', 'name teamName purse')
+      .lean();
 
-    const responseObj = populated.toObject({ virtuals: true });
+    // .lean() already returns a plain object, no need for .toObject()
+    const responseObj = populated;
     responseObj.aiInsight = await buildReleaseInsight(populated);
 
     res.status(201).json(responseObj);
@@ -125,10 +132,12 @@ router.get('/user/:userId', async (req, res) => {
 // Admin: pending
 router.get('/admin/pending', async (req, res) => {
   try {
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
     const list = await ReleaseRequest.find({ status: { $in: ['pending', 'admin_pending'] } })
       .populate('user', 'name teamName purse')
       .populate('player', 'name type role')
-      .sort({ updatedAt: -1 });
+      .sort({ updatedAt: -1 })
+      .lean();
     const enriched = await attachInsights(list);
     res.json(enriched);
   } catch (e) {

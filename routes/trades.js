@@ -13,7 +13,8 @@ const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
 
 async function getUserTypeCounts(userId) {
-  const ups = await UserPlayer.find({ userId, isActive: true }).populate('playerId', 'type');
+  // 🚀 PERFORMANCE: Use .lean() for read-only query
+  const ups = await UserPlayer.find({ userId, isActive: true }).populate('playerId', 'type').lean();
   const counts = { Sapphire: 0, Gold: 0, Emerald: 0, Silver: 0 };
   for (const up of ups) {
     const t = up.playerId?.type;
@@ -33,7 +34,8 @@ function wouldExceedTypeLimits(counts) {
 
 // Helper: ensure player ownership
 async function getOwnerOfPlayer(playerId) {
-  const up = await UserPlayer.findOne({ playerId, isActive: true }).populate('userId');
+  // 🚀 PERFORMANCE: Use .lean() for read-only query
+  const up = await UserPlayer.findOne({ playerId, isActive: true }).populate('userId').lean();
   return up ? up.userId : null;
 }
 
@@ -75,13 +77,14 @@ router.post('/', async (req, res) => {
 
     // Enforce total trade usage cap (no more than 4 COMPLETED trades overall for the proposer)
     // Only count trades that were actually completed, not pending ones
-    const proposer = await User.findById(fromUserId).select('tradesUsed');
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
+    const proposer = await User.findById(fromUserId).select('tradesUsed').lean();
     if (proposer && Number(proposer.tradesUsed || 0) >= 6) {
       return res.status(400).json({ message: 'You have used all 4 trades.' });
     }
 
     const [fromUser, offeredOwner, requestedOwner] = await Promise.all([
-      User.findById(fromUserId),
+      User.findById(fromUserId), // Not using .lean() - might be modified later
       getOwnerOfPlayer(offeredPlayerId),
       getOwnerOfPlayer(requestedPlayerId)
     ]);
@@ -101,10 +104,11 @@ router.post('/', async (req, res) => {
     }
 
     const [offeredPlayer, requestedPlayer, offeredUP, requestedUP] = await Promise.all([
-      Player.findById(offeredPlayerId),
-      Player.findById(requestedPlayerId),
-      UserPlayer.findOne({ playerId: offeredPlayerId, isActive: true }).populate('userId'),
-      UserPlayer.findOne({ playerId: requestedPlayerId, isActive: true }).populate('userId')
+      // 🚀 PERFORMANCE: Use .lean() for read-only queries
+      Player.findById(offeredPlayerId).lean(),
+      Player.findById(requestedPlayerId).lean(),
+      UserPlayer.findOne({ playerId: offeredPlayerId, isActive: true }).populate('userId').lean(),
+      UserPlayer.findOne({ playerId: requestedPlayerId, isActive: true }).populate('userId').lean()
     ]);
 
     if (!offeredUP || !requestedUP) {
@@ -126,11 +130,13 @@ router.post('/', async (req, res) => {
       ]
     });
 
+    // 🚀 PERFORMANCE: Use .lean() for read-only query
     const populated = await TradeRequest.findById(trade._id)
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role')
-      .populate('requestedPlayer', 'name type role');
+      .populate('requestedPlayer', 'name type role')
+      .lean();
 
     res.status(201).json(populated);
   } catch (err) {

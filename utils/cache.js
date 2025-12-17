@@ -3,6 +3,7 @@
  * Provides consistent caching across all endpoints
  */
 const NodeCache = require('node-cache');
+const { trackCacheHit, trackCacheMiss, trackCacheSet } = require('./cacheMonitor');
 
 // Create cache instances with different TTLs for different data types
 const cacheConfig = {
@@ -37,9 +38,12 @@ const cacheMiddleware = (cacheType = 'medium', keyGenerator = null) => {
     // Check cache
     const cached = cache.get(cacheKey);
     if (cached) {
+      trackCacheHit(cacheType, cacheKey);
       console.log(`✅ Cache HIT: ${cacheKey}`);
       return res.status(200).json(cached);
     }
+    
+    trackCacheMiss(cacheType, cacheKey);
     
     // Store original json method
     const originalJson = res.json.bind(res);
@@ -47,6 +51,7 @@ const cacheMiddleware = (cacheType = 'medium', keyGenerator = null) => {
     // Override json method to cache response
     res.json = function(data) {
       cache.set(cacheKey, data);
+      trackCacheSet(cacheType, cacheKey);
       console.log(`💾 Cache SET: ${cacheKey}`);
       return originalJson(data);
     };

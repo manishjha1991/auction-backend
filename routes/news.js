@@ -11,6 +11,7 @@ const Fixture = require('../models/Fixture');
 const Schedule = require('../models/Schedule');
 const Comment = require('../models/Comment');
 const PostLike = require('../models/PostLike');
+const { cacheConfig, invalidateCache } = require('../utils/cache');
 
 function toCrores(amount) {
   const n = Number(amount || 0);
@@ -94,6 +95,14 @@ async function getSocialData(newsItems) {
 }
 
 router.get('/feed', async (_req, res) => {
+  // 🚀 PERFORMANCE: Check cache first (30 second cache for news feed - frequently changing)
+  const cacheKey = 'news:feed';
+  const cached = cacheConfig.short.get(cacheKey);
+  if (cached) {
+    console.log(`✅ News feed cache HIT`);
+    return res.status(200).json(cached);
+  }
+
   try {
     const [trades, releases, picks, recentStats, fixtures, schedules] = await Promise.all([
       TradeRequest.find({})
@@ -167,6 +176,55 @@ router.get('/feed', async (_req, res) => {
 
     const news = [];
 
+    // 🚀 PERFORMANCE: Batch fetch all UserPlayer data for trades to avoid N+1 queries
+    const allTradePlayerIds = [];
+    trades.forEach(t => {
+      if (t.offeredPlayer?._id) allTradePlayerIds.push(t.offeredPlayer._id);
+      if (t.requestedPlayer?._id) allTradePlayerIds.push(t.requestedPlayer._id);
+    });
+    
+    // Fetch all UserPlayer records in one query (instead of N queries in loop)
+    const userPlayerMap = {};
+    if (allTradePlayerIds.length > 0) {
+      const userPlayers = await UserPlayer.find({
+        playerId: { $in: allTradePlayerIds },
+        isActive: true
+      }).select('playerId bidValue').lean();
+      
+      userPlayers.forEach(up => {
+        const pid = String(up.playerId);
+        // Keep the highest bidValue if multiple UserPlayer records exist for same player
+        if (!userPlayerMap[pid] || Number(up.bidValue) > Number(userPlayerMap[pid]?.bidValue || 0)) {
+          userPlayerMap[pid] = up;
+        }
+      });
+    }
+
+    // 🚀 PERFORMANCE: Batch fetch User and Player data for releases to avoid N+1 queries
+    const releaseUserIds = [];
+    const releasePlayerIds = [];
+    releases.forEach(r => {
+      if (r.user && !r.user.teamName) releaseUserIds.push(r.user); // If not populated, it's an ID
+      if (r.player && !r.player.name) releasePlayerIds.push(r.player); // If not populated, it's an ID
+    });
+    
+    const releaseUserMap = {};
+    const releasePlayerMap = {};
+    
+    if (releaseUserIds.length > 0) {
+      const users = await User.find({ _id: { $in: releaseUserIds } }).select('teamName').lean();
+      users.forEach(u => {
+        releaseUserMap[String(u._id)] = u;
+      });
+    }
+    
+    if (releasePlayerIds.length > 0) {
+      const players = await Player.find({ _id: { $in: releasePlayerIds } }).select('name type').lean();
+      players.forEach(p => {
+        releasePlayerMap[String(p._id)] = p;
+      });
+    }
+
     // Trades
     for (const t of trades) {
       // Skip trades from non-tournament-ready users
@@ -191,13 +249,11 @@ router.get('/feed', async (_req, res) => {
       
       console.log('🔍 Extracted names:', { offeredName, requestedName, fromTeam, toTeam });
       
-      // Try to infer trade value from user-player bid values
+      // Try to infer trade value from user-player bid values (using pre-fetched map)
       let approxValue = 0;
       try {
-        const [up1, up2] = await Promise.all([
-          UserPlayer.findOne({ playerId: t.offeredPlayer?._id, isActive: true }).lean(),
-          UserPlayer.findOne({ playerId: t.requestedPlayer?._id, isActive: true }).lean(),
-        ]);
+        const up1 = t.offeredPlayer?._id ? userPlayerMap[String(t.offeredPlayer._id)] : null;
+        const up2 = t.requestedPlayer?._id ? userPlayerMap[String(t.requestedPlayer._id)] : null;
         approxValue = Math.max(Number(up1?.bidValue || 0), Number(up2?.bidValue || 0));
       } catch (error) {
         console.error('Error getting bid values for trade:', error);
@@ -314,7 +370,7 @@ router.get('/feed', async (_req, res) => {
       let title = '';
       let body = '';
       
-      // Check if population worked and try manual fallback if needed
+      // Check if population worked and use pre-fetched data if needed
       let userData = r.user;
       let playerData = r.player;
       
@@ -323,21 +379,21 @@ router.get('/feed', async (_req, res) => {
         console.log('⚠️ User populated:', !!userData);
         console.log('⚠️ Player populated:', !!playerData);
         
-        // Try manual fallback - fetch data directly
+        // Use pre-fetched data from batch query (no additional database calls)
         try {
           if (!userData && r.user) {
-            const user = await User.findById(r.user).select('teamName').lean();
-            userData = user;
-            console.log('🔄 Manual user fetch result:', userData);
+            const userId = typeof r.user === 'object' ? r.user._id : r.user;
+            userData = releaseUserMap[String(userId)];
+            console.log('🔄 Using batch-fetched user data:', userData);
           }
           
           if (!playerData && r.player) {
-            const player = await Player.findById(r.player).select('name type').lean();
-            playerData = player;
-            console.log('🔄 Manual player fetch result:', playerData);
+            const playerId = typeof r.player === 'object' ? r.player._id : r.player;
+            playerData = releasePlayerMap[String(playerId)];
+            console.log('🔄 Using batch-fetched player data:', playerData);
           }
         } catch (error) {
-          console.error('❌ Manual fetch failed:', error);
+          console.error('❌ Error accessing batch-fetched data:', error);
         }
       }
       
@@ -1217,7 +1273,13 @@ router.get('/feed', async (_req, res) => {
       schedules: scheduleCount
     });
     
-    res.json({ items: newsWithSocialData });
+    const response = { items: newsWithSocialData };
+    
+    // 🚀 PERFORMANCE: Cache the response (30 second cache - frequently changing)
+    cacheConfig.short.set(cacheKey, response);
+    console.log(`💾 News feed cached`);
+    
+    res.json(response);
   } catch (e) {
     console.error('Error building news feed', e);
     res.status(500).json({ message: 'Internal server error' });

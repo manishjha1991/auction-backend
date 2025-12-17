@@ -4,6 +4,7 @@ const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
 const router = express.Router();
 const { getClientIp } = require('../utils/network');
+const { cacheConfig, invalidateCache } = require('../utils/cache');
 
 // Add middleware to log ALL requests to user routes
 router.use((req, res, next) => {
@@ -185,6 +186,14 @@ router.get("/:userId/details", async (req, res) => {
   const { userId } = req.params;
   const startTime = Date.now();
 
+  // 🚀 PERFORMANCE: Check cache first (2 minute cache for user details)
+  const cacheKey = `user-details:${userId}`;
+  const cached = cacheConfig.medium.get(cacheKey);
+  if (cached) {
+    console.log(`✅ User details cache HIT for user: ${userId}`);
+    return res.status(200).json(cached);
+  }
+
   try {
     console.log(`🚀 Starting user details API for user: ${userId}`);
     
@@ -340,7 +349,7 @@ router.get("/:userId/details", async (req, res) => {
     const totalTime = Date.now() - startTime;
     console.log(`✅ User details API completed in ${totalTime}ms for user: ${userId}`);
     
-    res.status(200).json({
+    const response = {
       user: {
         id: user._id,
         name: user.name,
@@ -361,7 +370,13 @@ router.get("/:userId/details", async (req, res) => {
       activeBids,
       pastBids: lastFivePastBids,
       lastFiveMatches, // <-- includes opponentTeam now
-    });
+    };
+    
+    // 🚀 PERFORMANCE: Cache the response (2 minute cache)
+    cacheConfig.medium.set(cacheKey, response);
+    console.log(`💾 User details cached for user: ${userId}`);
+    
+    res.status(200).json(response);
   } catch (error) {
     console.error("Error fetching user details:", error);
     res.status(500).json({ message: "Internal server error." });
@@ -627,6 +642,9 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
     // Verify the timezone was actually saved by fetching from database
     const savedUser = await User.findById(userId);
     console.log('Verified timezone in database:', savedUser.timezone);
+
+    // 🚀 PERFORMANCE: Invalidate user details cache when profile is updated
+    invalidateCache(`user-details:${userId}`);
 
     res.status(200).json({
       message: 'Profile updated successfully.',

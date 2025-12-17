@@ -3,15 +3,23 @@ const Fixture = require('../models/Fixture');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
+const { cacheConfig, invalidateCache } = require('../utils/cache');
 
 const router = express.Router();
 
 
 
 router.get('/', async (req, res) => {
+  // 🚀 PERFORMANCE: Check cache first (2 minute cache for fixtures)
+  const mode = req.query.mode || 'normal';
+  const cacheKey = `fixtures:${mode}`;
+  const cached = cacheConfig.medium.get(cacheKey);
+  if (cached) {
+    console.log(`✅ Fixtures cache HIT for mode: ${mode}`);
+    return res.status(200).json(cached);
+  }
+
   try {
-    // Get mode from query parameter
-    const mode = req.query.mode || 'normal';
     console.log(`🏏 Fixture generation mode: ${mode}`);
     
     // 1) Fetch teams (users) that have a valid teamName, are active, tournament ready, and are not admin.
@@ -264,6 +272,10 @@ router.get('/', async (req, res) => {
       };
     });
 
+    // 🚀 PERFORMANCE: Cache the response (2 minute cache)
+    cacheConfig.medium.set(cacheKey, enhancedFixtures);
+    console.log(`💾 Fixtures cached for mode: ${mode}`);
+
     // Return final list
     res.status(200).json(enhancedFixtures);
   } catch (error) {
@@ -367,6 +379,9 @@ router.post('/save', async (req, res) => {
     }
 
     await fixture.save();
+    
+    // 🚀 PERFORMANCE: Invalidate fixtures cache when fixture is saved
+    invalidateCache('fixtures:');
     
     // Automatically update points for both teams after fixture is saved
     if (fixture.winner) {
