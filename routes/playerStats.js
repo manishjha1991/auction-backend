@@ -390,21 +390,33 @@ const applyPlayerStatDelta = async (playerId, delta = {}) => {
   } = delta;
 
   const inc = {};
-  if (runs) inc.totalRuns = runs;
-  if (balls) inc.totalBalls = balls;
-  if (runsGiven) inc.totalRunsGiven = runsGiven;
-  if (ballsBowled) inc.totalBallsBowled = ballsBowled;
-  if (wickets) inc.totalWickets = wickets;
-  if (mom) inc.momCount = mom;
-  if (matches) inc.matchesPlayed = matches;
+  // Include all deltas, even if 0 or negative (for corrections)
+  // Only skip if the value is explicitly undefined/null
+  // Note: $inc can handle negative values for decrements
+  if (runs !== undefined && runs !== null && runs !== 0) inc.totalRuns = runs;
+  if (balls !== undefined && balls !== null && balls !== 0) inc.totalBalls = balls;
+  if (runsGiven !== undefined && runsGiven !== null && runsGiven !== 0) inc.totalRunsGiven = runsGiven;
+  if (ballsBowled !== undefined && ballsBowled !== null && ballsBowled !== 0) inc.totalBallsBowled = ballsBowled;
+  if (wickets !== undefined && wickets !== null && wickets !== 0) inc.totalWickets = wickets;
+  if (mom !== undefined && mom !== null && mom !== 0) inc.momCount = mom;
+  if (matches !== undefined && matches !== null && matches !== 0) inc.matchesPlayed = matches;
 
   if (!Object.keys(inc).length) {
+    console.log('No stat deltas to apply for player:', playerId);
     return;
   }
 
-  await Player.findByIdAndUpdate(playerId, { $inc: inc }).catch((error) => {
-    console.error('Failed to apply stat delta', { playerId, delta, error });
-  });
+  try {
+    const result = await Player.findByIdAndUpdate(playerId, { $inc: inc });
+    if (!result) {
+      console.error('Player not found for stat delta update:', playerId);
+      return;
+    }
+    console.log(`✅ Updated player ${playerId} totals:`, inc);
+  } catch (error) {
+    console.error('Failed to apply stat delta', { playerId, delta, error: error.message, stack: error.stack });
+    throw error; // Re-throw to ensure caller knows about the failure
+  }
 };
 
 const savePlayerStatsEntry = async (payload = {}) => {
@@ -492,7 +504,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     existingStats.bowlingStats = {
       runsGiven: bowlingStats?.runsGiven || 0,
       ballsBowled: bowlingStats?.ballsBowled || 0,
-      wickets: wicketsTaken || 0,
+      wickets: wicketsTaken !== undefined && wicketsTaken !== null ? wicketsTaken : (bowlingStats?.wickets || 0),
     };
 
     existingStats.isMom = !!isMom;
@@ -512,10 +524,19 @@ const savePlayerStatsEntry = async (payload = {}) => {
     }
 
     await existingStats.save();
-    await applyPlayerStatDelta(playerId, deltaTotals);
+    
+    // Apply delta to player totals (non-blocking - don't fail OCR upload if this fails)
+    try {
+      console.log(`📊 Updating player ${playerId} totals with delta:`, deltaTotals);
+      await applyPlayerStatDelta(playerId, deltaTotals);
+    } catch (deltaError) {
+      console.error(`⚠️ Failed to update player totals for ${playerId}, but stats saved successfully:`, deltaError);
+      // Don't throw - stats are already saved, this is just a bonus update
+    }
 
-    // 🚀 PERFORMANCE: Invalidate stats-overview cache when stats are updated
+    // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when stats are updated
     cache.del('stats-overview');
+    invalidateCache('players:data'); // Invalidate top rankings cache
 
     return { action: 'updated', doc: existingStats };
   }
@@ -539,7 +560,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     bowlingStats: {
       runsGiven: bowlingStats?.runsGiven || 0,
       ballsBowled: bowlingStats?.ballsBowled || 0,
-      wickets: wicketsTaken || 0,
+      wickets: wicketsTaken !== undefined && wicketsTaken !== null ? wicketsTaken : (bowlingStats?.wickets || 0),
     },
     isMom: !!isMom,
     metadata: {
@@ -550,10 +571,19 @@ const savePlayerStatsEntry = async (payload = {}) => {
   });
 
     await newStats.save();
-    await applyPlayerStatDelta(playerId, deltaTotals);
+    
+    // Apply delta to player totals (non-blocking - don't fail OCR upload if this fails)
+    try {
+      console.log(`📊 Adding new stats for player ${playerId} with delta:`, deltaTotals);
+      await applyPlayerStatDelta(playerId, deltaTotals);
+    } catch (deltaError) {
+      console.error(`⚠️ Failed to update player totals for ${playerId}, but stats saved successfully:`, deltaError);
+      // Don't throw - stats are already saved, this is just a bonus update
+    }
 
-    // 🚀 PERFORMANCE: Invalidate stats-overview cache when new stats are added
+    // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when new stats are added
     cache.del('stats-overview');
+    invalidateCache('players:data'); // Invalidate top rankings cache
 
     return { action: 'created', doc: newStats };
 };
@@ -794,8 +824,9 @@ router.post('/store', async (req, res) => {
       message: error.message || 'Error saving player stats',
     });
   } finally {
-    // 🚀 PERFORMANCE: Invalidate stats-overview cache when stats are saved/updated
+    // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when stats are saved/updated
     cache.del('stats-overview');
+    invalidateCache('players:data'); // Invalidate top rankings cache
   }
 });
 
@@ -824,9 +855,10 @@ router.post('/bulk-store', async (req, res) => {
       }
     }
 
-    // 🚀 PERFORMANCE: Invalidate stats-overview and player-stats-list cache when stats are saved
+    // 🚀 PERFORMANCE: Invalidate stats-overview, player-stats-list, and players data cache when stats are saved
     cache.del('stats-overview');
     invalidateCache('player-stats-list');
+    invalidateCache('players:data'); // Invalidate top rankings cache
 
     return res.status(errors.length ? 207 : 200).json({
       message: 'Bulk player stats processed',
@@ -905,10 +937,48 @@ router.post('/bulk-store', async (req, res) => {
       // Check for existing stats
       let statDoc = await PlayerStats.findOne(query);
 
+      // Calculate new totals for delta calculation
+      const newTotals = {
+        runs: batStats?.runs || 0,
+        balls: batStats?.balls || 0,
+        runsGiven: bowlStats?.runsGiven || 0,
+        ballsBowled: bowlStats?.ballsBowled || 0,
+        wickets: bowlStats?.wickets || 0,
+        mom: entry.isMom ? 1 : 0,
+      };
+
+      // Initialize delta totals
+      const deltaTotals = {
+        runs: 0,
+        balls: 0,
+        runsGiven: 0,
+        ballsBowled: 0,
+        wickets: 0,
+        mom: 0,
+        matches: 0,
+      };
+
       // If existing stats found AND it's NOT a playoff score → UPDATE (no duplicates for regular matches)
       // If existing stats found AND it IS a playoff score → CREATE NEW (allow duplicates for playoff matches)
       // If no existing stats → CREATE NEW
       if (statDoc && !entryIsPlayoffScore) {
+        // Calculate delta from previous stats
+        const previousTotals = {
+          runs: statDoc.battingStats?.runs || 0,
+          balls: statDoc.battingStats?.balls || 0,
+          runsGiven: statDoc.bowlingStats?.runsGiven || 0,
+          ballsBowled: statDoc.bowlingStats?.ballsBowled || 0,
+          wickets: statDoc.bowlingStats?.wickets || 0,
+          mom: statDoc.isMom ? 1 : 0,
+        };
+        
+        deltaTotals.runs = newTotals.runs - previousTotals.runs;
+        deltaTotals.balls = newTotals.balls - previousTotals.balls;
+        deltaTotals.runsGiven = newTotals.runsGiven - previousTotals.runsGiven;
+        deltaTotals.ballsBowled = newTotals.ballsBowled - previousTotals.ballsBowled;
+        deltaTotals.wickets = newTotals.wickets - previousTotals.wickets;
+        deltaTotals.mom = newTotals.mom - previousTotals.mom;
+
         // Update existing entry (regular match)
         statDoc.opponentUserId = resolvedOpponentUserId || statDoc.opponentUserId || null;
         statDoc.matchName = normalizedMatchName || statDoc.matchName || null;
@@ -932,8 +1002,20 @@ router.post('/bulk-store', async (req, res) => {
         statDoc.metadata.isPlayoffScore = entryIsPlayoffScore;
 
         await statDoc.save();
+        
+        // Apply delta to player totals
+        await applyPlayerStatDelta(entry.playerId, deltaTotals);
       } else {
         // Create new entry (either no existing stats OR it's a playoff score)
+        // For new entries, delta equals the new totals
+        deltaTotals.runs = newTotals.runs;
+        deltaTotals.balls = newTotals.balls;
+        deltaTotals.runsGiven = newTotals.runsGiven;
+        deltaTotals.ballsBowled = newTotals.ballsBowled;
+        deltaTotals.wickets = newTotals.wickets;
+        deltaTotals.mom = newTotals.mom;
+        deltaTotals.matches = 1;
+
         statDoc = new PlayerStats({
           playerId: entry.playerId,
           userId: ownerUser._id,
@@ -953,14 +1035,23 @@ router.post('/bulk-store', async (req, res) => {
         });
 
         await statDoc.save();
+        
+        // Apply delta to player totals (non-blocking - don't fail OCR upload if this fails)
+        try {
+          await applyPlayerStatDelta(entry.playerId, deltaTotals);
+        } catch (deltaError) {
+          console.error(`⚠️ Failed to update player totals for ${entry.playerId}, but stats saved successfully:`, deltaError);
+          // Don't throw - stats are already saved, this is just a bonus update
+        }
       }
 
       successCount += 1;
     }
 
-    // 🚀 PERFORMANCE: Invalidate stats-overview and player-stats-list cache when stats are saved
+    // 🚀 PERFORMANCE: Invalidate stats-overview, player-stats-list, and players data cache when stats are saved
     cache.del('stats-overview');
     invalidateCache('player-stats-list');
+    invalidateCache('players:data'); // Invalidate top rankings cache
 
     return res.status(200).json({
       message: 'Player stats saved successfully',
