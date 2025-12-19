@@ -312,8 +312,11 @@ const isAdmin = async (req, res, next) => {
 router.post('/save', isAdmin, async (req, res) => {
   try {
     const {
+      _id,
       team1,
       team2,
+      team1UserId,
+      team2UserId,
       winner,
       margin,
       mom,
@@ -325,21 +328,34 @@ router.post('/save', isAdmin, async (req, res) => {
       matchType,
     } = req.body;
 
-    // Find fixture by userId if available, otherwise by teamName
+    // Find fixture by _id first if provided, then by userId if available, otherwise by teamName
     let fixture = null;
-    if (team1 && team2) {
-      // Try to find userIds for teams
-      // 🚀 PERFORMANCE: Use .lean() for faster queries
-      const team1User = await User.findOne({ teamName: team1, isActive: true }).lean();
-      const team2User = await User.findOne({ teamName: team2, isActive: true }).lean();
+    if (_id) {
+      // Note: Don't use .lean() here because we need to modify and save this fixture
+      fixture = await Fixture.findById(_id);
+    }
+    
+    // If not found by _id, try to find by team1UserId/team2UserId or teamName
+    if (!fixture && team1 && team2) {
+      // Try to find by userId first (preferred) - use provided userIds or look them up
+      let userId1 = team1UserId || null;
+      let userId2 = team2UserId || null;
       
-      if (team1User && team2User) {
-        // Try to find by userId first (preferred)
+      // If userIds not provided, look them up by teamName
+      if (!userId1 || !userId2) {
+        // 🚀 PERFORMANCE: Use .lean() for faster queries (only for lookup, not for fixture)
+        const team1UserLookup = await User.findOne({ teamName: team1, isActive: true }).lean();
+        const team2UserLookup = await User.findOne({ teamName: team2, isActive: true }).lean();
+        userId1 = userId1 || (team1UserLookup ? team1UserLookup._id : null);
+        userId2 = userId2 || (team2UserLookup ? team2UserLookup._id : null);
+      }
+      
+      if (userId1 && userId2) {
         // Note: Don't use .lean() here because we need to modify and save this fixture
         fixture = await Fixture.findOne({
           $or: [
-            { team1UserId: team1User._id, team2UserId: team2User._id },
-            { team1UserId: team2User._id, team2UserId: team1User._id }
+            { team1UserId: userId1, team2UserId: userId2 },
+            { team1UserId: userId2, team2UserId: userId1 }
           ],
           isActive: true
         });
@@ -355,15 +371,28 @@ router.post('/save', isAdmin, async (req, res) => {
 
     // If no existing fixture, create a new one
     if (!fixture) {
-      // Get userIds for teams
-      const team1User = await User.findOne({ teamName: team1, isActive: true });
-      const team2User = await User.findOne({ teamName: team2, isActive: true });
+      // Get userIds for teams (use provided userIds or look them up)
+      const userId1 = team1UserId || null;
+      const userId2 = team2UserId || null;
+      
+      let finalUserId1 = userId1;
+      let finalUserId2 = userId2;
+      
+      if (!finalUserId1 && team1) {
+        const team1User = await User.findOne({ teamName: team1, isActive: true });
+        finalUserId1 = team1User?._id || null;
+      }
+      
+      if (!finalUserId2 && team2) {
+        const team2User = await User.findOne({ teamName: team2, isActive: true });
+        finalUserId2 = team2User?._id || null;
+      }
       
       fixture = new Fixture({
         team1,
         team2,
-        team1UserId: team1User?._id || null, // userId-based
-        team2UserId: team2User?._id || null, // userId-based
+        team1UserId: finalUserId1, // userId-based
+        team2UserId: finalUserId2, // userId-based
         winner,
         margin,
         mom,
@@ -387,8 +416,15 @@ router.post('/save', isAdmin, async (req, res) => {
       if (group !== undefined) fixture.group = group;
       if (matchType !== undefined) fixture.matchType = matchType;
       
-      // Update userIds if missing (for backward compatibility)
+      // Update userIds if provided in request or missing (for backward compatibility)
       // Note: These queries need to return Mongoose documents (not lean) because we modify them
+      if (team1UserId && team1UserId !== fixture.team1UserId) {
+        fixture.team1UserId = team1UserId;
+      }
+      if (team2UserId && team2UserId !== fixture.team2UserId) {
+        fixture.team2UserId = team2UserId;
+      }
+      
       if (!fixture.team1UserId || !fixture.team2UserId) {
         const team1User = await User.findOne({ teamName: fixture.team1, isActive: true });
         const team2User = await User.findOne({ teamName: fixture.team2, isActive: true });
