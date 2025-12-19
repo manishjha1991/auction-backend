@@ -287,30 +287,48 @@ router.get('/', async (req, res) => {
 // Middleware to check if user is admin
 const isAdmin = async (req, res, next) => {
   try {
-    const userId = req.headers['user-id'];
+    // Try to get userId from header first, then from body
+    const userId = req.headers['user-id'] || req.body.userId;
     if (!userId || userId === 'undefined' || userId === 'null') {
-      return res.status(401).json({ error: 'User ID required' });
+      console.error('❌ Admin check failed: User ID missing in headers or body');
+      console.error('❌ Headers:', JSON.stringify(req.headers, null, 2));
+      console.error('❌ Body keys:', Object.keys(req.body || {}));
+      return res.status(401).json({ 
+        error: 'User ID required',
+        message: 'Please provide user-id header or userId in request body'
+      });
     }
 
     const user = await User.findById(userId);
     if (!user) {
+      console.error(`❌ Admin check failed: User not found with ID: ${userId}`);
       return res.status(404).json({ error: 'User not found' });
     }
 
     if (!user.isAdmin) {
+      console.error(`❌ Admin check failed: User ${userId} is not admin`);
       return res.status(403).json({ error: 'Only admin can perform this action' });
     }
 
     req.user = user;
     next();
   } catch (error) {
-    console.error('Authentication error:', error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('❌ Authentication error:', error);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: error.message 
+    });
   }
 };
 
 router.post('/save', isAdmin, async (req, res) => {
   try {
+    console.log('📥 Fixture save request received');
+    console.log('📥 Request body keys:', Object.keys(req.body));
+    console.log('📥 _id:', req.body._id);
+    console.log('📥 team1:', req.body.team1);
+    console.log('📥 team2:', req.body.team2);
+    
     const {
       _id,
       team1,
@@ -331,8 +349,18 @@ router.post('/save', isAdmin, async (req, res) => {
     // Find fixture by _id first if provided, then by userId if available, otherwise by teamName
     let fixture = null;
     if (_id) {
-      // Note: Don't use .lean() here because we need to modify and save this fixture
-      fixture = await Fixture.findById(_id);
+      try {
+        // Note: Don't use .lean() here because we need to modify and save this fixture
+        fixture = await Fixture.findById(_id);
+        if (!fixture) {
+          console.log(`⚠️ Fixture not found by _id: ${_id}, will try other methods`);
+        } else {
+          console.log(`✅ Found fixture by _id: ${_id}`);
+        }
+      } catch (idError) {
+        console.error(`❌ Error finding fixture by _id ${_id}:`, idError.message);
+        // Continue to try other methods
+      }
     }
     
     // If not found by _id, try to find by team1UserId/team2UserId or teamName
@@ -439,6 +467,13 @@ router.post('/save', isAdmin, async (req, res) => {
       }
     }
 
+    // Validate required fields before saving
+    if (!fixture.team1 || !fixture.team2) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: team1 and team2 are required' 
+      });
+    }
+
     await fixture.save();
     
     // 🚀 PERFORMANCE: Invalidate fixtures cache when fixture is saved
@@ -480,13 +515,41 @@ router.post('/save', isAdmin, async (req, res) => {
       }
     }
     
+    // Convert fixture to plain object for response (handle both Mongoose doc and plain object)
+    const fixtureResponse = fixture.toObject ? fixture.toObject() : fixture;
+    
     res.status(200).json({
       message: 'Fixture result saved successfully! Points updated automatically.',
-      fixture,
+      fixture: fixtureResponse,
     });
   } catch (error) {
-    console.error('Error saving fixture:', error);
-    res.status(500).json({ message: 'Failed to save fixture result.' });
+    console.error('❌ Error saving fixture:', error);
+    console.error('❌ Error stack:', error.stack);
+    console.error('❌ Request body:', JSON.stringify(req.body, null, 2));
+    
+    // Return detailed error message for debugging
+    const errorMessage = error.message || 'Failed to save fixture result';
+    const errorDetails = process.env.NODE_ENV === 'development' ? error.stack : undefined;
+    
+    // Check for validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.keys(error.errors || {}).map(key => ({
+        field: key,
+        message: error.errors[key].message
+      }));
+      return res.status(400).json({ 
+        error: 'Validation error',
+        message: errorMessage,
+        validationErrors,
+        ...(errorDetails && { details: errorDetails })
+      });
+    }
+    
+    res.status(500).json({ 
+      error: 'Failed to save fixture result',
+      message: errorMessage,
+      ...(errorDetails && { details: errorDetails })
+    });
   }
 });
 
