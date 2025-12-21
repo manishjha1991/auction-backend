@@ -1315,10 +1315,12 @@ router.get('/stats-overview', async (req, res) => {
         momCountMap[pId] += 1;
       }
 
-      // C) Specialized arrays
+      // C) Specialized arrays (also store playerId for efficient counting)
+      const pid = String(playerId._id);
       // 5-wicket hauls => if wickets >= 5
       if (wickets >= 5) {
         highestFiveWicketHauls.push({
+          playerId: pid,
           playerName,
           playerType,
           teamName,
@@ -1332,6 +1334,7 @@ router.get('/stats-overview', async (req, res) => {
       // 4-wicket hauls => if wickets == 4
       if (wickets === 4) {
         highestFourWicketHauls.push({
+          playerId: pid,
           playerName,
           playerType,
           teamName,
@@ -1345,6 +1348,7 @@ router.get('/stats-overview', async (req, res) => {
       // Centuries => if runs >= 100
       if (runs >= 100) {
         centuries.push({
+          playerId: pid,
           playerName,
           playerType,
           teamName,
@@ -1357,6 +1361,7 @@ router.get('/stats-overview', async (req, res) => {
       // Half-centuries => if 50 <= runs < 100
       else if (runs >= 50 && runs < 100) {
         halfCenturies.push({
+          playerId: pid,
           playerName,
           playerType,
           teamName,
@@ -1419,6 +1424,22 @@ router.get('/stats-overview', async (req, res) => {
       }
     }
 
+    // Count 50s and 100s per player for top run scorers
+    const halfCenturyCountMap = {};
+    const centuryCountMap = {};
+    halfCenturies.forEach(hc => {
+      const pid = hc.playerId;
+      if (pid) {
+        halfCenturyCountMap[pid] = (halfCenturyCountMap[pid] || 0) + 1;
+      }
+    });
+    centuries.forEach(c => {
+      const pid = c.playerId;
+      if (pid) {
+        centuryCountMap[pid] = (centuryCountMap[pid] || 0) + 1;
+      }
+    });
+
     // Top 5 run scorers
     const runArray = Object.entries(totalRunsMap).map(([pid, runs]) => {
       return {
@@ -1427,10 +1448,28 @@ router.get('/stats-overview', async (req, res) => {
         playerType: playerInfoMap[pid]?.playerType || null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         runs,
+        halfCenturies: halfCenturyCountMap[pid] || 0,
+        centuries: centuryCountMap[pid] || 0,
       };
     });
     runArray.sort((a, b) => b.runs - a.runs);
     const top5RunScorers = runArray.slice(0, 5);
+
+    // Count 4-wicket and 5-wicket hauls per player for top wicket takers
+    const fourWicketCountMap = {};
+    const fiveWicketCountMap = {};
+    highestFourWicketHauls.forEach(h4 => {
+      const pid = h4.playerId;
+      if (pid) {
+        fourWicketCountMap[pid] = (fourWicketCountMap[pid] || 0) + 1;
+      }
+    });
+    highestFiveWicketHauls.forEach(h5 => {
+      const pid = h5.playerId;
+      if (pid) {
+        fiveWicketCountMap[pid] = (fiveWicketCountMap[pid] || 0) + 1;
+      }
+    });
 
     // Top 5 wicket takers
     const wicketArray = Object.entries(totalWicketsMap).map(([pid, wickets]) => {
@@ -1440,6 +1479,8 @@ router.get('/stats-overview', async (req, res) => {
         playerType: playerInfoMap[pid]?.playerType || null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         wickets,
+        fourWicketHauls: fourWicketCountMap[pid] || 0,
+        fiveWicketHauls: fiveWicketCountMap[pid] || 0,
       };
     });
     wicketArray.sort((a, b) => b.wickets - a.wickets);
@@ -1610,6 +1651,10 @@ router.get('/player-details/:playerId', async (req, res) => {
     let totalBallsBowled = 0;
     let momCount = 0;
     let matchCount = stats.length;
+    let halfCenturyCount = 0;
+    let centuryCount = 0;
+    let fourWicketHaulCount = 0;
+    let fiveWicketHaulCount = 0;
 
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
@@ -1644,6 +1689,20 @@ router.get('/player-details/:playerId', async (req, res) => {
       totalRunsGiven += runsGiven;
       totalBallsBowled += ballsBowled;
       if (stat.isMom) momCount++;
+      
+      // Count 50s and 100s
+      if (runs >= 100) {
+        centuryCount++;
+      } else if (runs >= 50 && runs < 100) {
+        halfCenturyCount++;
+      }
+      
+      // Count 4-wicket and 5-wicket hauls
+      if (wickets >= 5) {
+        fiveWicketHaulCount++;
+      } else if (wickets === 4) {
+        fourWicketHaulCount++;
+      }
 
       return {
         matchNumber: index + 1,
@@ -1679,7 +1738,11 @@ router.get('/player-details/:playerId', async (req, res) => {
       bowlingStrikeRate: parseFloat(bowlingStrikeRate.toFixed(1)),
       momCount: momCount,
       matchesPlayed: matchCount,
-      matchHistory: matchHistory
+      matchHistory: matchHistory,
+      halfCenturies: halfCenturyCount,
+      centuries: centuryCount,
+      fourWicketHauls: fourWicketHaulCount,
+      fiveWicketHauls: fiveWicketHaulCount
     };
 
     res.json(response);
