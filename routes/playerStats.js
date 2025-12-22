@@ -1373,6 +1373,31 @@ router.get('/stats-overview', async (req, res) => {
       }
     });
 
+    // Sort records by achievement value (highest first)
+    // 5-wicket hauls: sort by wickets (descending), then by runsGiven (ascending for better economy)
+    highestFiveWicketHauls.sort((a, b) => {
+      if (b.wickets !== a.wickets) return b.wickets - a.wickets;
+      return a.runsGiven - b.runsGiven; // Lower runs given is better
+    });
+
+    // 4-wicket hauls: sort by wickets (descending), then by runsGiven (ascending for better economy)
+    highestFourWicketHauls.sort((a, b) => {
+      if (b.wickets !== a.wickets) return b.wickets - a.wickets;
+      return a.runsGiven - b.runsGiven; // Lower runs given is better
+    });
+
+    // Centuries: sort by runs (descending), then by balls (ascending for better strike rate)
+    centuries.sort((a, b) => {
+      if (b.runs !== a.runs) return b.runs - a.runs;
+      return a.balls - b.balls; // Fewer balls for same runs is better
+    });
+
+    // Half-centuries: sort by runs (descending), then by balls (ascending for better strike rate)
+    halfCenturies.sort((a, b) => {
+      if (b.runs !== a.runs) return b.runs - a.runs;
+      return a.balls - b.balls; // Fewer balls for same runs is better
+    });
+
     // 6) Find overall leading wicket taker & run scorer
     // Build map of player info first (more efficient)
     const playerInfoMap = {};
