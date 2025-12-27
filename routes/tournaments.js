@@ -607,14 +607,31 @@ router.get('/:id/fixtures', isAuthenticated, async (req, res) => {
 // GET /api/tournaments/:id/point-table - Get tournament point table
 router.get('/:id/point-table', isAuthenticated, async (req, res) => {
   try {
-    const tournament = await Tournament.findById(req.params.id);
+    const tournament = await Tournament.findById(req.params.id)
+      .populate('subscribedTeams.userId', 'teamName abbreviation');
 
     if (!tournament) {
       return res.status(404).json({ error: 'Tournament not found' });
     }
 
+    // Create a map of teamName to abbreviation
+    const teamAbbreviationMap = {};
+    tournament.subscribedTeams.forEach(team => {
+      const teamName = team.userId?.teamName || team.teamName;
+      const abbreviation = team.userId?.abbreviation || null;
+      if (teamName) {
+        teamAbbreviationMap[teamName] = abbreviation;
+      }
+    });
+
+    // Add abbreviation to each point table entry
+    const pointTableWithAbbr = tournament.pointTable.map(entry => ({
+      ...entry.toObject ? entry.toObject() : entry,
+      abbreviation: teamAbbreviationMap[entry.teamName] || null
+    }));
+
     // Sort by points (desc) then by fairness (desc)
-    const sortedPointTable = tournament.pointTable.sort((a, b) => {
+    const sortedPointTable = pointTableWithAbbr.sort((a, b) => {
       if (b.points !== a.points) return b.points - a.points;
       return b.fairness - a.fairness;
     });
