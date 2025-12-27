@@ -884,6 +884,44 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
   }
 });
 
+// POST /api/tournaments/:id/reset-winner - Reset tournament winner (admin only)
+router.post('/:id/reset-winner', isAdmin, async (req, res) => {
+  try {
+    const tournament = await Tournament.findById(req.params.id);
+    if (!tournament) {
+      return res.status(404).json({ error: 'Tournament not found' });
+    }
+
+    // Reset winner field
+    tournament.winner = {
+      teamName: null,
+      teamImage: null,
+      wonAt: null
+    };
+    
+    // Reset status to 'running' if it was 'completed'
+    if (tournament.status === 'completed') {
+      tournament.status = 'running';
+    }
+
+    await tournament.save();
+
+    console.log(`✅ Reset winner for tournament: ${tournament.name}`);
+    res.json({ 
+      message: 'Tournament winner reset successfully',
+      tournament: {
+        _id: tournament._id,
+        name: tournament.name,
+        winner: tournament.winner,
+        status: tournament.status
+      }
+    });
+  } catch (error) {
+    console.error('Reset tournament winner error:', error);
+    res.status(500).json({ error: 'Failed to reset tournament winner' });
+  }
+});
+
 // POST /api/tournaments/world-cup/initialize - Initialize World Cup tournament with top 8 teams
 router.post('/world-cup/initialize', isAdmin, async (req, res) => {
   try {
