@@ -740,6 +740,16 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
       // Check if this is the actual FINAL match (knockout final)
       const currentFixture = tournament.tournamentFixtures[fixtureIndex];
       const isFinalMatch = (() => {
+        // FIRST: Check if this is a round-robin fixture - if so, it's NEVER the final
+        const isRoundRobinFixture = !currentFixture.team1?.includes('Winner of') && 
+                                   !currentFixture.team1?.includes('Top ') &&
+                                   !currentFixture.team2?.includes('Winner of') && 
+                                   !currentFixture.team2?.includes('Top ');
+        
+        if (isRoundRobinFixture) {
+          return false; // Round-robin fixtures can NEVER be the final
+        }
+        
         // Check if this is the actual final placeholder (Winner of Semi-Final 1 vs Winner of Semi-Final 2)
         const isActualFinalPlaceholder = (currentFixture.team1 === 'Winner of Semi-Final 1' && 
                                          currentFixture.team2 === 'Winner of Semi-Final 2') ||
@@ -752,29 +762,33 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
         
         // If not a placeholder, check if it's the last knockout fixture
         // (meaning it's the final that has been manually updated with actual team names by admin)
-        const roundRobinFixtures = tournament.tournamentFixtures.filter(f => 
-          !f.team1?.includes('Winner of') && !f.team1?.includes('Top ')
-        );
         const knockoutFixtures = tournament.tournamentFixtures.filter(f => 
-          f.team1?.includes('Winner of') || f.team1?.includes('Top ')
+          f.team1?.includes('Winner of') || f.team1?.includes('Top ') ||
+          f.team2?.includes('Winner of') || f.team2?.includes('Top ')
         );
         
         // Check if this is the last fixture overall AND there are knockout fixtures
         const isLastFixture = fixtureIndex === tournament.tournamentFixtures.length - 1;
         const hasKnockoutFixtures = knockoutFixtures.length > 0;
         
-        // Check if this fixture is a knockout fixture (not round-robin)
-        // But NOT a semi-final (semi-finals have "Top 1", "Top 2", etc. but not "Winner of")
+        // Check if this fixture is a knockout fixture (has "Winner of" in team names)
+        // This means it was the final placeholder that was updated with actual team names
+        const isUpdatedFinal = (currentFixture.team1?.includes('Winner of') || 
+                               currentFixture.team2?.includes('Winner of')) ||
+                              // OR it's the last knockout fixture (after semi-finals)
+                              (isLastFixture && hasKnockoutFixtures);
+        
+        // Check if it's a semi-final (semi-finals have "Top 1", "Top 2", etc. but not "Winner of")
         const isSemiFinal = !currentFixture.team1?.includes('Winner of') && 
                            !currentFixture.team2?.includes('Winner of') &&
                            (currentFixture.team1?.includes('Top ') || currentFixture.team2?.includes('Top '));
         
         // It's the final if:
-        // 1. It's the last fixture in the tournament, AND
-        // 2. Knockout fixtures exist (meaning we're past round-robin), AND
+        // 1. It's a knockout fixture (not round-robin) - already checked above
+        // 2. It's either the final placeholder OR the last knockout fixture, AND
         // 3. It's not a semi-final (semi-finals come before the final), AND
         // 4. A winner is being set (admin is updating the final match)
-        return isLastFixture && hasKnockoutFixtures && !isSemiFinal && winner;
+        return isUpdatedFinal && !isSemiFinal && winner;
       })();
       
       // Only mark tournament as completed when the ACTUAL final match is manually updated by admin
