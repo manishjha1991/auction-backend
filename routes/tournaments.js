@@ -163,14 +163,25 @@ const calculateTournamentNRR = (fixtures, teamName) => {
       team2Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
     }
 
-    // Match by teamName (flexible matching to handle variations)
-    const normalizeTeamName = (name) => name ? name.trim().toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+    // Match by teamName (flexible matching to handle variations like spaces, special chars)
+    const normalizeTeamName = (name) => {
+      if (!name) return '';
+      // Trim and normalize: remove extra spaces, convert to lowercase, remove special chars
+      return name.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9\s]/g, '').trim();
+    };
     const normalizedTeamName = normalizeTeamName(teamName);
     const normalizedTeam1 = normalizeTeamName(fixture.team1);
     const normalizedTeam2 = normalizeTeamName(fixture.team2);
     
-    const isTeam1 = normalizedTeam1 === normalizedTeamName;
-    const isTeam2 = normalizedTeam2 === normalizedTeamName;
+    // Use includes for more flexible matching (handles partial matches)
+    const isTeam1 = normalizedTeam1 && normalizedTeamName && 
+                    (normalizedTeam1 === normalizedTeamName || 
+                     normalizedTeam1.includes(normalizedTeamName) || 
+                     normalizedTeamName.includes(normalizedTeam1));
+    const isTeam2 = normalizedTeam2 && normalizedTeamName && 
+                    (normalizedTeam2 === normalizedTeamName || 
+                     normalizedTeam2.includes(normalizedTeamName) || 
+                     normalizedTeamName.includes(normalizedTeam2));
 
     if (!isTeam1 && !isTeam2) {
       return; // Team not involved in this match
