@@ -300,28 +300,67 @@ router.get('/', async (req, res) => {
       query.status = status;
     }
 
+    console.log('📋 Tournaments query:', JSON.stringify(query), 'limit:', limit, 'page:', page);
+
     // Try to get user if authenticated (optional)
     let user = null;
     const userId = req.headers['user-id'];
     if (userId && userId !== 'undefined' && userId !== 'null') {
       try {
         user = await User.findById(userId).lean();
+        console.log('📋 User found:', user ? user.teamName || user.name : 'null');
       } catch (err) {
         // User not found or invalid, continue without authentication
         console.log('User authentication optional, continuing without user');
       }
     }
 
-    const tournaments = await Tournament.find(query)
-      .populate('subscribedTeams.userId', 'name teamName teamImage')
-      .populate('createdBy', 'name teamName')
-      .select('name description startDate endDate maxSlots status tournamentImage subscribedTeams createdBy isActive isLocked winner tournamentFixtures pointTable createdAt updatedAt')
-      .sort({ startDate: 1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .lean();
+    // First, check if any tournaments exist at all
+    const count = await Tournament.countDocuments(query);
+    console.log('📋 Total tournaments matching query:', count);
+
+    let tournaments;
+    try {
+      tournaments = await Tournament.find(query)
+        .populate({
+          path: 'subscribedTeams.userId',
+          select: 'name teamName teamImage',
+          model: 'User'
+        })
+        .populate({
+          path: 'createdBy',
+          select: 'name teamName',
+          model: 'User'
+        })
+        .select('name description startDate endDate maxSlots status tournamentImage subscribedTeams createdBy isActive isLocked winner tournamentFixtures pointTable createdAt updatedAt')
+        .sort({ startDate: 1 })
+        .limit(parseInt(limit) || 100)
+        .skip((parseInt(page) - 1) * (parseInt(limit) || 100))
+        .lean();
+      
+      console.log('📋 Tournaments found after populate:', tournaments.length);
+      if (tournaments.length > 0) {
+        console.log('📋 First tournament:', {
+          name: tournaments[0].name,
+          isActive: tournaments[0].isActive,
+          subscribedTeamsCount: tournaments[0].subscribedTeams?.length || 0
+        });
+      }
+    } catch (populateError) {
+      console.error('❌ Populate error:', populateError.message);
+      console.error('❌ Error stack:', populateError.stack);
+      // If populate fails, try without it
+      tournaments = await Tournament.find(query)
+        .select('name description startDate endDate maxSlots status tournamentImage subscribedTeams createdBy isActive isLocked winner tournamentFixtures pointTable createdAt updatedAt')
+        .sort({ startDate: 1 })
+        .limit(parseInt(limit) || 100)
+        .skip((parseInt(page) - 1) * (parseInt(limit) || 100))
+        .lean();
+      console.log('📋 Tournaments found without populate:', tournaments.length);
+    }
 
     const total = await Tournament.countDocuments(query);
+    console.log('📋 Total tournaments:', total);
 
     // Add subscription status for current user (if authenticated)
     const tournamentsWithUserStatus = tournaments.map(tournament => ({
@@ -344,22 +383,32 @@ router.get('/', async (req, res) => {
     // Return format: 
     // - Always return array for GET requests without explicit pagination (for frontend compatibility)
     // - Only return paginated object if explicitly requested with limit < 100
-    const hasExplicitLimit = req.query.limit !== undefined && parseInt(req.query.limit) < 100;
+    const limitNum = parseInt(limit) || 100;
+    const hasExplicitLimit = req.query.limit !== undefined && limitNum < 100;
+    
+    console.log('📋 Return format - hasExplicitLimit:', hasExplicitLimit, 'limitNum:', limitNum, 'tournamentsWithUserStatus.length:', tournamentsWithUserStatus.length);
     
     if (hasExplicitLimit) {
+      console.log('📋 Returning paginated object');
       return res.json({
         tournaments: tournamentsWithUserStatus,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(total / limitNum),
         currentPage: parseInt(page),
         total
       });
     }
 
     // Default: return array directly (for frontend components that expect array)
+    console.log('📋 Returning array with', tournamentsWithUserStatus.length, 'tournaments');
+    if (tournamentsWithUserStatus.length === 0) {
+      console.log('⚠️  WARNING: Returning empty array! Query was:', JSON.stringify(query));
+      console.log('⚠️  Total count was:', total);
+    }
     res.json(tournamentsWithUserStatus);
   } catch (error) {
-    console.error('Get tournaments error:', error);
-    res.status(500).json({ error: 'Failed to fetch tournaments' });
+    console.error('❌ Get tournaments error:', error);
+    console.error('❌ Error stack:', error.stack);
+    res.status(500).json({ error: 'Failed to fetch tournaments', details: error.message });
   }
 });
 

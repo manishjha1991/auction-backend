@@ -977,6 +977,50 @@ const parseWickets = (scoreString) => {
   return 0;
 };
 
+// Helper function to parse overs string and convert to decimal (e.g., "20.0" -> 20.0, "19.3" -> 19.5, "18.5" -> 18.5)
+const parseOvers = (oversString) => {
+  if (!oversString) {
+    return null; // Return null if not provided, will use default
+  }
+  
+  const oversStr = String(oversString).trim();
+  
+  // Check for invalid values
+  if (oversStr === 'null' || oversStr === 'TBD' || oversStr === 'NA' || 
+      oversStr === '' || oversStr === 'undefined' || oversStr.toLowerCase() === 'null') {
+    return null;
+  }
+  
+  // Handle decimal format: "20.0", "19.3", "18.5"
+  // Format: overs.balls where balls is 0-5
+  const decimalMatch = oversStr.match(/^(\d+)\.(\d+)$/);
+  if (decimalMatch) {
+    const overs = parseInt(decimalMatch[1], 10);
+    const balls = parseInt(decimalMatch[2], 10);
+    if (!isNaN(overs) && !isNaN(balls) && balls >= 0 && balls <= 5) {
+      // Convert to decimal: overs + (balls / 6)
+      return overs + (balls / 6);
+    }
+  }
+  
+  // Handle whole number format: "20" -> 20.0
+  const wholeMatch = oversStr.match(/^(\d+)$/);
+  if (wholeMatch) {
+    const overs = parseInt(wholeMatch[1], 10);
+    if (!isNaN(overs)) {
+      return overs;
+    }
+  }
+  
+  // Try to parse as float directly
+  const num = parseFloat(oversStr);
+  if (!isNaN(num) && num >= 0) {
+    return num;
+  }
+  
+  return null; // Invalid format, will use default
+};
+
 // Calculate Net Run Rate (NRR) for a team
 // NRR = (Total Runs Scored / Total Overs Faced) - (Total Runs Conceded / Total Overs Bowled)
 // Uses actual overs if provided, defaults to 20 if not
@@ -1110,7 +1154,7 @@ router.get('/points-table', async (req, res) => {
       isActive: true,
       winner: { $ne: null, $exists: true }
     })
-    .select('team1 team2 team1UserId team2UserId team1Score team2Score winner')
+    .select('team1 team2 team1UserId team2UserId team1Score team2Score team1Overs team2Overs winner')
     .lean();
     
     console.log(`📊 Found ${fixtures.length} fixtures with winners for NRR calculation`);
