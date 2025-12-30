@@ -33,9 +33,90 @@ const parseRuns = (scoreString) => {
   return isNaN(num) ? 0 : Math.floor(num);
 };
 
+// Helper function to parse wickets from score string (e.g., "150/10" → 10, "180/5" → 5)
+const parseWickets = (scoreString) => {
+  if (!scoreString) {
+    return 0;
+  }
+  
+  const scoreStr = String(scoreString).trim();
+  
+  // Check for invalid values
+  if (scoreStr === 'null' || scoreStr === 'TBD' || scoreStr === 'NA' || 
+      scoreStr === '' || scoreStr === 'undefined' || scoreStr.toLowerCase() === 'null') {
+    return 0;
+  }
+  
+  // Try to extract wickets from formats like "150/10", "180/5", "150-10"
+  // Pattern: number/number or number-number
+  const slashMatch = scoreStr.match(/\/(\d+)/); // Match "/10" or "/5"
+  if (slashMatch) {
+    const wickets = parseInt(slashMatch[1], 10);
+    if (!isNaN(wickets) && wickets >= 0 && wickets <= 10) {
+      return wickets;
+    }
+  }
+  
+  // Try hyphen format: "150-10"
+  const hyphenMatch = scoreStr.match(/-(\d+)/);
+  if (hyphenMatch) {
+    const wickets = parseInt(hyphenMatch[1], 10);
+    if (!isNaN(wickets) && wickets >= 0 && wickets <= 10) {
+      return wickets;
+    }
+  }
+  
+  // If no wickets found in score, assume 0 wickets (not all out)
+  return 0;
+};
+
+// Helper function to parse overs string and convert to decimal (e.g., "20.0" -> 20.0, "19.3" -> 19.5, "18.5" -> 18.5)
+const parseOvers = (oversString) => {
+  if (!oversString) {
+    return null; // Return null if not provided, will use default
+  }
+  
+  const oversStr = String(oversString).trim();
+  
+  // Check for invalid values
+  if (oversStr === 'null' || oversStr === 'TBD' || oversStr === 'NA' || 
+      oversStr === '' || oversStr === 'undefined' || oversStr.toLowerCase() === 'null') {
+    return null;
+  }
+  
+  // Handle decimal format: "20.0", "19.3", "18.5"
+  // Format: overs.balls where balls is 0-5
+  const decimalMatch = oversStr.match(/^(\d+)\.(\d+)$/);
+  if (decimalMatch) {
+    const overs = parseInt(decimalMatch[1], 10);
+    const balls = parseInt(decimalMatch[2], 10);
+    if (!isNaN(overs) && !isNaN(balls) && balls >= 0 && balls <= 5) {
+      // Convert to decimal: overs + (balls / 6)
+      return overs + (balls / 6);
+    }
+  }
+  
+  // Handle whole number format: "20" -> 20.0
+  const wholeMatch = oversStr.match(/^(\d+)$/);
+  if (wholeMatch) {
+    const overs = parseInt(wholeMatch[1], 10);
+    if (!isNaN(overs)) {
+      return overs;
+    }
+  }
+  
+  // Try to parse as float directly
+  const num = parseFloat(oversStr);
+  if (!isNaN(num) && num >= 0) {
+    return num;
+  }
+  
+  return null; // Invalid format, will use default
+};
+
 // Calculate Net Run Rate (NRR) for a team from tournament fixtures
 const calculateTournamentNRR = (fixtures, teamName) => {
-  const DEFAULT_OVERS = 20; // Standard T20 format
+  const DEFAULT_OVERS = 20; // Standard T20 format - used if overs not provided
   let totalRunsScored = 0;
   let totalRunsConceded = 0;
   let totalOversFaced = 0;
@@ -65,6 +146,23 @@ const calculateTournamentNRR = (fixtures, teamName) => {
       return;
     }
 
+    // Parse wickets to check for all-out scenarios
+    const team1Wickets = parseWickets(score1);
+    const team2Wickets = parseWickets(score2);
+
+    // Parse overs - use actual overs if provided, otherwise default to 20
+    let team1Overs = parseOvers(fixture.team1Overs) ?? DEFAULT_OVERS;
+    let team2Overs = parseOvers(fixture.team2Overs) ?? DEFAULT_OVERS;
+
+    // REAL CRICKET RULE: If a team is all out (10 wickets), use full quota (20 overs) for NRR
+    // This is the standard rule in cricket - all-out teams are considered to have faced full quota
+    if (team1Wickets === 10) {
+      team1Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
+    }
+    if (team2Wickets === 10) {
+      team2Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
+    }
+
     // Match by teamName
     const isTeam1 = fixture.team1 && fixture.team1.trim().toLowerCase() === teamName.trim().toLowerCase();
     const isTeam2 = fixture.team2 && fixture.team2.trim().toLowerCase() === teamName.trim().toLowerCase();
@@ -76,13 +174,15 @@ const calculateTournamentNRR = (fixtures, teamName) => {
     if (isTeam1) {
       totalRunsScored += team1Runs;
       totalRunsConceded += team2Runs;
+      totalOversFaced += team1Overs;
+      totalOversBowled += team2Overs;
     } else {
       totalRunsScored += team2Runs;
       totalRunsConceded += team1Runs;
+      totalOversFaced += team2Overs;
+      totalOversBowled += team1Overs;
     }
 
-    totalOversFaced += DEFAULT_OVERS;
-    totalOversBowled += DEFAULT_OVERS;
     matchesCount++;
   });
 
@@ -833,22 +933,54 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Fixture not found' });
     }
 
-    const { winner, margin, team1Score, team2Score, team1Fairness, team2Fairness, mom } = req.body;
+    const { winner, margin, team1Score, team2Score, team1Overs, team2Overs, team1Fairness, team2Fairness, mom } = req.body;
+
+    // Validate score format: must be in "runs/wickets" format (e.g., "107/10", "150/5")
+    const scoreFormatRegex = /^\d+\/\d+$/; // Matches "number/number" format
+    
+    if (team1Score && !scoreFormatRegex.test(team1Score.toString().trim())) {
+      return res.status(400).json({ 
+        error: `Team 1 score format is invalid. Expected format: runs/wickets (e.g., "107/10", "150/5"). Received: "${team1Score}"` 
+      });
+    }
+    
+    if (team2Score && !scoreFormatRegex.test(team2Score.toString().trim())) {
+      return res.status(400).json({ 
+        error: `Team 2 score format is invalid. Expected format: runs/wickets (e.g., "107/10", "150/5"). Received: "${team2Score}"` 
+      });
+    }
+
+    // Validate required fields
+    if (!team1Overs || team1Overs.toString().trim() === '') {
+      return res.status(400).json({ error: 'Team 1 overs is required' });
+    }
+    if (!team2Overs || team2Overs.toString().trim() === '') {
+      return res.status(400).json({ error: 'Team 2 overs is required' });
+    }
 
     // Update the fixture in the array
     if (winner !== undefined) tournament.tournamentFixtures[fixtureIndex].winner = winner;
     if (margin !== undefined) tournament.tournamentFixtures[fixtureIndex].margin = margin;
     if (team1Score !== undefined) tournament.tournamentFixtures[fixtureIndex].team1Score = team1Score;
     if (team2Score !== undefined) tournament.tournamentFixtures[fixtureIndex].team2Score = team2Score;
+    tournament.tournamentFixtures[fixtureIndex].team1Overs = team1Overs.trim();
+    tournament.tournamentFixtures[fixtureIndex].team2Overs = team2Overs.trim();
     if (team1Fairness !== undefined) tournament.tournamentFixtures[fixtureIndex].team1Fairness = team1Fairness;
     if (team2Fairness !== undefined) tournament.tournamentFixtures[fixtureIndex].team2Fairness = team2Fairness;
-    if (mom !== undefined) tournament.tournamentFixtures[fixtureIndex].mom = mom;
+    if (mom !== undefined) {
+      // Only name is mandatory, score and wickets are optional
+      tournament.tournamentFixtures[fixtureIndex].mom = {
+        name: mom.name || null,
+        score: mom.score !== undefined ? mom.score : null,
+        wickets: mom.wickets !== undefined ? mom.wickets : null
+      };
+    }
 
     await tournament.save();
 
-    // Auto-update point table when winner is set OR when scores are updated
-    // This ensures NRR is recalculated when scores change
-    if (winner || team1Score !== undefined || team2Score !== undefined) {
+    // Auto-update point table when winner is set OR when scores/overs are updated
+    // This ensures NRR is recalculated when scores or overs change
+    if (winner || team1Score !== undefined || team2Score !== undefined || team1Overs !== undefined || team2Overs !== undefined) {
       await updateTournamentPointTable(tournament._id);
       
       // Check if this is the actual FINAL match (knockout final)

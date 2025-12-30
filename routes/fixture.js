@@ -340,11 +340,36 @@ router.post('/save', isAdmin, async (req, res) => {
       mom,
       team1Score,
       team2Score,
+      team1Overs,
+      team2Overs,
       team1Fairness,
       team2Fairness,
       group,
       matchType,
     } = req.body;
+
+    // Validate score format: must be in "runs/wickets" format (e.g., "107/10", "150/5")
+    const scoreFormatRegex = /^\d+\/\d+$/; // Matches "number/number" format
+    
+    if (team1Score && !scoreFormatRegex.test(team1Score.toString().trim())) {
+      return res.status(400).json({ 
+        error: `Team 1 score format is invalid. Expected format: runs/wickets (e.g., "107/10", "150/5"). Received: "${team1Score}"` 
+      });
+    }
+    
+    if (team2Score && !scoreFormatRegex.test(team2Score.toString().trim())) {
+      return res.status(400).json({ 
+        error: `Team 2 score format is invalid. Expected format: runs/wickets (e.g., "107/10", "150/5"). Received: "${team2Score}"` 
+      });
+    }
+
+    // Validate required fields - overs are mandatory
+    if (!team1Overs || team1Overs.toString().trim() === '') {
+      return res.status(400).json({ error: 'Team 1 overs is required' });
+    }
+    if (!team2Overs || team2Overs.toString().trim() === '') {
+      return res.status(400).json({ error: 'Team 2 overs is required' });
+    }
 
     // Find fixture by _id first if provided, then by userId if available, otherwise by teamName
     let fixture = null;
@@ -423,9 +448,15 @@ router.post('/save', isAdmin, async (req, res) => {
         team2UserId: finalUserId2, // userId-based
         winner,
         margin,
-        mom,
+        mom: mom ? {
+          name: mom.name || null, // Only name is mandatory
+          score: mom.score !== undefined ? mom.score : null, // Optional
+          wickets: mom.wickets !== undefined ? mom.wickets : null // Optional
+        } : null,
         team1Score,
         team2Score,
+        team1Overs: team1Overs.trim(), // Mandatory
+        team2Overs: team2Overs.trim(), // Mandatory
         team1Fairness,
         team2Fairness,
         group: group || null,
@@ -433,13 +464,23 @@ router.post('/save', isAdmin, async (req, res) => {
       });
     } else {
       // Otherwise, update existing fixture
-      fixture.winner = winner;
-      fixture.margin = margin;
-      fixture.mom = mom;
-      fixture.team1Score = team1Score;
-      fixture.team2Score = team2Score;
-      fixture.team1Fairness = team1Fairness;
-      fixture.team2Fairness = team2Fairness;
+      if (winner !== undefined) fixture.winner = winner;
+      if (margin !== undefined) fixture.margin = margin;
+      if (mom !== undefined) {
+        // Only name is mandatory, score and wickets are optional
+        fixture.mom = {
+          name: mom.name || null,
+          score: mom.score !== undefined ? mom.score : null,
+          wickets: mom.wickets !== undefined ? mom.wickets : null
+        };
+      }
+      if (team1Score !== undefined) fixture.team1Score = team1Score;
+      if (team2Score !== undefined) fixture.team2Score = team2Score;
+      // Overs are mandatory - always update
+      fixture.team1Overs = team1Overs.trim();
+      fixture.team2Overs = team2Overs.trim();
+      if (team1Fairness !== undefined) fixture.team1Fairness = team1Fairness;
+      if (team2Fairness !== undefined) fixture.team2Fairness = team2Fairness;
       // Update group and matchType if provided
       if (group !== undefined) fixture.group = group;
       if (matchType !== undefined) fixture.matchType = matchType;

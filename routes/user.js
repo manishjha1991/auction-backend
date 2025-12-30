@@ -940,11 +940,48 @@ const parseRuns = (scoreString) => {
   return isNaN(num) ? 0 : Math.floor(num);
 };
 
+// Helper function to parse wickets from score string (e.g., "150/10" → 10, "180/5" → 5)
+const parseWickets = (scoreString) => {
+  if (!scoreString) {
+    return 0;
+  }
+  
+  const scoreStr = String(scoreString).trim();
+  
+  // Check for invalid values
+  if (scoreStr === 'null' || scoreStr === 'TBD' || scoreStr === 'NA' || 
+      scoreStr === '' || scoreStr === 'undefined' || scoreStr.toLowerCase() === 'null') {
+    return 0;
+  }
+  
+  // Try to extract wickets from formats like "150/10", "180/5", "150-10"
+  // Pattern: number/number or number-number
+  const slashMatch = scoreStr.match(/\/(\d+)/); // Match "/10" or "/5"
+  if (slashMatch) {
+    const wickets = parseInt(slashMatch[1], 10);
+    if (!isNaN(wickets) && wickets >= 0 && wickets <= 10) {
+      return wickets;
+    }
+  }
+  
+  // Try hyphen format: "150-10"
+  const hyphenMatch = scoreStr.match(/-(\d+)/);
+  if (hyphenMatch) {
+    const wickets = parseInt(hyphenMatch[1], 10);
+    if (!isNaN(wickets) && wickets >= 0 && wickets <= 10) {
+      return wickets;
+    }
+  }
+  
+  // If no wickets found in score, assume 0 wickets (not all out)
+  return 0;
+};
+
 // Calculate Net Run Rate (NRR) for a team
 // NRR = (Total Runs Scored / Total Overs Faced) - (Total Runs Conceded / Total Overs Bowled)
-// Standard T20 format: 20 overs per match
+// Uses actual overs if provided, defaults to 20 if not
 const calculateNRR = (fixtures, teamName, userId) => {
-  const DEFAULT_OVERS = 20; // Standard T20 format
+  const DEFAULT_OVERS = 20; // Standard T20 format - used if overs not provided
   let totalRunsScored = 0;
   let totalRunsConceded = 0;
   let totalOversFaced = 0;
@@ -971,6 +1008,23 @@ const calculateNRR = (fixtures, teamName, userId) => {
     // Skip if both scores are invalid (0 or couldn't parse)
     if (team1Runs === 0 && team2Runs === 0) {
       return;
+    }
+
+    // Parse wickets to check for all-out scenarios
+    const team1Wickets = parseWickets(score1);
+    const team2Wickets = parseWickets(score2);
+
+    // Parse overs - use actual overs if provided, otherwise default to 20
+    let team1Overs = parseOvers(fixture.team1Overs) ?? DEFAULT_OVERS;
+    let team2Overs = parseOvers(fixture.team2Overs) ?? DEFAULT_OVERS;
+
+    // REAL CRICKET RULE: If a team is all out (10 wickets), use full quota (20 overs) for NRR
+    // This is the standard rule in cricket - all-out teams are considered to have faced full quota
+    if (team1Wickets === 10) {
+      team1Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
+    }
+    if (team2Wickets === 10) {
+      team2Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
     }
 
     // Match by userId first (more reliable), then fall back to teamName
@@ -1008,13 +1062,15 @@ const calculateNRR = (fixtures, teamName, userId) => {
     if (isTeam1) {
       totalRunsScored += team1Runs;
       totalRunsConceded += team2Runs;
+      totalOversFaced += team1Overs;
+      totalOversBowled += team2Overs;
     } else {
       totalRunsScored += team2Runs;
       totalRunsConceded += team1Runs;
+      totalOversFaced += team2Overs;
+      totalOversBowled += team1Overs;
     }
 
-    totalOversFaced += DEFAULT_OVERS;
-    totalOversBowled += DEFAULT_OVERS;
     matchesCount++;
   });
 

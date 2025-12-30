@@ -91,12 +91,14 @@ const TournamentSchema = new mongoose.Schema({
     margin: { type: String, default: null },
     team1Score: { type: String, default: null },
     team2Score: { type: String, default: null },
+    team1Overs: { type: String, default: null }, // Overs played by team1 (e.g., "20.0", "19.3")
+    team2Overs: { type: String, default: null }, // Overs played by team2 (e.g., "20.0", "19.3")
     team1Fairness: { type: Number, default: 0 },
     team2Fairness: { type: Number, default: 0 },
     mom: {
-      name: { type: String, default: null },
-      score: { type: Number, default: null },
-      wickets: { type: Number, default: null }
+      name: { type: String, default: null }, // Only name is mandatory
+      score: { type: Number, default: null }, // Optional
+      wickets: { type: Number, default: null } // Optional
     },
     createdAt: { type: Date, default: Date.now }
   }],
