@@ -7,6 +7,97 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
+// Helper function to parse score string and extract runs
+const parseRuns = (scoreString) => {
+  if (!scoreString) {
+    return 0;
+  }
+  
+  const scoreStr = String(scoreString).trim();
+  
+  // Check for invalid values
+  if (scoreStr === 'null' || scoreStr === 'TBD' || scoreStr === 'NA' || 
+      scoreStr === '' || scoreStr === 'undefined' || scoreStr.toLowerCase() === 'null') {
+    return 0;
+  }
+  
+  // Try to extract number - handle formats like "150", "150/5", "150-5", "150 (20.0 ov)"
+  const match = scoreStr.match(/^(\d+)/);
+  if (match) {
+    const runs = parseInt(match[1], 10);
+    return isNaN(runs) ? 0 : runs;
+  }
+  
+  // If no match, try to parse as number directly
+  const num = parseFloat(scoreStr);
+  return isNaN(num) ? 0 : Math.floor(num);
+};
+
+// Calculate Net Run Rate (NRR) for a team from tournament fixtures
+const calculateTournamentNRR = (fixtures, teamName) => {
+  const DEFAULT_OVERS = 20; // Standard T20 format
+  let totalRunsScored = 0;
+  let totalRunsConceded = 0;
+  let totalOversFaced = 0;
+  let totalOversBowled = 0;
+  let matchesCount = 0;
+
+  fixtures.forEach((fixture) => {
+    // Skip if match is not completed
+    if (!fixture.winner) {
+      return;
+    }
+
+    // Check if scores exist
+    const score1 = fixture.team1Score;
+    const score2 = fixture.team2Score;
+    
+    // Parse runs from scores
+    const team1Runs = parseRuns(score1);
+    const team2Runs = parseRuns(score2);
+
+    // Skip if both scores are invalid (0 or couldn't parse)
+    // But log a warning if scores exist but couldn't be parsed
+    if (team1Runs === 0 && team2Runs === 0) {
+      if (score1 || score2) {
+        console.warn(`⚠️ Could not parse scores for fixture ${fixture.team1} vs ${fixture.team2}: team1Score="${score1}", team2Score="${score2}"`);
+      }
+      return;
+    }
+
+    // Match by teamName
+    const isTeam1 = fixture.team1 && fixture.team1.trim().toLowerCase() === teamName.trim().toLowerCase();
+    const isTeam2 = fixture.team2 && fixture.team2.trim().toLowerCase() === teamName.trim().toLowerCase();
+
+    if (!isTeam1 && !isTeam2) {
+      return; // Team not involved in this match
+    }
+
+    if (isTeam1) {
+      totalRunsScored += team1Runs;
+      totalRunsConceded += team2Runs;
+    } else {
+      totalRunsScored += team2Runs;
+      totalRunsConceded += team1Runs;
+    }
+
+    totalOversFaced += DEFAULT_OVERS;
+    totalOversBowled += DEFAULT_OVERS;
+    matchesCount++;
+  });
+
+  if (matchesCount === 0) {
+    return 0;
+  }
+
+  // Calculate NRR
+  const runsScoredPerOver = totalOversFaced > 0 ? totalRunsScored / totalOversFaced : 0;
+  const runsConcededPerOver = totalOversBowled > 0 ? totalRunsConceded / totalOversBowled : 0;
+  const nrr = runsScoredPerOver - runsConcededPerOver;
+
+  return parseFloat(nrr.toFixed(3)); // Round to 3 decimal places
+};
+
 // Configure multer for image uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -614,9 +705,21 @@ router.get('/:id/point-table', isAuthenticated, async (req, res) => {
       return res.status(404).json({ error: 'Tournament not found' });
     }
 
+    // Always recalculate point table to ensure it's up-to-date (especially NRR)
+    // This ensures that if scores were updated, NRR will be recalculated
+    await updateTournamentPointTable(tournament._id);
+    
+    // Reload tournament to get updated point table
+    await tournament.populate('subscribedTeams.userId', 'teamName abbreviation');
+    const updatedTournament = await Tournament.findById(req.params.id)
+      .populate('subscribedTeams.userId', 'teamName abbreviation');
+    
+    // Use updated tournament data
+    const tournamentToUse = updatedTournament || tournament;
+
     // Create a map of teamName to abbreviation
     const teamAbbreviationMap = {};
-    tournament.subscribedTeams.forEach(team => {
+    tournamentToUse.subscribedTeams.forEach(team => {
       const teamName = team.userId?.teamName || team.teamName;
       const abbreviation = team.userId?.abbreviation || null;
       if (teamName) {
@@ -625,15 +728,25 @@ router.get('/:id/point-table', isAuthenticated, async (req, res) => {
     });
 
     // Add abbreviation to each point table entry
-    const pointTableWithAbbr = tournament.pointTable.map(entry => ({
+    const pointTableWithAbbr = tournamentToUse.pointTable.map(entry => ({
       ...entry.toObject ? entry.toObject() : entry,
       abbreviation: teamAbbreviationMap[entry.teamName] || null
     }));
 
-    // Sort by points (desc) then by fairness (desc)
+    // Sort by points (desc) then by fairness (desc) then by NRR (desc)
     const sortedPointTable = pointTableWithAbbr.sort((a, b) => {
-      if (b.points !== a.points) return b.points - a.points;
-      return b.fairness - a.fairness;
+      // Priority 1: Points (descending)
+      if (b.points !== a.points) {
+        return b.points - a.points;
+      }
+      // Priority 2: Fairness (descending)
+      if (b.fairness !== a.fairness) {
+        return b.fairness - a.fairness;
+      }
+      // Priority 3: Net Run Rate (descending)
+      const nrrA = a.nrr || 0;
+      const nrrB = b.nrr || 0;
+      return nrrB - nrrA;
     });
 
     res.json({ pointTable: sortedPointTable });
@@ -733,8 +846,9 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
 
     await tournament.save();
 
-    // Auto-update point table when winner is set
-    if (winner) {
+    // Auto-update point table when winner is set OR when scores are updated
+    // This ensures NRR is recalculated when scores change
+    if (winner || team1Score !== undefined || team2Score !== undefined) {
       await updateTournamentPointTable(tournament._id);
       
       // Check if this is the actual FINAL match (knockout final)
@@ -1130,10 +1244,20 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
     // Update point table first
     await updateTournamentPointTable(tournament._id);
 
-    // Get top 4 teams from point table (sorted by points desc, then fairness desc)
+    // Get top 4 teams from point table (sorted by points desc, then fairness desc, then NRR desc)
     const sortedPointTable = tournament.pointTable.sort((a, b) => {
-      if (b.points !== a.points) return b.points - a.points;
-      return b.fairness - a.fairness;
+      // Priority 1: Points (descending)
+      if (b.points !== a.points) {
+        return b.points - a.points;
+      }
+      // Priority 2: Fairness (descending)
+      if (b.fairness !== a.fairness) {
+        return b.fairness - a.fairness;
+      }
+      // Priority 3: Net Run Rate (descending)
+      const nrrA = a.nrr || 0;
+      const nrrB = b.nrr || 0;
+      return nrrB - nrrA;
     });
 
     const top4 = sortedPointTable.slice(0, 4);
@@ -1272,6 +1396,31 @@ const updateTournamentPointTable = async (tournamentId) => {
       }
       if (fixture.team2Fairness && pointTable[fixture.team2]) {
         pointTable[fixture.team2].fairness += fixture.team2Fairness;
+      }
+    });
+
+    // Calculate NRR for each team from tournament fixtures only (Super 8 matches)
+    Object.keys(pointTable).forEach(teamName => {
+      const nrr = calculateTournamentNRR(tournament.tournamentFixtures, teamName);
+      pointTable[teamName].nrr = nrr;
+      // Debug logging for first team to help diagnose NRR issues
+      if (Object.keys(pointTable)[0] === teamName) {
+        const completedFixtures = tournament.tournamentFixtures.filter(f => f.winner);
+        const teamFixtures = completedFixtures.filter(f => 
+          (f.team1 && f.team1.trim().toLowerCase() === teamName.trim().toLowerCase()) ||
+          (f.team2 && f.team2.trim().toLowerCase() === teamName.trim().toLowerCase())
+        );
+        console.log(`📊 NRR calculation for ${teamName}:`, {
+          nrr,
+          completedFixtures: completedFixtures.length,
+          teamFixtures: teamFixtures.length,
+          sampleScores: teamFixtures.slice(0, 2).map(f => ({
+            team1: f.team1,
+            team2: f.team2,
+            team1Score: f.team1Score,
+            team2Score: f.team2Score
+          }))
+        });
       }
     });
 

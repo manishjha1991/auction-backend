@@ -7,6 +7,7 @@ const UserSchema = new mongoose.Schema({
   teamName: { type: String },
   teamImage: { type: String },
   purse: { type: mongoose.Schema.Types.Decimal128, default: 1000000000 },
+  betWallet: { type: mongoose.Schema.Types.Decimal128, default: 1000000000 }, // Separate wallet for betting (100 CR) - purse is never touched
   boughtPlayers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Player' }],
   currentBids: [
     {

@@ -164,7 +164,11 @@ router.post('/login', async (req, res) => {
     );
 
     // Return user data with token (excluding sensitive fields like password)
+    // Parse purse from Decimal128 to number
+    const purseValue = user.purse ? parseFloat(user.purse.toString()) : 0;
+    
     res.json({
+      _id: user._id,
       id: user._id,
       name: user.name,
       email: user.email,
@@ -173,6 +177,7 @@ router.post('/login', async (req, res) => {
       isAdmin: user.isAdmin,
       timezone: user.timezone,
       streamLink: user.streamLink,
+      purse: purseValue, // Include purse value
       token: token, // Include JWT token in response
     });
   } catch (err) {
@@ -357,6 +362,7 @@ router.get("/:userId/details", async (req, res) => {
         image: user.teamImage,
         teamName: user.teamName,
         purse: user.purse,
+        betWallet: user.betWallet || 1000000000, // Return betWallet for betting (default 100 CR)
         timezone: user.timezone,
         streamLink: user.streamLink,
         abbreviation: user.abbreviation,
@@ -906,6 +912,124 @@ router.get('/debug-fairness', async (req, res) => {
 
 
 
+// Helper function to parse score string and extract runs
+// Handles formats like "150", "150/5", "150/10", "150-5", etc.
+const parseRuns = (scoreString) => {
+  if (!scoreString) {
+    return 0;
+  }
+  
+  const scoreStr = String(scoreString).trim();
+  
+  // Check for invalid values
+  if (scoreStr === 'null' || scoreStr === 'TBD' || scoreStr === 'NA' || 
+      scoreStr === '' || scoreStr === 'undefined' || scoreStr.toLowerCase() === 'null') {
+    return 0;
+  }
+  
+  // Try to extract number - handle formats like "150", "150/5", "150-5", "150 (20.0 ov)"
+  // Match any number at the start
+  const match = scoreStr.match(/^(\d+)/);
+  if (match) {
+    const runs = parseInt(match[1], 10);
+    return isNaN(runs) ? 0 : runs;
+  }
+  
+  // If no match, try to parse as number directly
+  const num = parseFloat(scoreStr);
+  return isNaN(num) ? 0 : Math.floor(num);
+};
+
+// Calculate Net Run Rate (NRR) for a team
+// NRR = (Total Runs Scored / Total Overs Faced) - (Total Runs Conceded / Total Overs Bowled)
+// Standard T20 format: 20 overs per match
+const calculateNRR = (fixtures, teamName, userId) => {
+  const DEFAULT_OVERS = 20; // Standard T20 format
+  let totalRunsScored = 0;
+  let totalRunsConceded = 0;
+  let totalOversFaced = 0;
+  let totalOversBowled = 0;
+  let matchesCount = 0;
+
+  // Convert userId to string for comparison
+  const userIdStr = userId ? userId.toString() : null;
+
+  fixtures.forEach((fixture) => {
+    // Skip if match is not completed
+    if (!fixture.winner) {
+      return;
+    }
+
+    // Check if scores exist
+    const score1 = fixture.team1Score;
+    const score2 = fixture.team2Score;
+    
+    // Parse runs from scores
+    const team1Runs = parseRuns(score1);
+    const team2Runs = parseRuns(score2);
+
+    // Skip if both scores are invalid (0 or couldn't parse)
+    if (team1Runs === 0 && team2Runs === 0) {
+      return;
+    }
+
+    // Match by userId first (more reliable), then fall back to teamName
+    // Handle both ObjectId and string formats
+    const team1UserIdStr = fixture.team1UserId ? 
+      (fixture.team1UserId.toString ? fixture.team1UserId.toString() : String(fixture.team1UserId)) : null;
+    const team2UserIdStr = fixture.team2UserId ? 
+      (fixture.team2UserId.toString ? fixture.team2UserId.toString() : String(fixture.team2UserId)) : null;
+
+    // Try userId matching first
+    let isTeam1 = false;
+    let isTeam2 = false;
+    
+    if (userIdStr) {
+      if (team1UserIdStr && team1UserIdStr === userIdStr) {
+        isTeam1 = true;
+      } else if (team2UserIdStr && team2UserIdStr === userIdStr) {
+        isTeam2 = true;
+      }
+    }
+    
+    // Fall back to teamName matching if userId didn't match
+    if (!isTeam1 && !isTeam2) {
+      if (fixture.team1 && fixture.team1.trim().toLowerCase() === teamName.trim().toLowerCase()) {
+        isTeam1 = true;
+      } else if (fixture.team2 && fixture.team2.trim().toLowerCase() === teamName.trim().toLowerCase()) {
+        isTeam2 = true;
+      }
+    }
+
+    if (!isTeam1 && !isTeam2) {
+      return; // Team not involved in this match
+    }
+
+    if (isTeam1) {
+      totalRunsScored += team1Runs;
+      totalRunsConceded += team2Runs;
+    } else {
+      totalRunsScored += team2Runs;
+      totalRunsConceded += team1Runs;
+    }
+
+    totalOversFaced += DEFAULT_OVERS;
+    totalOversBowled += DEFAULT_OVERS;
+    matchesCount++;
+  });
+
+  if (matchesCount === 0) {
+    return 0;
+  }
+
+  // Calculate NRR
+  const runsScoredPerOver = totalOversFaced > 0 ? totalRunsScored / totalOversFaced : 0;
+  const runsConcededPerOver = totalOversBowled > 0 ? totalRunsConceded / totalOversBowled : 0;
+  const nrr = runsScoredPerOver - runsConcededPerOver;
+
+  return parseFloat(nrr.toFixed(3)); // Round to 3 decimal places
+};
+
 router.get('/points-table', async (req, res) => {
   try {
     // Fetch all users who have a valid team name, are active, and are NOT admins
@@ -924,7 +1048,28 @@ router.get('/points-table', async (req, res) => {
       return res.status(404).json({ message: 'No teams found' });
     }
 
-    // Transform data to calculate wins, losses, and fairness
+    // Fetch all completed fixtures to calculate NRR
+    // Don't filter by score here - we'll check validity in the calculation function
+    const fixtures = await Fixture.find({
+      isActive: true,
+      winner: { $ne: null, $exists: true }
+    })
+    .select('team1 team2 team1UserId team2UserId team1Score team2Score winner')
+    .lean();
+    
+    console.log(`📊 Found ${fixtures.length} fixtures with winners for NRR calculation`);
+    if (fixtures.length > 0) {
+      console.log(`📊 Sample fixture:`, {
+        team1: fixtures[0].team1,
+        team2: fixtures[0].team2,
+        team1Score: fixtures[0].team1Score,
+        team2Score: fixtures[0].team2Score,
+        team1UserId: fixtures[0].team1UserId,
+        team2UserId: fixtures[0].team2UserId
+      });
+    }
+
+    // Transform data to calculate wins, losses, fairness, and NRR
     const pointsTable = users.map((user) => {
       const matchesPlayed = user.matchesPlayed || 0;
       const points = user.points || 0;
@@ -935,6 +1080,31 @@ router.get('/points-table', async (req, res) => {
       const wins = Math.floor(points / 2); // each win = 2 points
       const losses = matchesPlayed - wins;
 
+      // Calculate NRR for this team
+      const nrr = calculateNRR(fixtures, user.teamName, user._id);
+      
+      // Debug first team's NRR calculation
+      if (users.indexOf(user) === 0) {
+        console.log(`📊 NRR calculation for ${user.teamName} (${user._id}):`, nrr);
+        console.log(`📊 Total fixtures checked: ${fixtures.length}`);
+        console.log(`📊 Team name for matching: "${user.teamName}"`);
+        // Log sample fixtures to see what we're matching against
+        const sampleFixtures = fixtures.slice(0, 5);
+        sampleFixtures.forEach((fx, idx) => {
+          console.log(`📊 Sample fixture ${idx + 1}:`, {
+            team1: fx.team1,
+            team2: fx.team2,
+            team1UserId: fx.team1UserId ? fx.team1UserId.toString() : null,
+            team2UserId: fx.team2UserId ? fx.team2UserId.toString() : null,
+            team1Score: fx.team1Score,
+            team2Score: fx.team2Score,
+            winner: fx.winner,
+            parsedTeam1Runs: parseRuns(fx.team1Score),
+            parsedTeam2Runs: parseRuns(fx.team2Score)
+          });
+        });
+      }
+
       return {
         _id: user._id,
         teamName: user.abbreviation || user.teamName || 'Unknown', // Display name (abbreviation)
@@ -944,6 +1114,7 @@ router.get('/points-table', async (req, res) => {
         wins,
         losses,
         fairness,
+        nrr,
         teamImage
       };
     });
@@ -958,11 +1129,15 @@ router.get('/points-table', async (req, res) => {
       if (b.fairness !== a.fairness) {
         return b.fairness - a.fairness;
       }
-      // Priority 3: Matches played (ascending)
+      // Priority 3: Net Run Rate (descending)
+      if (b.nrr !== a.nrr) {
+        return b.nrr - a.nrr;
+      }
+      // Priority 4: Matches played (ascending)
       if (a.matchesPlayed !== b.matchesPlayed) {
         return a.matchesPlayed - b.matchesPlayed;
       }
-      // Priority 4: Alphabetical by team name (ascending)
+      // Priority 5: Alphabetical by team name (ascending)
       const teamNameA = a.teamName || '';
       const teamNameB = b.teamName || '';
       return teamNameA.localeCompare(teamNameB);
@@ -997,12 +1172,23 @@ router.get('/points-table-grouped', async (_req, res) => {
       .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage group')
       .lean();
 
+    // Fetch all completed fixtures to calculate NRR
+    // Don't filter by score here - we'll check validity in the calculation function
+    const fixtures = await Fixture.find({
+      isActive: true,
+      winner: { $ne: null, $exists: true }
+    })
+    .select('team1 team2 team1UserId team2UserId team1Score team2Score winner')
+      .lean();
+
     const toRow = (u) => {
       const matchesPlayed = u.matchesPlayed || 0;
       const points = u.points || 0;
       const fairness = u.fairnessPoint || 0;
       const wins = Math.floor(points / 2);
       const losses = matchesPlayed - wins;
+      // Calculate NRR for this team
+      const nrr = calculateNRR(fixtures, u.teamName, u._id);
       return {
         _id: u._id,
         teamName: u.abbreviation || u.teamName || 'Unknown', // Display name (abbreviation)
@@ -1012,6 +1198,7 @@ router.get('/points-table-grouped', async (_req, res) => {
         wins,
         losses,
         fairness,
+        nrr,
         teamImage: u.teamImage || ''
       };
     };
@@ -1030,6 +1217,7 @@ router.get('/points-table-grouped', async (_req, res) => {
     const sortFn = (a, b) => {
       if (b.points !== a.points) return b.points - a.points;
       if (b.fairness !== a.fairness) return b.fairness - a.fairness;
+      if (b.nrr !== a.nrr) return b.nrr - a.nrr;
       if (a.matchesPlayed !== b.matchesPlayed) return a.matchesPlayed - b.matchesPlayed;
       // Add null checks for teamName comparison
       const teamNameA = a.teamName || '';
