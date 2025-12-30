@@ -89,3 +89,4 @@ BetSchema.index({ team1: 1, team2: 1, status: 1 });
 module.exports = mongoose.model('Bet', BetSchema);
 
 
+

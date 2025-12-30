@@ -163,9 +163,14 @@ const calculateTournamentNRR = (fixtures, teamName) => {
       team2Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
     }
 
-    // Match by teamName
-    const isTeam1 = fixture.team1 && fixture.team1.trim().toLowerCase() === teamName.trim().toLowerCase();
-    const isTeam2 = fixture.team2 && fixture.team2.trim().toLowerCase() === teamName.trim().toLowerCase();
+    // Match by teamName (flexible matching to handle variations)
+    const normalizeTeamName = (name) => name ? name.trim().toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+    const normalizedTeamName = normalizeTeamName(teamName);
+    const normalizedTeam1 = normalizeTeamName(fixture.team1);
+    const normalizedTeam2 = normalizeTeamName(fixture.team2);
+    
+    const isTeam1 = normalizedTeam1 === normalizedTeamName;
+    const isTeam2 = normalizedTeam2 === normalizedTeamName;
 
     if (!isTeam1 && !isTeam2) {
       return; // Team not involved in this match
@@ -1538,19 +1543,24 @@ const updateTournamentPointTable = async (tournamentId) => {
       // Debug logging for first team to help diagnose NRR issues
       if (Object.keys(pointTable)[0] === teamName) {
         const completedFixtures = tournament.tournamentFixtures.filter(f => f.winner);
-        const teamFixtures = completedFixtures.filter(f => 
-          (f.team1 && f.team1.trim().toLowerCase() === teamName.trim().toLowerCase()) ||
-          (f.team2 && f.team2.trim().toLowerCase() === teamName.trim().toLowerCase())
-        );
+        const normalizeTeamName = (name) => name ? name.trim().toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+        const normalizedTeamName = normalizeTeamName(teamName);
+        const teamFixtures = completedFixtures.filter(f => {
+          const normTeam1 = normalizeTeamName(f.team1);
+          const normTeam2 = normalizeTeamName(f.team2);
+          return normTeam1 === normalizedTeamName || normTeam2 === normalizedTeamName;
+        });
         console.log(`📊 NRR calculation for ${teamName}:`, {
           nrr,
           completedFixtures: completedFixtures.length,
           teamFixtures: teamFixtures.length,
-          sampleScores: teamFixtures.slice(0, 2).map(f => ({
+          sampleScores: teamFixtures.slice(0, 3).map(f => ({
             team1: f.team1,
             team2: f.team2,
             team1Score: f.team1Score,
-            team2Score: f.team2Score
+            team2Score: f.team2Score,
+            team1Overs: f.team1Overs,
+            team2Overs: f.team2Overs
           }))
         });
       }
