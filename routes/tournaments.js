@@ -1048,19 +1048,28 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
     if (winner || team1Score !== undefined || team2Score !== undefined || team1Overs !== undefined || team2Overs !== undefined) {
       await updateTournamentPointTable(tournament._id);
       
-      // Check if this is the actual FINAL match (knockout final)
+      // ONLY update tournament winner when updating KNOCKOUT fixtures (semi-final or final)
+      // DO NOT update winner for round-robin (Super 8) fixtures
       const currentFixture = tournament.tournamentFixtures[fixtureIndex];
+      
+      // STRICT CHECK: Only update winner for knockout fixtures
+      const isKnockoutFixture = currentFixture.team1?.includes('Winner of') || 
+                                currentFixture.team1?.includes('Top ') ||
+                                currentFixture.team2?.includes('Winner of') || 
+                                currentFixture.team2?.includes('Top ');
+      
+      // If it's NOT a knockout fixture, NEVER update tournament winner
+      if (!isKnockoutFixture) {
+        // This is a round-robin fixture - do NOT update tournament winner
+        return res.json({ 
+          message: 'Fixture updated successfully',
+          fixture: tournament.tournamentFixtures[fixtureIndex]
+        });
+      }
+      
+      // Only proceed if it's a knockout fixture
+      // Check if this is the FINAL match (not semi-final)
       const isFinalMatch = (() => {
-        // FIRST: Check if this is a round-robin fixture - if so, it's NEVER the final
-        const isRoundRobinFixture = !currentFixture.team1?.includes('Winner of') && 
-                                   !currentFixture.team1?.includes('Top ') &&
-                                   !currentFixture.team2?.includes('Winner of') && 
-                                   !currentFixture.team2?.includes('Top ');
-        
-        if (isRoundRobinFixture) {
-          return false; // Round-robin fixtures can NEVER be the final
-        }
-        
         // Check if this is the actual final placeholder (Winner of Semi-Final 1 vs Winner of Semi-Final 2)
         const isActualFinalPlaceholder = (currentFixture.team1 === 'Winner of Semi-Final 1' && 
                                          currentFixture.team2 === 'Winner of Semi-Final 2') ||
@@ -1071,40 +1080,38 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
           return true; // This is the final placeholder being updated with a winner
         }
         
-        // If not a placeholder, check if it's the last knockout fixture
-        // (meaning it's the final that has been manually updated with actual team names by admin)
+        // Check if it's a semi-final (semi-finals have "Top 1", "Top 2", etc. but NOT "Winner of")
+        const isSemiFinal = !currentFixture.team1?.includes('Winner of') && 
+                           !currentFixture.team2?.includes('Winner of') &&
+                           (currentFixture.team1?.includes('Top ') || currentFixture.team2?.includes('Top '));
+        
+        if (isSemiFinal) {
+          return false; // Semi-finals are NOT the final
+        }
+        
+        // If it has "Winner of" but is not the final placeholder, it might be the final
+        // that was manually updated with actual team names
+        // Get all knockout fixtures to find the final
         const knockoutFixtures = tournament.tournamentFixtures.filter(f => 
           f.team1?.includes('Winner of') || f.team1?.includes('Top ') ||
           f.team2?.includes('Winner of') || f.team2?.includes('Top ')
         );
         
-        // Check if this is the last fixture overall AND there are knockout fixtures
-        const isLastFixture = fixtureIndex === tournament.tournamentFixtures.length - 1;
-        const hasKnockoutFixtures = knockoutFixtures.length > 0;
+        // The final is the last knockout fixture that has "Winner of" (after semi-finals)
+        const finalFixtures = knockoutFixtures.filter(f => 
+          f.team1?.includes('Winner of') || f.team2?.includes('Winner of')
+        );
         
-        // Check if this fixture is a knockout fixture (has "Winner of" in team names)
-        // This means it was the final placeholder that was updated with actual team names
-        const isUpdatedFinal = (currentFixture.team1?.includes('Winner of') || 
-                               currentFixture.team2?.includes('Winner of')) ||
-                              // OR it's the last knockout fixture (after semi-finals)
-                              (isLastFixture && hasKnockoutFixtures);
+        // If this fixture is in the final fixtures list and has a winner, it's the final
+        const isInFinalFixtures = finalFixtures.some(f => 
+          f.team1 === currentFixture.team1 && f.team2 === currentFixture.team2
+        );
         
-        // Check if it's a semi-final (semi-finals have "Top 1", "Top 2", etc. but not "Winner of")
-        const isSemiFinal = !currentFixture.team1?.includes('Winner of') && 
-                           !currentFixture.team2?.includes('Winner of') &&
-                           (currentFixture.team1?.includes('Top ') || currentFixture.team2?.includes('Top '));
-        
-        // It's the final if:
-        // 1. It's a knockout fixture (not round-robin) - already checked above
-        // 2. It's either the final placeholder OR the last knockout fixture, AND
-        // 3. It's not a semi-final (semi-finals come before the final), AND
-        // 4. A winner is being set (admin is updating the final match)
-        return isUpdatedFinal && !isSemiFinal && winner;
+        return isInFinalFixtures && winner;
       })();
       
-      // Only mark tournament as completed when the ACTUAL final match is manually updated by admin
-      // DO NOT automatically update final match - admin must manually update it after semi-finals
-      if (isFinalMatch && !tournament.winner?.teamName) {
+      // ONLY update tournament winner when the FINAL match (not semi-final) is updated
+      if (isFinalMatch && winner && !tournament.winner?.teamName) {
         const completionDate = new Date();
         const winnerTeam = tournament.subscribedTeams.find(t => 
           t.teamName === winner
@@ -1119,71 +1126,64 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
         tournament.endDate = completionDate;
         await tournament.save();
         console.log(`✅ Tournament ${tournament.name} completed! Winner: ${winner}, End date updated to: ${completionDate.toISOString()}`);
+      } else if (!isFinalMatch && isKnockoutFixture) {
+        // This is a semi-final or other knockout fixture (not final) - don't update tournament winner
+        console.log(`ℹ️  Knockout fixture updated (not final) - tournament winner not updated`);
       }
       
-      // Check if this is World Cup tournament and update final when semi-finals complete
-      if (tournament.name && tournament.name.startsWith('World Cup')) {
-        // Count round-robin fixtures (should be 28 for 8 teams)
-        const roundRobinFixtures = tournament.tournamentFixtures.filter(f => 
-          !f.team1?.includes('Winner of') && !f.team1?.includes('Top ')
-        );
+      // Auto-update final fixture when semi-finals complete (only for knockout fixtures)
+      if (isKnockoutFixture) {
+        // Check if this is a semi-final that was just updated
+        const isSemiFinal = !currentFixture.team1?.includes('Winner of') && 
+                           !currentFixture.team2?.includes('Winner of') &&
+                           (currentFixture.team1?.includes('Top ') || currentFixture.team2?.includes('Top '));
         
-        // Update final when semi-finals complete
-        const semiFinals = tournament.tournamentFixtures.filter(f => 
-          !f.team1?.includes('Winner of') && !f.team1?.includes('Top ') &&
-          tournament.tournamentFixtures.indexOf(f) >= roundRobinFixtures.length &&
-          tournament.tournamentFixtures.indexOf(f) < tournament.tournamentFixtures.length - 1
-        );
-        
-        if (semiFinals.length === 2 && semiFinals.every(sf => sf.winner)) {
+        if (isSemiFinal && winner) {
+          // Find the final fixture placeholder
           const finalIndex = tournament.tournamentFixtures.findIndex(f => 
-            f.team1 === 'Winner of Semi-Final 1'
+            (f.team1 === 'Winner of Semi-Final 1' && f.team2 === 'Winner of Semi-Final 2') ||
+            (f.team1 === 'Winner of Semi-Final 2' && f.team2 === 'Winner of Semi-Final 1')
           );
           
-          if (finalIndex !== -1 && !tournament.tournamentFixtures[finalIndex].winner) {
-            const sf1Winner = semiFinals[0].winner;
-            const sf2Winner = semiFinals[1].winner;
+          if (finalIndex !== -1) {
+            // Get both semi-final winners
+            const semiFinals = tournament.tournamentFixtures.filter(f => 
+              !f.team1?.includes('Winner of') && 
+              (f.team1?.includes('Top ') || f.team2?.includes('Top ')) &&
+              f.winner
+            );
             
-            // Find userIds for winners
-            const getUserIdFromTeamName = (teamName) => {
-              const subscribedTeam = tournament.subscribedTeams.find(
-                team => team.teamName === teamName
+            if (semiFinals.length === 2) {
+              const sf1Fixture = semiFinals.find(f => 
+                f.team1?.includes('Top 1') || f.team2?.includes('Top 1') ||
+                f.team1?.includes('Top 2') || f.team2?.includes('Top 2')
               );
-              return subscribedTeam?.userId || null;
-            };
-            
-            tournament.tournamentFixtures[finalIndex].team1 = sf1Winner;
-            tournament.tournamentFixtures[finalIndex].team2 = sf2Winner;
-            tournament.tournamentFixtures[finalIndex].team1UserId = getUserIdFromTeamName(sf1Winner);
-            tournament.tournamentFixtures[finalIndex].team2UserId = getUserIdFromTeamName(sf2Winner);
-            await tournament.save();
-            console.log('Updated World Cup final with semi-final winners');
+              const sf2Fixture = semiFinals.find(f => 
+                f !== sf1Fixture && (f.team1?.includes('Top 3') || f.team2?.includes('Top 3') ||
+                f.team1?.includes('Top 4') || f.team2?.includes('Top 4'))
+              );
+              
+              if (sf1Fixture && sf2Fixture) {
+                const sf1Winner = sf1Fixture.winner;
+                const sf2Winner = sf2Fixture.winner;
+                
+                // Find userIds for winners
+                const getUserIdFromTeamName = (teamName) => {
+                  const subscribedTeam = tournament.subscribedTeams.find(
+                    team => team.teamName === teamName
+                  );
+                  return subscribedTeam?.userId || null;
+                };
+                
+                tournament.tournamentFixtures[finalIndex].team1 = sf1Winner;
+                tournament.tournamentFixtures[finalIndex].team2 = sf2Winner;
+                tournament.tournamentFixtures[finalIndex].team1UserId = getUserIdFromTeamName(sf1Winner);
+                tournament.tournamentFixtures[finalIndex].team2UserId = getUserIdFromTeamName(sf2Winner);
+                await tournament.save();
+                console.log(`✅ Updated final fixture with semi-final winners: ${sf1Winner} vs ${sf2Winner}`);
+              }
+            }
           }
-        }
-        
-        // Check if final is complete and update tournament winner
-        const finalFixture = tournament.tournamentFixtures.find(f => 
-          f.team1 !== 'Winner of Semi-Final 1' && 
-          tournament.tournamentFixtures.indexOf(f) === tournament.tournamentFixtures.length - 1
-        );
-        
-        if (finalFixture && finalFixture.winner && !tournament.winner?.teamName) {
-          // Find winner's team image
-          const winnerTeam = tournament.subscribedTeams.find(t => 
-            t.teamName === finalFixture.winner
-          );
-          
-          const completionDate = new Date();
-          tournament.winner = {
-            teamName: finalFixture.winner,
-            teamImage: winnerTeam?.teamImage || null,
-            wonAt: completionDate
-          };
-          tournament.status = 'completed';
-          // Update end date to the day when final was completed
-          tournament.endDate = completionDate;
-          await tournament.save();
-          console.log(`✅ Tournament ${tournament.name} completed! Winner: ${finalFixture.winner}, End date updated to: ${completionDate.toISOString()}`);
         }
       }
     }
