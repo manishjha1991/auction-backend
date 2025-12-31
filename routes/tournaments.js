@@ -332,11 +332,11 @@ router.get('/', async (req, res) => {
           select: 'name teamName',
           model: 'User'
         })
-        .select('name description startDate endDate maxSlots status tournamentImage subscribedTeams createdBy isActive isLocked winner tournamentFixtures pointTable createdAt updatedAt')
-        .sort({ startDate: 1 })
+      .select('name description startDate endDate maxSlots status tournamentImage subscribedTeams createdBy isActive isLocked winner tournamentFixtures pointTable createdAt updatedAt')
+      .sort({ startDate: 1 })
         .limit(parseInt(limit) || 100)
         .skip((parseInt(page) - 1) * (parseInt(limit) || 100))
-        .lean();
+      .lean();
       
       console.log('📋 Tournaments found after populate:', tournaments.length);
       if (tournaments.length > 0) {
@@ -1041,15 +1041,16 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
       };
     }
 
-    await tournament.save();
-
-    // Check if this is a knockout fixture (semi-final or final)
+    // Check if this is a knockout fixture (semi-final or final) BEFORE saving
     const currentFixture = tournament.tournamentFixtures[fixtureIndex];
     const isKnockoutFixture = currentFixture.team1?.includes('Winner of') || 
                               currentFixture.team1?.includes('Top ') ||
                               currentFixture.team2?.includes('Winner of') || 
                               currentFixture.team2?.includes('Top ');
     
+    // Save the tournament first
+    await tournament.save();
+
     // Auto-update point table ONLY for round-robin fixtures (NOT for semi-finals or finals)
     // Knockout matches don't affect the point table
     if (!isKnockoutFixture && (winner || team1Score !== undefined || team2Score !== undefined || team1Overs !== undefined || team2Overs !== undefined)) {
@@ -1135,55 +1136,74 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
       }
       
       // Auto-update final fixture when semi-finals complete (only for knockout fixtures)
-      if (isKnockoutFixture) {
+      if (isKnockoutFixture && winner) {
         // Check if this is a semi-final that was just updated
-        const isSemiFinal = !currentFixture.team1?.includes('Winner of') && 
-                           !currentFixture.team2?.includes('Winner of') &&
-                           (currentFixture.team1?.includes('Top ') || currentFixture.team2?.includes('Top '));
+        // Semi-finals are the first 2 knockout fixtures (after round-robin)
+        // They have actual team names (not "Winner of" or "Top ")
+        const isFinalPlaceholder = (currentFixture.team1 === 'Winner of Semi-Final 1' && 
+                                   currentFixture.team2 === 'Winner of Semi-Final 2') ||
+                                  (currentFixture.team1 === 'Winner of Semi-Final 2' && 
+                                   currentFixture.team2 === 'Winner of Semi-Final 1');
         
-        if (isSemiFinal && winner) {
+        // If it's not the final placeholder, it's likely a semi-final
+        const isSemiFinal = !isFinalPlaceholder;
+        
+        if (isSemiFinal) {
+          // Reload tournament to get latest state after the current update
+          let updatedTournament = await Tournament.findById(req.params.id);
+          if (!updatedTournament) {
+            console.error('❌ Tournament not found after reload');
+            return res.json({ message: 'Fixture updated successfully', fixture: tournament.tournamentFixtures[fixtureIndex] });
+          }
+          
           // Find the final fixture placeholder
-          const finalIndex = tournament.tournamentFixtures.findIndex(f => 
+          const finalIndex = updatedTournament.tournamentFixtures.findIndex(f => 
             (f.team1 === 'Winner of Semi-Final 1' && f.team2 === 'Winner of Semi-Final 2') ||
             (f.team1 === 'Winner of Semi-Final 2' && f.team2 === 'Winner of Semi-Final 1')
           );
           
           if (finalIndex !== -1) {
-            // Get both semi-final winners
-            const semiFinals = tournament.tournamentFixtures.filter(f => 
-              !f.team1?.includes('Winner of') && 
-              (f.team1?.includes('Top ') || f.team2?.includes('Top ')) &&
-              f.winner
-            );
+            // Semi-finals are the 2 fixtures before the final
+            // So if final is at index 30, semi-finals are at index 28 and 29
+            const semiFinal1Index = finalIndex - 2;
+            const semiFinal2Index = finalIndex - 1;
             
-            if (semiFinals.length === 2) {
-              const sf1Fixture = semiFinals.find(f => 
-                f.team1?.includes('Top 1') || f.team2?.includes('Top 1') ||
-                f.team1?.includes('Top 2') || f.team2?.includes('Top 2')
-              );
-              const sf2Fixture = semiFinals.find(f => 
-                f !== sf1Fixture && (f.team1?.includes('Top 3') || f.team2?.includes('Top 3') ||
-                f.team1?.includes('Top 4') || f.team2?.includes('Top 4'))
-              );
+            if (semiFinal1Index >= 0 && semiFinal2Index >= 0) {
+              const semiFinal1 = updatedTournament.tournamentFixtures[semiFinal1Index];
+              const semiFinal2 = updatedTournament.tournamentFixtures[semiFinal2Index];
               
-              if (sf1Fixture && sf2Fixture) {
-                const sf1Winner = sf1Fixture.winner;
-                const sf2Winner = sf2Fixture.winner;
+              // Check if both semi-finals have winners
+              if (semiFinal1.winner && semiFinal2.winner) {
+                const sf1Winner = semiFinal1.winner;
+                const sf2Winner = semiFinal2.winner;
                 
-                // Find userIds for winners
-                const getUserIdFromTeamName = (teamName) => {
-                  const subscribedTeam = tournament.subscribedTeams.find(
-                    team => team.teamName === teamName
-                  );
-                  return subscribedTeam?.userId || null;
-                };
+                // Only update if final still has placeholders
+                const finalFixture = updatedTournament.tournamentFixtures[finalIndex];
+                const needsUpdate = finalFixture.team1 === 'Winner of Semi-Final 1' || 
+                                   finalFixture.team1 === 'Winner of Semi-Final 2';
                 
-                tournament.tournamentFixtures[finalIndex].team1 = sf1Winner;
-                tournament.tournamentFixtures[finalIndex].team2 = sf2Winner;
-                tournament.tournamentFixtures[finalIndex].team1UserId = getUserIdFromTeamName(sf1Winner);
-                tournament.tournamentFixtures[finalIndex].team2UserId = getUserIdFromTeamName(sf2Winner);
-                await tournament.save();
-                console.log(`✅ Updated final fixture with semi-final winners: ${sf1Winner} vs ${sf2Winner}`);
+                if (needsUpdate) {
+            // Find userIds for winners
+            const getUserIdFromTeamName = (teamName) => {
+                    const subscribedTeam = updatedTournament.subscribedTeams.find(
+                team => team.teamName === teamName
+              );
+              return subscribedTeam?.userId || null;
+            };
+            
+                  updatedTournament.tournamentFixtures[finalIndex].team1 = sf1Winner;
+                  updatedTournament.tournamentFixtures[finalIndex].team2 = sf2Winner;
+                  updatedTournament.tournamentFixtures[finalIndex].team1UserId = getUserIdFromTeamName(sf1Winner);
+                  updatedTournament.tournamentFixtures[finalIndex].team2UserId = getUserIdFromTeamName(sf2Winner);
+                  
+                  await updatedTournament.save();
+                  console.log(`✅ Auto-updated final fixture with semi-final winners: ${sf1Winner} vs ${sf2Winner}`);
+                  
+                  // Update the response with the updated tournament
+                  tournament = updatedTournament;
+                }
+              } else {
+                console.log(`ℹ️  Waiting for both semi-finals to complete. SF1: ${semiFinal1.winner || 'No winner'}, SF2: ${semiFinal2.winner || 'No winner'}`);
               }
             }
           }
@@ -1463,7 +1483,7 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
       }
       // Priority 2: Fairness (descending)
       if (b.fairness !== a.fairness) {
-        return b.fairness - a.fairness;
+      return b.fairness - a.fairness;
       }
       // Priority 3: Net Run Rate (descending)
       const nrrA = a.nrr || 0;
@@ -1493,52 +1513,52 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
     // Prepare knockout fixtures
     const knockoutFixtures = [
       {
-        team1: top4[0].teamName, // Top 1
-        team2: top4[3].teamName, // Top 4
+      team1: top4[0].teamName, // Top 1
+      team2: top4[3].teamName, // Top 4
         team1UserId: top1UserId,
         team2UserId: top4UserId,
-        winner: null,
-        margin: null,
-        team1Score: null,
-        team2Score: null,
+      winner: null,
+      margin: null,
+      team1Score: null,
+      team2Score: null,
         team1Overs: null,
         team2Overs: null,
-        team1Fairness: 0,
-        team2Fairness: 0,
-        mom: { name: null, score: null, wickets: null },
-        createdAt: new Date()
+      team1Fairness: 0,
+      team2Fairness: 0,
+      mom: { name: null, score: null, wickets: null },
+      createdAt: new Date()
       },
       {
-        team1: top4[1].teamName, // Top 2
-        team2: top4[2].teamName, // Top 3
+      team1: top4[1].teamName, // Top 2
+      team2: top4[2].teamName, // Top 3
         team1UserId: top2UserId,
         team2UserId: top3UserId,
-        winner: null,
-        margin: null,
-        team1Score: null,
-        team2Score: null,
+      winner: null,
+      margin: null,
+      team1Score: null,
+      team2Score: null,
         team1Overs: null,
         team2Overs: null,
-        team1Fairness: 0,
-        team2Fairness: 0,
-        mom: { name: null, score: null, wickets: null },
-        createdAt: new Date()
+      team1Fairness: 0,
+      team2Fairness: 0,
+      mom: { name: null, score: null, wickets: null },
+      createdAt: new Date()
       },
       {
-        team1: 'Winner of Semi-Final 1',
-        team2: 'Winner of Semi-Final 2',
+      team1: 'Winner of Semi-Final 1',
+      team2: 'Winner of Semi-Final 2',
         team1UserId: null,
         team2UserId: null,
-        winner: null,
-        margin: null,
-        team1Score: null,
-        team2Score: null,
+      winner: null,
+      margin: null,
+      team1Score: null,
+      team2Score: null,
         team1Overs: null,
         team2Overs: null,
-        team1Fairness: 0,
-        team2Fairness: 0,
-        mom: { name: null, score: null, wickets: null },
-        createdAt: new Date()
+      team1Fairness: 0,
+      team2Fairness: 0,
+      mom: { name: null, score: null, wickets: null },
+      createdAt: new Date()
       }
     ];
 
