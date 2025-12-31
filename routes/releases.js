@@ -73,7 +73,8 @@ async function attachInsights(docs) {
   return Promise.all(
     docs.map(async doc => {
       const insight = await buildReleaseInsight(doc);
-      const obj = doc.toObject({ virtuals: true });
+      // Handle both Mongoose documents and plain objects (from .lean())
+      const obj = doc.toObject ? doc.toObject({ virtuals: true }) : { ...doc };
       if (insight) obj.aiInsight = insight;
       return obj;
     })
@@ -138,8 +139,18 @@ router.get('/admin/pending', async (req, res) => {
       .populate('player', 'name type role')
       .sort({ updatedAt: -1 })
       .lean();
-    const enriched = await attachInsights(list);
-    res.json(enriched);
+    
+    // Safely attach insights - if it fails, return list without insights
+    let enriched = list;
+    try {
+      enriched = await attachInsights(list);
+    } catch (insightError) {
+      console.error('Error attaching insights to release requests:', insightError);
+      // Continue without insights rather than failing the entire request
+      enriched = list;
+    }
+    
+    res.json(enriched || []);
   } catch (e) {
     console.error('Release pending error', e);
     res.status(500).json({ message: 'Internal server error' });
