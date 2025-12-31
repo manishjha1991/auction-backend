@@ -1415,7 +1415,7 @@ router.get('/:id/round-robin-status', async (req, res) => {
 // POST /api/tournaments/:id/generate-knockout - Generate semi-finals and finals after round-robin (admin only)
 router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
   try {
-    const tournament = await Tournament.findById(req.params.id);
+    let tournament = await Tournament.findById(req.params.id);
     if (!tournament) {
       return res.status(404).json({ error: 'Tournament not found' });
     }
@@ -1441,8 +1441,19 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
     // Update point table first
     await updateTournamentPointTable(tournament._id);
 
+    // Reload tournament to get latest version after point table update
+    tournament = await Tournament.findById(req.params.id);
+    if (!tournament) {
+      return res.status(404).json({ error: 'Tournament not found after point table update' });
+    }
+
+    // Check if point table exists and has teams
+    if (!tournament.pointTable || tournament.pointTable.length === 0) {
+      return res.status(400).json({ error: 'Point table is empty. Please ensure all round-robin matches are completed and point table is updated.' });
+    }
+
     // Get top 4 teams from point table (sorted by points desc, then fairness desc, then NRR desc)
-    const sortedPointTable = tournament.pointTable.sort((a, b) => {
+    const sortedPointTable = [...tournament.pointTable].sort((a, b) => {
       // Priority 1: Points (descending)
       if (b.points !== a.points) {
         return b.points - a.points;
@@ -1476,53 +1487,68 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
     const top2UserId = getUserIdFromTeamName(top4[1].teamName);
     const top3UserId = getUserIdFromTeamName(top4[2].teamName);
 
-    tournament.tournamentFixtures.push({
-      team1: top4[0].teamName, // Top 1
-      team2: top4[3].teamName, // Top 4
-      team1UserId: top1UserId, // userId-based
-      team2UserId: top4UserId, // userId-based
-      winner: null,
-      margin: null,
-      team1Score: null,
-      team2Score: null,
-      team1Fairness: 0,
-      team2Fairness: 0,
-      mom: { name: null, score: null, wickets: null },
-      createdAt: new Date()
-    });
+    // Prepare knockout fixtures
+    const knockoutFixtures = [
+      {
+        team1: top4[0].teamName, // Top 1
+        team2: top4[3].teamName, // Top 4
+        team1UserId: top1UserId,
+        team2UserId: top4UserId,
+        winner: null,
+        margin: null,
+        team1Score: null,
+        team2Score: null,
+        team1Overs: null,
+        team2Overs: null,
+        team1Fairness: 0,
+        team2Fairness: 0,
+        mom: { name: null, score: null, wickets: null },
+        createdAt: new Date()
+      },
+      {
+        team1: top4[1].teamName, // Top 2
+        team2: top4[2].teamName, // Top 3
+        team1UserId: top2UserId,
+        team2UserId: top3UserId,
+        winner: null,
+        margin: null,
+        team1Score: null,
+        team2Score: null,
+        team1Overs: null,
+        team2Overs: null,
+        team1Fairness: 0,
+        team2Fairness: 0,
+        mom: { name: null, score: null, wickets: null },
+        createdAt: new Date()
+      },
+      {
+        team1: 'Winner of Semi-Final 1',
+        team2: 'Winner of Semi-Final 2',
+        team1UserId: null,
+        team2UserId: null,
+        winner: null,
+        margin: null,
+        team1Score: null,
+        team2Score: null,
+        team1Overs: null,
+        team2Overs: null,
+        team1Fairness: 0,
+        team2Fairness: 0,
+        mom: { name: null, score: null, wickets: null },
+        createdAt: new Date()
+      }
+    ];
 
-    tournament.tournamentFixtures.push({
-      team1: top4[1].teamName, // Top 2
-      team2: top4[2].teamName, // Top 3
-      team1UserId: top2UserId, // userId-based
-      team2UserId: top3UserId, // userId-based
-      winner: null,
-      margin: null,
-      team1Score: null,
-      team2Score: null,
-      team1Fairness: 0,
-      team2Fairness: 0,
-      mom: { name: null, score: null, wickets: null },
-      createdAt: new Date()
-    });
+    // Use findByIdAndUpdate to atomically add fixtures (avoids version conflicts)
+    const updatedTournament = await Tournament.findByIdAndUpdate(
+      req.params.id,
+      { $push: { tournamentFixtures: { $each: knockoutFixtures } } },
+      { new: true }
+    );
 
-    // Add final placeholder (no userIds for placeholders)
-    tournament.tournamentFixtures.push({
-      team1: 'Winner of Semi-Final 1',
-      team2: 'Winner of Semi-Final 2',
-      team1UserId: null, // Will be updated when semi-final winners are determined
-      team2UserId: null, // Will be updated when semi-final winners are determined
-      winner: null,
-      margin: null,
-      team1Score: null,
-      team2Score: null,
-      team1Fairness: 0,
-      team2Fairness: 0,
-      mom: { name: null, score: null, wickets: null },
-      createdAt: new Date()
-    });
-
-    await tournament.save();
+    if (!updatedTournament) {
+      return res.status(404).json({ error: 'Tournament not found when saving knockout fixtures' });
+    }
 
     res.json({
       message: 'Knockout fixtures generated successfully',
@@ -1532,7 +1558,15 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Generate knockout fixtures error:', error);
-    res.status(500).json({ error: 'Failed to generate knockout fixtures' });
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    res.status(500).json({ 
+      error: 'Failed to generate knockout fixtures',
+      details: error.message || 'Unknown error'
+    });
   }
 });
 
