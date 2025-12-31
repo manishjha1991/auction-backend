@@ -1043,20 +1043,23 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
 
     await tournament.save();
 
-    // Auto-update point table when winner is set OR when scores/overs are updated
-    // This ensures NRR is recalculated when scores or overs change
-    if (winner || team1Score !== undefined || team2Score !== undefined || team1Overs !== undefined || team2Overs !== undefined) {
+    // Check if this is a knockout fixture (semi-final or final)
+    const currentFixture = tournament.tournamentFixtures[fixtureIndex];
+    const isKnockoutFixture = currentFixture.team1?.includes('Winner of') || 
+                              currentFixture.team1?.includes('Top ') ||
+                              currentFixture.team2?.includes('Winner of') || 
+                              currentFixture.team2?.includes('Top ');
+    
+    // Auto-update point table ONLY for round-robin fixtures (NOT for semi-finals or finals)
+    // Knockout matches don't affect the point table
+    if (!isKnockoutFixture && (winner || team1Score !== undefined || team2Score !== undefined || team1Overs !== undefined || team2Overs !== undefined)) {
       await updateTournamentPointTable(tournament._id);
-      
+    }
+    
+    // Handle knockout fixture logic (semi-finals and finals)
+    if (isKnockoutFixture && (winner || team1Score !== undefined || team2Score !== undefined || team1Overs !== undefined || team2Overs !== undefined)) {
       // ONLY update tournament winner when updating KNOCKOUT fixtures (semi-final or final)
       // DO NOT update winner for round-robin (Super 8) fixtures
-      const currentFixture = tournament.tournamentFixtures[fixtureIndex];
-      
-      // STRICT CHECK: Only update winner for knockout fixtures
-      const isKnockoutFixture = currentFixture.team1?.includes('Winner of') || 
-                                currentFixture.team1?.includes('Top ') ||
-                                currentFixture.team2?.includes('Winner of') || 
-                                currentFixture.team2?.includes('Top ');
       
       // If it's NOT a knockout fixture, NEVER update tournament winner
       if (!isKnockoutFixture) {
