@@ -80,8 +80,8 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
 
   try {
     // 1. Fetch the player
-    // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const player = await Player.findById(playerId).lean();
+    // NOTE: Cannot use .lean() here because we need to save the player later
+    const player = await Player.findById(playerId);
     if (!player) {
       return res.status(404).json({ message: "Player not found" });
     }

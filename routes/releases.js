@@ -166,6 +166,38 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
     if (!item) return res.status(404).json({ message: 'Release request not found' });
     
     if (decision === 'approve') {
+      // VALIDATION: Check type limits before approving release
+      // Note: Release reduces count, so we check if user would go below minimum, not above maximum
+      // But we still need to validate that the user actually owns this player type
+      const user = await User.findById(item.user).populate('boughtPlayers');
+      const player = await Player.findById(item.player);
+      
+      if (!user || !player) {
+        return res.status(404).json({ message: 'User or player not found' });
+      }
+      
+      // Count how many players of this type the user currently has
+      const currentCount = await Player.countDocuments({
+        _id: { $in: user.boughtPlayers },
+        type: player.type,
+      });
+      
+      // Check minimum requirements (user should not go below minimum after release)
+      // After release, count will be currentCount - 1, so we check if that would be below minimum
+      const typeMinimum = {
+        Gold: 8,
+        Silver: 6,
+        Emerald: 4,
+        Sapphire: 2,
+      };
+      
+      const countAfterRelease = currentCount - 1;
+      if (countAfterRelease < typeMinimum[player.type]) {
+        return res.status(400).json({ 
+          message: `Cannot approve release: User has ${currentCount} ${player.type} player(s). Releasing would result in ${countAfterRelease}, which is below the minimum requirement of ${typeMinimum[player.type]}.` 
+        });
+      }
+      
       // deactivate ownership
       const up = await UserPlayer.findOne({ userId: item.user, playerId: item.player, isActive: true });
       if (up) { 

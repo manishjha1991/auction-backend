@@ -494,11 +494,31 @@ router.get("/purses", async (req, res) => {
         const trophyCount = teamWins.length;
         const runnerUpCount = teamLosses.length;
 
+        // Convert purse from Decimal128 to Number
+        // Handle both Decimal128 object and lean() format ($numberDecimal)
+        let purseValue = 0;
+        if (user.purse) {
+          if (typeof user.purse === 'object') {
+            // Check if it's the lean() format with $numberDecimal
+            if (user.purse.$numberDecimal !== undefined) {
+              purseValue = parseFloat(user.purse.$numberDecimal);
+            } else if (user.purse.toString) {
+              // It's a Decimal128 object
+              purseValue = parseFloat(user.purse.toString());
+            } else {
+              purseValue = parseFloat(user.purse) || 0;
+            }
+          } else {
+            // It's already a number or string
+            purseValue = parseFloat(user.purse) || 0;
+          }
+        }
+
         return {
           id: user._id, // Add user ID for frontend reference
           userName: user.name,
           teamName: user.teamName,
-          purseValue: parseFloat(user.purse.toString()), // Convert Decimal128 to Number
+          purseValue: purseValue, // Convert Decimal128 to Number safely
           players: [...soldPlayers, ...biddingPlayers], // Combine sold and bidding players
           trophyCount: trophyCount,
           runnerUpCount: runnerUpCount

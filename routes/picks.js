@@ -155,6 +155,35 @@ router.post('/admin/:pickId/decide', async (req, res) => {
     if (!item) return res.status(404).json({ message: 'Pick request not found' });
 
     if (decision === 'approve') {
+      // VALIDATION: Check type limits before approving
+      const user = await User.findById(item.user).populate('boughtPlayers');
+      const player = await Player.findById(item.player);
+      
+      if (!user || !player) {
+        return res.status(404).json({ message: 'User or player not found' });
+      }
+      
+      // Check type limits
+      const typeLimit = {
+        Sapphire: 2,
+        Gold: 8,
+        Emerald: 4,
+        Silver: 6,
+      };
+      
+      // Count bought players of this type (including retained)
+      const boughtPlayersOfThisType = await Player.countDocuments({
+        _id: { $in: user.boughtPlayers },
+        type: player.type,
+      });
+      
+      // Check if approving would exceed limit
+      if (boughtPlayersOfThisType >= typeLimit[player.type]) {
+        return res.status(400).json({ 
+          message: `Cannot approve: User already has ${boughtPlayersOfThisType} ${player.type} player(s). Maximum allowed is ${typeLimit[player.type]}.` 
+        });
+      }
+      
       // Call existing sold API to finalize sale without altering its logic
       const base = process.env.SELF_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
       const soldResp = await axios.post(`${base}/api/bids/bid/sold`, { playerID: item.player });
