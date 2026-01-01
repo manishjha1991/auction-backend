@@ -1043,10 +1043,31 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
 
     // Check if this is a knockout fixture (semi-final or final) BEFORE saving
     const currentFixture = tournament.tournamentFixtures[fixtureIndex];
-    const isKnockoutFixture = currentFixture.team1?.includes('Winner of') || 
-                              currentFixture.team1?.includes('Top ') ||
-                              currentFixture.team2?.includes('Winner of') || 
-                              currentFixture.team2?.includes('Top ');
+    
+    // Calculate round-robin count (for 8 teams: 28 matches)
+    const roundRobinCount = 28;
+    
+    // Check if it's a knockout fixture by:
+    // 1. Has placeholder text ("Winner of" or "Top ")
+    // 2. OR it's after the round-robin fixtures (index >= roundRobinCount)
+    const hasPlaceholder = currentFixture.team1?.includes('Winner of') || 
+                          currentFixture.team1?.includes('Top ') ||
+                          currentFixture.team2?.includes('Winner of') || 
+                          currentFixture.team2?.includes('Top ');
+    const isAfterRoundRobin = fixtureIndex >= roundRobinCount;
+    const isKnockoutFixture = hasPlaceholder || isAfterRoundRobin;
+    
+    console.log(`🔍 Fixture Update Debug:`, {
+      fixtureIndex,
+      totalFixtures: tournament.tournamentFixtures.length,
+      team1: currentFixture.team1,
+      team2: currentFixture.team2,
+      winner,
+      hasPlaceholder,
+      isAfterRoundRobin,
+      isKnockoutFixture,
+      roundRobinCount
+    });
     
     // Save the tournament first
     await tournament.save();
@@ -1074,27 +1095,37 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
       // Only proceed if it's a knockout fixture
       // Check if this is the FINAL match (not semi-final)
       const isFinalMatch = (() => {
-        // Method 1: Check if this is the actual final placeholder (Winner of Semi-Final 1 vs Winner of Semi-Final 2)
+        // PRIMARY METHOD: Check if it's the LAST fixture in the tournament
+        // For 8 teams: 28 round-robin + 2 semi-finals + 1 final = 31 fixtures (indices 0-30)
+        // The final is ALWAYS at the last index, regardless of team names
+        const isLastFixture = fixtureIndex === tournament.tournamentFixtures.length - 1;
+        
+        if (isLastFixture && winner) {
+          console.log(`✅ Final match detected: Last fixture (index ${fixtureIndex} of ${tournament.tournamentFixtures.length - 1})`);
+          return true;
+        }
+        
+        // Method 2: Check if this is the actual final placeholder (Winner of Semi-Final 1 vs Winner of Semi-Final 2)
         const isActualFinalPlaceholder = (currentFixture.team1 === 'Winner of Semi-Final 1' && 
                                          currentFixture.team2 === 'Winner of Semi-Final 2') ||
                                         (currentFixture.team1 === 'Winner of Semi-Final 2' && 
                                          currentFixture.team2 === 'Winner of Semi-Final 1');
         
         if (isActualFinalPlaceholder && winner) {
-          return true; // This is the final placeholder being updated with a winner
+          console.log(`✅ Final match detected: Final placeholder`);
+          return true;
         }
-        
-        // Method 2: Check if it's the LAST fixture in the tournament (index 30 for 31 fixtures)
-        // For 8 teams: 28 round-robin + 2 semi-finals + 1 final = 31 fixtures (indices 0-30)
-        // The final is always at the last index
-        const isLastFixture = fixtureIndex === tournament.tournamentFixtures.length - 1;
         
         // Method 3: Check if it's the last knockout fixture
         // Get all knockout fixtures (those with placeholders OR after round-robin)
-        const roundRobinCount = 28; // For 8 teams
         const knockoutFixtures = tournament.tournamentFixtures.slice(roundRobinCount);
         const isLastKnockout = fixtureIndex >= roundRobinCount && 
                               (fixtureIndex - roundRobinCount) === knockoutFixtures.length - 1;
+        
+        if (isLastKnockout && winner) {
+          console.log(`✅ Final match detected: Last knockout fixture`);
+          return true;
+        }
         
         // Method 4: Check if it's a semi-final (semi-finals have "Top 1", "Top 2", etc. but NOT "Winner of")
         const isSemiFinal = !currentFixture.team1?.includes('Winner of') && 
@@ -1102,14 +1133,8 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
                            (currentFixture.team1?.includes('Top ') || currentFixture.team2?.includes('Top '));
         
         if (isSemiFinal) {
+          console.log(`ℹ️  Semi-final detected (not final)`);
           return false; // Semi-finals are NOT the final
-        }
-        
-        // If it's the last fixture OR last knockout fixture AND has a winner, it's the final
-        // This works even if the final has actual team names (not placeholders)
-        if ((isLastFixture || isLastKnockout) && winner) {
-          console.log(`✅ Final match detected by position: fixtureIndex=${fixtureIndex}, totalFixtures=${tournament.tournamentFixtures.length}, isLastFixture=${isLastFixture}, isLastKnockout=${isLastKnockout}`);
-          return true;
         }
         
         // Method 5: Check if it has "Winner of" and is in the final fixtures list
@@ -1121,16 +1146,39 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
           f.team1 === currentFixture.team1 && f.team2 === currentFixture.team2
         );
         
-        return isInFinalFixtures && winner;
+        // If it's in final fixtures and has a winner, it's the final
+        if (isInFinalFixtures && winner) {
+          console.log(`✅ Final match detected: In final fixtures list`);
+          return true;
+        }
+        
+        return false;
       })();
       
       // ONLY update tournament winner when the FINAL match (not semi-final) is updated
-      if (isFinalMatch && winner && !tournament.winner?.teamName) {
+      console.log(`🔍 Final Match Detection:`, {
+        isFinalMatch,
+        winner,
+        fixtureIndex,
+        totalFixtures: tournament.tournamentFixtures.length,
+        isLastFixture: fixtureIndex === tournament.tournamentFixtures.length - 1,
+        team1: currentFixture.team1,
+        team2: currentFixture.team2
+      });
+      
+      if (isFinalMatch && winner) {
         const completionDate = new Date();
         const winnerTeam = tournament.subscribedTeams.find(t => 
           t.teamName === winner
         );
         
+        if (!winnerTeam) {
+          console.error(`❌ Winner team "${winner}" not found in subscribed teams:`, 
+            tournament.subscribedTeams.map(t => t.teamName));
+        }
+        
+        // Update tournament winner from final match result (even if already set, allows re-setting)
+        // This ensures the tournament winner always matches the final match winner
         tournament.winner = {
           teamName: winner,
           teamImage: winnerTeam?.teamImage || null,
@@ -1143,6 +1191,10 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
       } else if (!isFinalMatch && isKnockoutFixture) {
         // This is a semi-final or other knockout fixture (not final) - don't update tournament winner
         console.log(`ℹ️  Knockout fixture updated (not final) - tournament winner not updated`);
+      } else if (!isFinalMatch && !isKnockoutFixture) {
+        console.log(`ℹ️  Round-robin fixture updated - tournament winner not updated`);
+      } else if (isFinalMatch && !winner) {
+        console.log(`⚠️  Final match detected but no winner specified`);
       }
       
       // Auto-update final fixture when semi-finals complete (only for knockout fixtures)
@@ -1263,6 +1315,84 @@ router.post('/:id/reset-winner', isAdmin, async (req, res) => {
   } catch (error) {
     console.error('Reset tournament winner error:', error);
     res.status(500).json({ error: 'Failed to reset tournament winner' });
+  }
+});
+
+// POST /api/tournaments/:id/sync-winner-from-final - Sync tournament winner from final match fixture (admin only)
+router.post('/:id/sync-winner-from-final', isAdmin, async (req, res) => {
+  try {
+    const tournament = await Tournament.findById(req.params.id);
+    if (!tournament) {
+      return res.status(404).json({ error: 'Tournament not found' });
+    }
+
+    if (!tournament.tournamentFixtures || tournament.tournamentFixtures.length === 0) {
+      return res.status(400).json({ error: 'No fixtures found in tournament' });
+    }
+
+    // Find the final match - it's the last fixture in the tournament
+    // For 8 teams: 28 round-robin + 2 semi-finals + 1 final = 31 fixtures (index 30)
+    const finalFixtureIndex = tournament.tournamentFixtures.length - 1;
+    const finalFixture = tournament.tournamentFixtures[finalFixtureIndex];
+
+    if (!finalFixture) {
+      return res.status(404).json({ error: 'Final fixture not found' });
+    }
+
+    // Check if final fixture has a winner
+    if (!finalFixture.winner) {
+      return res.status(400).json({ 
+        error: 'Final match does not have a winner yet',
+        finalFixture: {
+          team1: finalFixture.team1,
+          team2: finalFixture.team2,
+          winner: finalFixture.winner
+        }
+      });
+    }
+
+    const winner = finalFixture.winner;
+    const winnerTeam = tournament.subscribedTeams.find(t => 
+      t.teamName === winner
+    );
+
+    if (!winnerTeam) {
+      return res.status(400).json({ 
+        error: `Winner team "${winner}" not found in tournament subscribed teams`,
+        availableTeams: tournament.subscribedTeams.map(t => t.teamName)
+      });
+    }
+
+    // Update tournament winner from final match
+    const completionDate = new Date();
+    tournament.winner = {
+      teamName: winner,
+      teamImage: winnerTeam.teamImage || null,
+      wonAt: completionDate
+    };
+    tournament.status = 'completed';
+    tournament.endDate = completionDate;
+
+    await tournament.save();
+
+    console.log(`✅ Synced tournament winner from final match: ${winner}`);
+    res.json({ 
+      message: 'Tournament winner synced successfully from final match',
+      tournament: {
+        _id: tournament._id,
+        name: tournament.name,
+        winner: tournament.winner,
+        status: tournament.status
+      },
+      finalFixture: {
+        team1: finalFixture.team1,
+        team2: finalFixture.team2,
+        winner: finalFixture.winner
+      }
+    });
+  } catch (error) {
+    console.error('Sync tournament winner from final error:', error);
+    res.status(500).json({ error: 'Failed to sync tournament winner from final match' });
   }
 });
 
