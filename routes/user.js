@@ -21,6 +21,7 @@ const UserPlayer = require('../models/UserPlayer');
 const TradeRequest = require('../models/TradeRequest');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const MatchResult = require('../models/MatchResult');
+const Tournament = require('../models/Tournament');
 const multer = require('multer');
 const path = require('path');
 // Configure Multer for file uploads
@@ -407,7 +408,7 @@ router.get("/purses", async (req, res) => {
     
     // OPTIMIZATION: Fetch all data in parallel with single queries (excluding admin users)
     // 🚀 PERFORMANCE: All queries already use .lean() - optimized!
-    const [users, allUserPlayers, allActiveBids, matchResults] = await Promise.all([
+    const [users, allUserPlayers, allActiveBids, matchResults, worldCupTournaments] = await Promise.all([
       User.find({ isAdmin: { $ne: true } }).select("name teamName purse _id").lean(),
       UserPlayer.find({ isActive: true }).populate("playerId", "name type role").lean(),
       Bid.find({ isActive: true, isBidOn: true })
@@ -415,7 +416,11 @@ router.get("/purses", async (req, res) => {
         .populate("bidder", "name _id")
         .sort({ bidAmount: -1 })
         .lean(),
-      MatchResult.find({}).lean()
+      MatchResult.find({}).lean(),
+      Tournament.find({ 
+        status: 'completed',
+        name: { $regex: /^World Cup/ }
+      }).select('name winner endDate tournamentFixtures').lean()
     ]);
     
     console.log(`⏱️ Data fetch took: ${Date.now() - startTime}ms`);
@@ -494,6 +499,80 @@ router.get("/purses", async (req, res) => {
         const trophyCount = teamWins.length;
         const runnerUpCount = teamLosses.length;
 
+        // Calculate World Cup wins for this team
+        const worldCupWins = worldCupTournaments.filter(tournament => {
+          return tournament.winner && 
+                 tournament.winner.teamName && 
+                 tournament.winner.teamName === user.teamName;
+        });
+        
+        const worldCupCount = worldCupWins.length;
+        const worldCupWinsList = worldCupWins.map(wc => ({
+          tournamentName: wc.name,
+          wonAt: wc.winner?.wonAt || wc.endDate || null
+        }));
+
+        // Calculate World Cup runner-ups (teams that reached final but lost)
+        // Helper function to normalize team names for comparison
+        const normalizeTeamName = (name) => {
+          if (!name) return '';
+          return name.trim().toLowerCase();
+        };
+        
+        const worldCupRunnerUps = worldCupTournaments.filter(tournament => {
+          // Check if tournament has a winner
+          if (!tournament.winner || !tournament.winner.teamName) return false;
+          
+          const normalizedUserTeam = normalizeTeamName(user.teamName);
+          const normalizedTournamentWinner = normalizeTeamName(tournament.winner.teamName);
+          
+          // If this team is the winner, they're not a runner-up
+          if (normalizedUserTeam === normalizedTournamentWinner) return false;
+          
+          // Check if this team was in the final match
+          if (tournament.tournamentFixtures && tournament.tournamentFixtures.length > 0) {
+            // Get the final fixture (last fixture)
+            const finalFixture = tournament.tournamentFixtures[tournament.tournamentFixtures.length - 1];
+            
+            if (finalFixture) {
+              // Normalize team names for comparison
+              const normalizedTeam1 = normalizeTeamName(finalFixture.team1);
+              const normalizedTeam2 = normalizeTeamName(finalFixture.team2);
+              
+              // Check if this team was in the final (team1 or team2)
+              const wasInFinal = (normalizedTeam1 === normalizedUserTeam || normalizedTeam2 === normalizedUserTeam);
+              
+              // If team was in final and didn't win, they're the runner-up
+              if (wasInFinal) {
+                // Debug logging for Shantanu
+                if (normalizedUserTeam.includes('shantanu')) {
+                  console.log(`✅ World Cup Runner-up FOUND for ${user.teamName}:`, {
+                    tournamentName: tournament.name,
+                    finalFixtureTeam1: finalFixture.team1,
+                    finalFixtureTeam2: finalFixture.team2,
+                    tournamentWinner: tournament.winner.teamName,
+                    userTeamName: user.teamName
+                  });
+                }
+                return true;
+              }
+            }
+          }
+          
+          return false;
+        });
+        
+        const worldCupRunnerUpCount = worldCupRunnerUps.length;
+        
+        // Debug logging
+        if (user.teamName?.toLowerCase().includes('shantanu')) {
+          console.log(`🔍 World Cup Runner-up Check for ${user.teamName}:`, {
+            totalWorldCups: worldCupTournaments.length,
+            runnerUpCount: worldCupRunnerUpCount,
+            worldCupWins: worldCupCount
+          });
+        }
+
         // Convert purse from Decimal128 to Number
         // Handle both Decimal128 object and lean() format ($numberDecimal)
         let purseValue = 0;
@@ -521,7 +600,10 @@ router.get("/purses", async (req, res) => {
           purseValue: purseValue, // Convert Decimal128 to Number safely
           players: [...soldPlayers, ...biddingPlayers], // Combine sold and bidding players
           trophyCount: trophyCount,
-          runnerUpCount: runnerUpCount
+          runnerUpCount: runnerUpCount,
+          worldCupCount: worldCupCount,
+          worldCupRunnerUpCount: worldCupRunnerUpCount,
+          worldCupWins: worldCupWinsList // Array of World Cup wins with tournament name and date
         };
       });
 
