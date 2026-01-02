@@ -1123,9 +1123,10 @@ const parseOvers = (oversString) => {
   return null; // Invalid format, will use default
 };
 
-// Calculate Net Run Rate (NRR) for a team
+// Calculate Net Run Rate (NRR) for a team following ICC rules
 // NRR = (Total Runs Scored / Total Overs Faced) - (Total Runs Conceded / Total Overs Bowled)
-// Uses actual overs if provided, defaults to 20 if not
+// Uses overs from main fixtures (team1Overs and team2Overs) - these are the actual overs played by both teams
+// ICC Rule: If a team is all out (10 wickets), use full quota (20 overs) for NRR calculation
 const calculateNRR = (fixtures, teamName, userId) => {
   const DEFAULT_OVERS = 20; // Standard T20 format - used if overs not provided
   let totalRunsScored = 0;
@@ -1160,17 +1161,30 @@ const calculateNRR = (fixtures, teamName, userId) => {
     const team1Wickets = parseWickets(score1);
     const team2Wickets = parseWickets(score2);
 
-    // Parse overs - use actual overs if provided, otherwise default to 20
-    let team1Overs = parseOvers(fixture.team1Overs) ?? DEFAULT_OVERS;
-    let team2Overs = parseOvers(fixture.team2Overs) ?? DEFAULT_OVERS;
+    // ICC RULE: Use overs from fixture (team1Overs and team2Overs) - these are the actual overs played by both teams
+    // Main fixtures have total overs played by both teams - we MUST use these for accurate NRR calculation
+    let team1Overs = parseOvers(fixture.team1Overs);
+    let team2Overs = parseOvers(fixture.team2Overs);
+    
+    // If overs are not provided in fixture, use default (shouldn't happen for completed matches with overs)
+    // But log a warning to help identify data issues
+    if (team1Overs === null) {
+      console.warn(`⚠️ Missing team1Overs in fixture for ${fixture.team1} vs ${fixture.team2}. Using default ${DEFAULT_OVERS} overs.`);
+      team1Overs = DEFAULT_OVERS;
+    }
+    if (team2Overs === null) {
+      console.warn(`⚠️ Missing team2Overs in fixture for ${fixture.team1} vs ${fixture.team2}. Using default ${DEFAULT_OVERS} overs.`);
+      team2Overs = DEFAULT_OVERS;
+    }
 
-    // REAL CRICKET RULE: If a team is all out (10 wickets), use full quota (20 overs) for NRR
-    // This is the standard rule in cricket - all-out teams are considered to have faced full quota
+    // ICC RULE: If a team is all out (10 wickets), use full quota (20 overs) for NRR calculation
+    // This is the standard ICC rule - all-out teams are considered to have faced their full quota
+    // This overrides the actual overs played (e.g., if team was all out in 18.3 overs, use 20.0 for NRR)
     if (team1Wickets === 10) {
-      team1Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
+      team1Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation per ICC rules
     }
     if (team2Wickets === 10) {
-      team2Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
+      team2Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation per ICC rules
     }
 
     // Match by userId first (more reliable), then fall back to teamName
@@ -1321,19 +1335,21 @@ router.get('/points-table', async (req, res) => {
       };
     });
 
-    // Sort the points table
+    // Sort the points table: Points → NRR → Fairness
     const sortedPointsTable = pointsTable.sort((a, b) => {
       // Priority 1: Points (descending)
       if (b.points !== a.points) {
         return b.points - a.points;
       }
-      // Priority 2: Fairness (descending)
+      // Priority 2: Net Run Rate (descending)
+      const nrrA = a.nrr || 0;
+      const nrrB = b.nrr || 0;
+      if (nrrB !== nrrA) {
+        return nrrB - nrrA;
+      }
+      // Priority 3: Fairness (descending)
       if (b.fairness !== a.fairness) {
         return b.fairness - a.fairness;
-      }
-      // Priority 3: Net Run Rate (descending)
-      if (b.nrr !== a.nrr) {
-        return b.nrr - a.nrr;
       }
       // Priority 4: Matches played (ascending)
       if (a.matchesPlayed !== b.matchesPlayed) {

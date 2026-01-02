@@ -898,20 +898,24 @@ router.get('/:id/point-table', isAuthenticated, async (req, res) => {
       abbreviation: teamAbbreviationMap[entry.teamName] || null
     }));
 
-    // Sort by points (desc) then by fairness (desc) then by NRR (desc)
+    // Sort by points (desc) then by NRR (desc) then by fairness (desc)
     const sortedPointTable = pointTableWithAbbr.sort((a, b) => {
       // Priority 1: Points (descending)
       if (b.points !== a.points) {
         return b.points - a.points;
       }
-      // Priority 2: Fairness (descending)
+      // Priority 2: Net Run Rate (descending)
+      const nrrA = a.nrr || 0;
+      const nrrB = b.nrr || 0;
+      if (nrrB !== nrrA) {
+        return nrrB - nrrA;
+      }
+      // Priority 3: Fairness (descending)
       if (b.fairness !== a.fairness) {
         return b.fairness - a.fairness;
       }
-      // Priority 3: Net Run Rate (descending)
-      const nrrA = a.nrr || 0;
-      const nrrB = b.nrr || 0;
-      return nrrB - nrrA;
+      // If all equal, maintain current order
+      return 0;
     });
 
     res.json({ pointTable: sortedPointTable });
@@ -1615,20 +1619,24 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Point table is empty. Please ensure all round-robin matches are completed and point table is updated.' });
     }
 
-    // Get top 4 teams from point table (sorted by points desc, then fairness desc, then NRR desc)
+    // Get top 4 teams from point table (sorted by points desc, then NRR desc, then fairness desc)
     const sortedPointTable = [...tournament.pointTable].sort((a, b) => {
       // Priority 1: Points (descending)
       if (b.points !== a.points) {
         return b.points - a.points;
       }
-      // Priority 2: Fairness (descending)
-      if (b.fairness !== a.fairness) {
-      return b.fairness - a.fairness;
-      }
-      // Priority 3: Net Run Rate (descending)
+      // Priority 2: Net Run Rate (descending)
       const nrrA = a.nrr || 0;
       const nrrB = b.nrr || 0;
-      return nrrB - nrrA;
+      if (nrrB !== nrrA) {
+        return nrrB - nrrA;
+      }
+      // Priority 3: Fairness (descending)
+      if (b.fairness !== a.fairness) {
+        return b.fairness - a.fairness;
+      }
+      // If all equal, maintain current order
+      return 0;
     });
 
     const top4 = sortedPointTable.slice(0, 4);
