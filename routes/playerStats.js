@@ -1266,7 +1266,19 @@ router.get('/stats-overview', async (req, res) => {
       }
 
       // 3) Highest Wicket Taker (single match)
-      if (wickets > highestWicketsCount) {
+      // Priority: 1) Most wickets, 2) Fewer runs given (better economy)
+      const shouldUpdate = (() => {
+        if (wickets > highestWicketsCount) {
+          return true; // More wickets = better
+        }
+        if (wickets === highestWicketsCount && highestWicketsDoc) {
+          // Same wickets, pick the one with fewer runs given
+          return runsGiven < highestWicketsDoc.runsGiven;
+        }
+        return false;
+      })();
+      
+      if (shouldUpdate) {
         highestWicketsCount = wickets;
         highestWicketsDoc = {
           playerName,
