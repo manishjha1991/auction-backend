@@ -1853,6 +1853,407 @@ router.get('/check-bought-players-status', async (req, res) => {
   }
 });
 
+// GET: Calculate what's needed to reach a target position
+router.get('/position-calculator/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { targetPosition } = req.query;
+    
+    if (!targetPosition || isNaN(targetPosition)) {
+      return res.status(400).json({ message: 'Target position is required and must be a number' });
+    }
+
+    const targetPos = parseInt(targetPosition);
+
+    // Get current point table (reuse the logic from /points-table)
+    const users = await User.find({ 
+      teamName: { $exists: true, $ne: null, $ne: "NA" }, 
+      isActive: true,
+      isAdmin: false
+    })
+    .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage')
+    .lean();
+
+    if (!users.length) {
+      return res.status(404).json({ message: 'No teams found' });
+    }
+
+    // Fetch all completed fixtures to calculate NRR
+    const fixtures = await Fixture.find({
+      isActive: true,
+      winner: { $ne: null, $exists: true }
+    })
+    .select('team1 team2 team1UserId team2UserId team1Score team2Score team1Overs team2Overs winner')
+    .lean();
+
+    // Calculate point table with NRR
+    const pointsTable = users.map((user) => {
+      const matchesPlayed = user.matchesPlayed || 0;
+      const points = user.points || 0;
+      const fairness = user.fairnessPoint || 0;
+      const wins = Math.floor(points / 2);
+      const losses = matchesPlayed - wins;
+      const nrr = calculateNRR(fixtures, user.teamName, user._id);
+
+      return {
+        _id: user._id,
+        teamName: user.abbreviation || user.teamName || 'Unknown',
+        originalTeamName: user.teamName || 'Unknown',
+        matchesPlayed,
+        points,
+        wins,
+        losses,
+        fairness,
+        nrr,
+        teamImage: user.teamImage || ''
+      };
+    });
+
+    // Sort the points table: Points → NRR → Fairness
+    const sortedPointsTable = pointsTable.sort((a, b) => {
+      if (b.points !== a.points) {
+        return b.points - a.points;
+      }
+      const nrrA = a.nrr || 0;
+      const nrrB = b.nrr || 0;
+      if (nrrB !== nrrA) {
+        return nrrB - nrrA;
+      }
+      if (b.fairness !== a.fairness) {
+        return b.fairness - a.fairness;
+      }
+      if (a.matchesPlayed !== b.matchesPlayed) {
+        return a.matchesPlayed - b.matchesPlayed;
+      }
+      const teamNameA = a.teamName || '';
+      const teamNameB = b.teamName || '';
+      return teamNameA.localeCompare(teamNameB);
+    });
+
+    // Add rank to each team
+    const rankedPointsTable = sortedPointsTable.map((team, index) => ({
+      rank: index + 1,
+      ...team,
+    }));
+
+    // Find current user's position
+    const currentUser = rankedPointsTable.find(t => t._id.toString() === userId.toString());
+    if (!currentUser) {
+      return res.status(404).json({ message: 'User not found in point table' });
+    }
+
+    const currentPosition = currentUser.rank;
+
+    // Check if target position is valid
+    if (targetPos < 1 || targetPos > rankedPointsTable.length) {
+      return res.status(400).json({ 
+        message: `Target position must be between 1 and ${rankedPointsTable.length}` 
+      });
+    }
+
+    if (targetPos === currentPosition) {
+      return res.json({
+        currentPosition,
+        targetPosition: targetPos,
+        message: 'You are already at the target position!',
+        requirements: null
+      });
+    }
+
+    if (targetPos > currentPosition) {
+      return res.status(400).json({ 
+        message: 'Target position must be better (lower number) than current position' 
+      });
+    }
+
+    // Find target position team
+    const targetTeam = rankedPointsTable.find(t => t.rank === targetPos);
+    if (!targetTeam) {
+      return res.status(404).json({ message: 'Target position not found' });
+    }
+
+    // Calculate remaining matches
+    // Assuming each team plays 13 matches (round-robin for 8 teams)
+    const TOTAL_MATCHES = 13;
+    const remainingMatches = Math.max(0, TOTAL_MATCHES - currentUser.matchesPlayed);
+
+    if (remainingMatches === 0) {
+      return res.json({
+        currentPosition,
+        targetPosition: targetPos,
+        message: 'No remaining matches. Cannot improve position.',
+        requirements: null
+      });
+    }
+
+    // Calculate what's needed to surpass target position
+    // To surpass, we need to be strictly better in at least one criterion:
+    // 1. More points, OR
+    // 2. Same points but better NRR, OR
+    // 3. Same points and NRR but better fairness
+
+    const targetPoints = targetTeam.points;
+    const targetNRR = targetTeam.nrr || 0;
+    const targetFairness = targetTeam.fairness || 0;
+
+    const currentPoints = currentUser.points;
+    const currentNRR = currentUser.nrr || 0;
+    const currentFairness = currentUser.fairness || 0;
+
+    // Calculate required improvements
+    const pointsNeeded = targetPoints - currentPoints + 1; // Need at least 1 more point
+    const pointsFromWins = Math.ceil(pointsNeeded / 2); // Each win = 2 points
+    const minWinsNeeded = Math.max(0, pointsFromWins);
+
+    // Calculate NRR improvement needed (if points will be equal)
+    let nrrImprovementNeeded = 0;
+    if (pointsNeeded <= remainingMatches * 2) {
+      // If we can match points, calculate NRR needed
+      if (currentNRR <= targetNRR) {
+        nrrImprovementNeeded = targetNRR - currentNRR + 0.001; // Need to be slightly better
+      }
+    }
+
+    // Calculate fairness improvement needed (if points and NRR will be equal)
+    let fairnessImprovementNeeded = 0;
+    if (pointsNeeded <= remainingMatches * 2 && nrrImprovementNeeded === 0) {
+      if (currentFairness <= targetFairness) {
+        fairnessImprovementNeeded = targetFairness - currentFairness + 1; // Need at least 1 more
+      }
+    }
+
+    // Calculate current NRR totals from fixtures for the user
+    let currentTotalRunsScored = 0;
+    let currentTotalRunsConceded = 0;
+    let currentTotalOversFaced = 0;
+    let currentTotalOversBowled = 0;
+    let currentMatchesCount = 0;
+
+    fixtures.forEach((fixture) => {
+      if (!fixture.winner) return;
+
+      const score1 = fixture.team1Score;
+      const score2 = fixture.team2Score;
+      const team1Runs = parseRuns(score1);
+      const team2Runs = parseRuns(score2);
+
+      if (team1Runs === 0 && team2Runs === 0) return;
+
+      const team1OversActual = parseOvers(fixture.team1Overs) || 20;
+      const team2OversActual = parseOvers(fixture.team2Overs) || 20;
+
+      const userIdStr = currentUser._id.toString();
+      const team1UserIdStr = fixture.team1UserId ? fixture.team1UserId.toString() : null;
+      const team2UserIdStr = fixture.team2UserId ? fixture.team2UserId.toString() : null;
+
+      let isTeam1 = false;
+      let isTeam2 = false;
+
+      if (userIdStr) {
+        if (team1UserIdStr === userIdStr) isTeam1 = true;
+        else if (team2UserIdStr === userIdStr) isTeam2 = true;
+      }
+
+      if (!isTeam1 && !isTeam2) {
+        if (fixture.team1 && fixture.team1.trim().toLowerCase() === currentUser.originalTeamName.trim().toLowerCase()) {
+          isTeam1 = true;
+        } else if (fixture.team2 && fixture.team2.trim().toLowerCase() === currentUser.originalTeamName.trim().toLowerCase()) {
+          isTeam2 = true;
+        }
+      }
+
+      if (!isTeam1 && !isTeam2) return;
+
+      if (isTeam1) {
+        currentTotalRunsScored += team1Runs;
+        currentTotalRunsConceded += team2Runs;
+        currentTotalOversFaced += team1OversActual;
+        currentTotalOversBowled += team2OversActual;
+      } else {
+        currentTotalRunsScored += team2Runs;
+        currentTotalRunsConceded += team1Runs;
+        currentTotalOversFaced += team2OversActual;
+        currentTotalOversBowled += team1OversActual;
+      }
+
+      currentMatchesCount++;
+    });
+
+    // Helper function to calculate new NRR after a match
+    const calculateNewNRR = (yourRuns, yourOvers, opponentRuns, opponentOvers) => {
+      const newTotalRunsScored = currentTotalRunsScored + yourRuns;
+      const newTotalRunsConceded = currentTotalRunsConceded + opponentRuns;
+      const newTotalOversFaced = currentTotalOversFaced + yourOvers;
+      const newTotalOversBowled = currentTotalOversBowled + opponentOvers;
+
+      const runsScoredPerOver = newTotalOversFaced > 0 ? newTotalRunsScored / newTotalOversFaced : 0;
+      const runsConcededPerOver = newTotalOversBowled > 0 ? newTotalRunsConceded / newTotalOversBowled : 0;
+      return parseFloat((runsScoredPerOver - runsConcededPerOver).toFixed(3));
+    };
+
+    // Calculate match scenarios for next match
+    const matchScenarios = [];
+
+    // Scenario 1: Batting First - Different scores
+    const battingFirstScores = [150, 160, 170, 180, 190, 200];
+    for (const yourScore of battingFirstScores) {
+      // Assume opponent chases and loses by different margins
+      for (const margin of [1, 3, 5, 7, 10]) {
+        const opponentScore = yourScore - margin;
+        const yourOvers = 20.0;
+        const opponentOvers = 20.0; // Assume they use all 20 overs
+
+        const newNRR = calculateNewNRR(yourScore, yourOvers, opponentScore, opponentOvers);
+        const newPoints = currentPoints + 2; // Win = 2 points
+
+        const willSurpass = newPoints > targetPoints ||
+          (newPoints === targetPoints && newNRR > targetNRR) ||
+          (newPoints === targetPoints && newNRR === targetNRR && currentFairness > targetFairness);
+
+        if (willSurpass || matchScenarios.length < 5) {
+          matchScenarios.push({
+            type: 'bat_first',
+            description: `Score ${yourScore} runs in 20 overs, restrict opponent to ${opponentScore} runs (win by ${margin} runs)`,
+            yourScore,
+            opponentScore,
+            yourOvers: 20.0,
+            opponentOvers: 20.0,
+            margin: `${margin} runs`,
+            newPoints,
+            newNRR,
+            willSurpass
+          });
+        }
+      }
+    }
+
+    // Scenario 2: Batting Second - Different chase scenarios
+    const opponentScores = [150, 160, 170, 180, 190, 200];
+    for (const opponentScore of opponentScores) {
+      // Chase with different wickets remaining (more wickets = better NRR)
+      for (const wicketsRemaining of [1, 3, 5, 7, 9]) {
+        const yourScore = opponentScore + 1; // Win by 1 run
+        const opponentOvers = 20.0;
+        // Calculate overs used based on wickets remaining
+        // More wickets = fewer overs needed (better NRR)
+        // Formula: overs = 20 - (wicketsRemaining * 1.5) gives realistic scenarios
+        const yourOvers = Math.max(10.0, 20.0 - (wicketsRemaining * 1.2)); // At least 10 overs
+
+        const newNRR = calculateNewNRR(yourScore, yourOvers, opponentScore, opponentOvers);
+        const newPoints = currentPoints + 2;
+
+        const willSurpass = newPoints > targetPoints ||
+          (newPoints === targetPoints && newNRR > targetNRR) ||
+          (newPoints === targetPoints && newNRR === targetNRR && currentFairness > targetFairness);
+
+        if (willSurpass || matchScenarios.length < 10) {
+          matchScenarios.push({
+            type: 'bat_second',
+            description: `Chase ${opponentScore} runs in ${yourOvers.toFixed(1)} overs (win by ${10 - wicketsRemaining} wickets)`,
+            yourScore,
+            opponentScore,
+            yourOvers,
+            opponentOvers: 20.0,
+            margin: `${10 - wicketsRemaining} wickets`,
+            newPoints,
+            newNRR,
+            willSurpass
+          });
+        }
+      }
+    }
+
+    // Sort scenarios: willSurpass first, then by NRR improvement
+    matchScenarios.sort((a, b) => {
+      if (a.willSurpass !== b.willSurpass) {
+        return b.willSurpass - a.willSurpass; // True first
+      }
+      return b.newNRR - a.newNRR; // Higher NRR first
+    });
+
+    // Take top 10 scenarios
+    const topMatchScenarios = matchScenarios.slice(0, 10);
+
+    // Calculate scenarios
+    const scenarios = [];
+
+    // Scenario 1: Win all remaining matches
+    const winsAllPoints = currentPoints + (remainingMatches * 2);
+    const winsAllBetter = winsAllPoints > targetPoints || 
+                         (winsAllPoints === targetPoints && currentNRR > targetNRR) ||
+                         (winsAllPoints === targetPoints && currentNRR === targetNRR && currentFairness > targetFairness);
+    
+    scenarios.push({
+      type: 'win_all',
+      description: `Win all ${remainingMatches} remaining matches`,
+      points: winsAllPoints,
+      nrr: currentNRR, // NRR will change based on actual match results
+      fairness: currentFairness, // Fairness will change based on actual match results
+      willReach: winsAllBetter,
+      note: winsAllBetter ? 'This will help you reach the target position' : 'May need additional NRR/fairness improvements'
+    });
+
+    // Scenario 2: Minimum wins needed
+    if (minWinsNeeded > 0 && minWinsNeeded <= remainingMatches) {
+      const minPoints = currentPoints + (minWinsNeeded * 2);
+      const minBetter = minPoints > targetPoints || 
+                       (minPoints === targetPoints && currentNRR > targetNRR) ||
+                       (minPoints === targetPoints && currentNRR === targetNRR && currentFairness > targetFairness);
+      
+      scenarios.push({
+        type: 'minimum',
+        description: `Win at least ${minWinsNeeded} out of ${remainingMatches} matches`,
+        points: minPoints,
+        nrr: currentNRR,
+        fairness: currentFairness,
+        willReach: minBetter,
+        note: minBetter ? 'This is the minimum, but you may need better NRR/fairness' : 'Need to improve NRR or fairness as well'
+      });
+    }
+
+    res.json({
+      currentPosition,
+      targetPosition: targetPos,
+      currentStats: {
+        points: currentPoints,
+        nrr: currentNRR,
+        fairness: currentFairness,
+        matchesPlayed: currentUser.matchesPlayed,
+        wins: currentUser.wins,
+        losses: currentUser.losses
+      },
+      targetStats: {
+        teamName: targetTeam.teamName,
+        points: targetPoints,
+        nrr: targetNRR,
+        fairness: targetFairness,
+        matchesPlayed: targetTeam.matchesPlayed,
+        wins: targetTeam.wins,
+        losses: targetTeam.losses
+      },
+      remainingMatches,
+      requirements: {
+        pointsNeeded,
+        minWinsNeeded,
+        nrrImprovementNeeded: nrrImprovementNeeded > 0 ? parseFloat(nrrImprovementNeeded.toFixed(3)) : 0,
+        fairnessImprovementNeeded
+      },
+      scenarios,
+      matchScenarios: topMatchScenarios,
+      currentNRRTotals: {
+        runsScored: currentTotalRunsScored,
+        runsConceded: currentTotalRunsConceded,
+        oversFaced: currentTotalOversFaced,
+        oversBowled: currentTotalOversBowled,
+        matchesCount: currentMatchesCount
+      }
+    });
+  } catch (error) {
+    console.error('Error calculating position requirements:', error);
+    res.status(500).json({ message: 'Internal server error', error: error.message });
+  }
+});
+
 module.exports = router;
 
 
