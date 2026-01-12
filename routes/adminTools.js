@@ -419,33 +419,41 @@ router.post('/target/calculate', async (req, res) => {
     // Calculate base projection (if they continue at same rate)
     let baseProjection = runsScored + (currentRunRate * remainingOvers);
 
+    // Normalize all power ratings first
+    const normalizedOnStrike = normalizePower(onStrikePower);
+    const normalizedNonStrike = normalizePower(nonStrikePower);
+    const nextPlayers = Array.isArray(nextPlayersPower) ? nextPlayersPower : [];
+    const normalizedNextPlayers = nextPlayers.map(p => normalizePower(p));
+    
+    // Check if all players have the same normalized power
+    const allPowers = [normalizedOnStrike, normalizedNonStrike, ...normalizedNextPlayers];
+    const uniquePowers = [...new Set(allPowers)];
+    const allPlayersSamePower = uniquePowers.length === 1 && allPowers.length > 0;
+
     // Calculate expected runs from remaining players based on power ratings
     let expectedRunsFromRemaining = 0;
     let powerAnalysis = [];
 
     // On-strike player contribution
-    const onStrike = parseInt(onStrikePower) || 60;
-    const onStrikeRuns = calculatePlayerRuns(onStrike, remainingOvers, groundSize, true);
+    const onStrikeRuns = calculatePlayerRuns(normalizedOnStrike, remainingOvers, groundSize, true, allPlayersSamePower);
     expectedRunsFromRemaining += onStrikeRuns;
-    powerAnalysis.push({ player: 'On Strike', power: onStrike, expectedRuns: onStrikeRuns });
+    powerAnalysis.push({ player: 'On Strike', power: normalizedOnStrike, expectedRuns: onStrikeRuns, originalPower: parseInt(onStrikePower) || 60 });
 
     // Non-strike player contribution (will face some balls)
-    const nonStrike = parseInt(nonStrikePower) || 60;
-    const nonStrikeRuns = calculatePlayerRuns(nonStrike, remainingOvers * 0.4, groundSize, false); // Non-strike faces ~40% of balls
+    const nonStrikeRuns = calculatePlayerRuns(normalizedNonStrike, remainingOvers * 0.4, groundSize, false, allPlayersSamePower); // Non-strike faces ~40% of balls
     expectedRunsFromRemaining += nonStrikeRuns;
-    powerAnalysis.push({ player: 'Non-Strike', power: nonStrike, expectedRuns: nonStrikeRuns });
+    powerAnalysis.push({ player: 'Non-Strike', power: normalizedNonStrike, expectedRuns: nonStrikeRuns, originalPower: parseInt(nonStrikePower) || 60 });
 
     // Next players (if wickets fall)
-    const nextPlayers = Array.isArray(nextPlayersPower) ? nextPlayersPower : [];
     let totalNextPlayersRuns = 0;
-    nextPlayers.forEach((power, index) => {
-      const playerPower = parseInt(power) || 60;
+    normalizedNextPlayers.forEach((normalizedPower, index) => {
       // Each next player might face some overs if wickets fall
       // Assume each wicket lost = ~2 overs of batting opportunity
-      const oversForPlayer = Math.min(2, remainingOvers / (nextPlayers.length + 1));
-      const playerRuns = calculatePlayerRuns(playerPower, oversForPlayer, groundSize, false);
+      const oversForPlayer = Math.min(2, remainingOvers / (normalizedNextPlayers.length + 1));
+      const playerRuns = calculatePlayerRuns(normalizedPower, oversForPlayer, groundSize, false, allPlayersSamePower);
       totalNextPlayersRuns += playerRuns;
-      powerAnalysis.push({ player: `Next ${index + 1}`, power: playerPower, expectedRuns: playerRuns });
+      const originalPower = parseInt(nextPlayers[index]) || 60;
+      powerAnalysis.push({ player: `Next ${index + 1}`, power: normalizedPower, expectedRuns: playerRuns, originalPower: originalPower });
     });
 
     // Add next players contribution (weighted by probability of wickets falling)
@@ -505,29 +513,53 @@ router.post('/target/calculate', async (req, res) => {
   }
 });
 
+// Helper function to normalize power rating
+function normalizePower(power) {
+  const powerNum = parseInt(power) || 60;
+  if (powerNum < 70) {
+    return 60; // Anything below 70 → 60 (bowler)
+  } else if (powerNum < 80) {
+    return 78; // Anything below 80 (but >= 70) → 78
+  } else {
+    return powerNum; // 80+ → keep as is
+  }
+}
+
 // Helper function to calculate expected runs from a player based on power rating
-function calculatePlayerRuns(power, overs, groundSize, isOnStrike) {
-  // Base runs per over based on power rating
-  // 80+ power = excellent hitter (especially in death overs) = 10-12 runs/over
-  // 78 power = good hitter = 8-10 runs/over
-  // 60 power (bowlers) = poor hitter = 3-5 runs/over
+function calculatePlayerRuns(power, overs, groundSize, isOnStrike, allPlayersSamePower = false) {
+  // Normalize power rating
+  const normalizedPower = normalizePower(power);
   
+  // Base runs per over based on normalized power rating
   let baseRunsPerOver = 5; // Default for 60 power
   
-  if (power >= 80) {
+  if (normalizedPower >= 80) {
     baseRunsPerOver = isOnStrike ? 11 : 10; // On-strike gets slightly more
-  } else if (power >= 78) {
+  } else if (normalizedPower === 78) {
     baseRunsPerOver = isOnStrike ? 9 : 8;
-  } else if (power >= 75) {
-    baseRunsPerOver = isOnStrike ? 7 : 6;
-  } else if (power >= 70) {
-    baseRunsPerOver = isOnStrike ? 6 : 5;
   } else {
-    // 60-69 power (bowlers)
+    // 60 power (bowlers)
     baseRunsPerOver = isOnStrike ? 4 : 3;
   }
 
-  // Ground size adjustment (already factored in base, but can fine-tune)
+  // If all players have the same power, adjust for realism
+  // When all bowlers (60) → they struggle more, reduce runs
+  // When all 78 → moderate performance
+  // When all 80+ → excellent performance, but not unrealistic
+  if (allPlayersSamePower) {
+    if (normalizedPower === 60) {
+      // All bowlers - they really struggle, reduce by 20%
+      baseRunsPerOver *= 0.8;
+    } else if (normalizedPower === 78) {
+      // All 78 - consistent moderate performance, slight boost
+      baseRunsPerOver *= 1.05;
+    } else if (normalizedPower >= 80) {
+      // All 80+ - excellent but realistic, slight reduction to avoid unrealistic scores
+      baseRunsPerOver *= 0.95;
+    }
+  }
+
+  // Ground size adjustment
   let groundAdjustment = 1.0;
   if (groundSize === 'small') {
     groundAdjustment = 1.15; // Small ground = easier boundaries
