@@ -353,7 +353,7 @@ router.post('/users/:userId/active', async (req, res) => {
   }
 });
 
-// Target Calculator based on CPL METHOD (DLS) for rain-affected matches
+// Target Calculator based on CPL METHOD (DLS) for network or game glitch disconnected matches
 // POST: Calculate target based on CPL DLS method (available to all users)
 router.post('/target/calculate', async (req, res) => {
   try {
@@ -416,10 +416,11 @@ router.post('/target/calculate', async (req, res) => {
     const oversAvailable = parseFloat(team2OversAvailable);
     const remainingOvers = oversAvailable - oversFaced;
 
-    // CPL METHOD can only be applied if match is disconnected after 10 overs
-    if (oversFaced < 10) {
+    // CPL METHOD can only be applied if match is disconnected after more than 10 overs
+    // Must be MORE than 10 overs (not equal to 10)
+    if (oversFaced <= 10) {
       return res.status(400).json({ 
-        message: 'CPL METHOD (DLS) can only be applied if match is disconnected after 10 overs of first innings' 
+        message: 'CPL METHOD (DLS) can only be applied if match is disconnected after more than 10 overs of first innings. Current overs: ' + oversFaced 
       });
     }
 
