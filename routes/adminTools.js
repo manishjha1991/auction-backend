@@ -436,16 +436,19 @@ router.post('/target/calculate', async (req, res) => {
     const nonStrike = parseInt(nonStrikePower) || 60;
     const nextPlayers = Array.isArray(nextPlayersPower) ? nextPlayersPower : [];
     
-    // All remaining players to bat (including current players at crease)
+    // All remaining players to bat (including current players at crease) - for power bonus calculation
     const allRemainingPlayers = [onStrike, nonStrike, ...nextPlayers];
     
-    // Check if ANY remaining player (batsman/allrounder) has 70+ power
-    const has70PlusPlayer = allRemainingPlayers.some(power => parseInt(power) >= 70);
+    // IMPORTANT: RPO is based on: on-strike, non-strike, OR batsmen left to bat
+    // Check if ANY of: on-strike, non-strike, OR batsmen left to bat has 70+ power (70 is included)
+    const has70PlusOnStrike = parseInt(onStrike) >= 70;
+    const has70PlusNonStrike = parseInt(nonStrike) >= 70;
+    const has70PlusBatsmanLeft = nextPlayers.some(power => parseInt(power) >= 70);
     
-    // Determine runs per over based on remaining players
-    // If ANY player has 70+ power → 6 runs per over
-    // If NO player has 70+ power (all < 70) → 3 runs per over
-    const runsPerOver = has70PlusPlayer ? 6 : 3;
+    // If ANY of these has 70+ power → 6 runs per over
+    // If NONE has 70+ power (all < 70) → 3 runs per over
+    const has70PlusAnywhere = has70PlusOnStrike || has70PlusNonStrike || has70PlusBatsmanLeft;
+    const runsPerOver = has70PlusAnywhere ? 6 : 3;
     
     // Calculate runs from remaining overs
     const remainingOversRuns = remainingOvers * runsPerOver;
@@ -513,7 +516,10 @@ router.post('/target/calculate', async (req, res) => {
         projectedTotal: projectedTotal,
         target,
         requiredRunRate: parseFloat(requiredRunRate.toFixed(2)),
-        has70PlusPlayer: has70PlusPlayer,
+        has70PlusAnywhere: has70PlusAnywhere,
+        has70PlusOnStrike: has70PlusOnStrike,
+        has70PlusNonStrike: has70PlusNonStrike,
+        has70PlusBatsmanLeft: has70PlusBatsmanLeft,
         powerAnalysis,
         calculationDetails
       }
