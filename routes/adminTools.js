@@ -468,14 +468,15 @@ router.post('/target/calculate', async (req, res) => {
       }
       
       // Power bonus calculation
+      // 60-69 power players & any bowler = 2 runs
       if (playerPower >= 80) {
         bonus = 10; // 80+ Power: 10 runs
       } else if (playerPower >= 70) {
         bonus = 6; // 70-79 Power: 6 runs
-      } else if (playerPower >= 60) {
-        bonus = 4; // 60-69 Power: 4 runs
+      } else if (playerPower >= 60 && playerPower < 70) {
+        bonus = 2; // 60-69 Power: 2 runs (bowlers)
       } else {
-        bonus = 2; // Below 60 & Bowlers: 2 runs
+        bonus = 2; // Below 60: 2 runs
       }
       
       totalPowerBonus += bonus;
