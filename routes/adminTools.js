@@ -353,8 +353,8 @@ router.post('/users/:userId/active', async (req, res) => {
   }
 });
 
-// Target Calculator based on Run Rate and Player Power Ratings (for rain-affected matches)
-// POST: Calculate target based on run rate, player power ratings, and ground size
+// Target Calculator based on CPL METHOD (DLS) for rain-affected matches
+// POST: Calculate target based on CPL DLS method
 router.post('/target/calculate', async (req, res) => {
   try {
     const { adminUserId, matchData } = req.body;
@@ -365,10 +365,9 @@ router.post('/target/calculate', async (req, res) => {
       team1Wickets,
       team1Overs,
       team2OversAvailable, // Overs available for team 2 (e.g., 20 overs)
-      groundSize, // 'small', 'medium', 'big'
-      onStrikePower, // Power rating of player on strike (e.g., 80, 78, 60)
-      nonStrikePower, // Power rating of player on non-strike (e.g., 75, 78, 60)
-      nextPlayersPower // Array of power ratings for next players (e.g., [60, 60, 60] for bowlers)
+      onStrikePower, // Power rating of player on strike
+      nonStrikePower, // Power rating of player on non-strike
+      nextPlayersPower // Array of power ratings for next players
     } = matchData;
 
     // Validate inputs
@@ -405,6 +404,13 @@ router.post('/target/calculate', async (req, res) => {
     const oversAvailable = parseFloat(team2OversAvailable);
     const remainingOvers = oversAvailable - oversFaced;
 
+    // CPL METHOD can only be applied if match is disconnected after 10 overs
+    if (oversFaced < 10) {
+      return res.status(400).json({ 
+        message: 'CPL METHOD (DLS) can only be applied if match is disconnected after 10 overs of first innings' 
+      });
+    }
+
     if (oversFaced === 0) {
       return res.status(400).json({ message: 'Team 1 overs cannot be zero' });
     }
@@ -413,76 +419,72 @@ router.post('/target/calculate', async (req, res) => {
       return res.status(400).json({ message: 'Team 2 overs available must be greater than Team 1 overs faced' });
     }
 
-    // Calculate current run rate
-    const currentRunRate = runsScored / oversFaced;
-    
-    // Calculate base projection (if they continue at same rate)
-    let baseProjection = runsScored + (currentRunRate * remainingOvers);
-
-    // Normalize all power ratings first
-    const normalizedOnStrike = normalizePower(onStrikePower);
-    const normalizedNonStrike = normalizePower(nonStrikePower);
+    // Get all remaining players (including on-strike and non-strike)
+    const onStrike = parseInt(onStrikePower) || 60;
+    const nonStrike = parseInt(nonStrikePower) || 60;
     const nextPlayers = Array.isArray(nextPlayersPower) ? nextPlayersPower : [];
-    const normalizedNextPlayers = nextPlayers.map(p => normalizePower(p));
     
-    // Check if all players have the same normalized power
-    const allPowers = [normalizedOnStrike, normalizedNonStrike, ...normalizedNextPlayers];
-    const uniquePowers = [...new Set(allPowers)];
-    const allPlayersSamePower = uniquePowers.length === 1 && allPowers.length > 0;
-
-    // Calculate expected runs from remaining players based on power ratings
-    let expectedRunsFromRemaining = 0;
-    let powerAnalysis = [];
-
-    // On-strike player contribution
-    const onStrikeRuns = calculatePlayerRuns(normalizedOnStrike, remainingOvers, groundSize, true, allPlayersSamePower);
-    expectedRunsFromRemaining += onStrikeRuns;
-    powerAnalysis.push({ player: 'On Strike', power: normalizedOnStrike, expectedRuns: onStrikeRuns, originalPower: parseInt(onStrikePower) || 60 });
-
-    // Non-strike player contribution (will face some balls)
-    const nonStrikeRuns = calculatePlayerRuns(normalizedNonStrike, remainingOvers * 0.4, groundSize, false, allPlayersSamePower); // Non-strike faces ~40% of balls
-    expectedRunsFromRemaining += nonStrikeRuns;
-    powerAnalysis.push({ player: 'Non-Strike', power: normalizedNonStrike, expectedRuns: nonStrikeRuns, originalPower: parseInt(nonStrikePower) || 60 });
-
-    // Next players (if wickets fall)
-    let totalNextPlayersRuns = 0;
-    normalizedNextPlayers.forEach((normalizedPower, index) => {
-      // Each next player might face some overs if wickets fall
-      // Assume each wicket lost = ~2 overs of batting opportunity
-      const oversForPlayer = Math.min(2, remainingOvers / (normalizedNextPlayers.length + 1));
-      const playerRuns = calculatePlayerRuns(normalizedPower, oversForPlayer, groundSize, false, allPlayersSamePower);
-      totalNextPlayersRuns += playerRuns;
-      const originalPower = parseInt(nextPlayers[index]) || 60;
-      powerAnalysis.push({ player: `Next ${index + 1}`, power: normalizedPower, expectedRuns: playerRuns, originalPower: originalPower });
+    // All remaining players to bat (including current players at crease)
+    const allRemainingPlayers = [onStrike, nonStrike, ...nextPlayers];
+    
+    // Check if ANY remaining player (batsman/allrounder) has 70+ power
+    const has70PlusPlayer = allRemainingPlayers.some(power => parseInt(power) >= 70);
+    
+    // Determine runs per over based on remaining players
+    // If ANY player has 70+ power → 6 runs per over
+    // If NO player has 70+ power (all < 70) → 3 runs per over
+    const runsPerOver = has70PlusPlayer ? 6 : 3;
+    
+    // Calculate runs from remaining overs
+    const remainingOversRuns = remainingOvers * runsPerOver;
+    
+    // Calculate power bonus for each remaining player (including players at crease)
+    let totalPowerBonus = 0;
+    const powerAnalysis = [];
+    
+    allRemainingPlayers.forEach((power, index) => {
+      const playerPower = parseInt(power) || 60;
+      let bonus = 0;
+      let playerLabel = '';
+      
+      if (index === 0) {
+        playerLabel = 'On Strike';
+      } else if (index === 1) {
+        playerLabel = 'Non-Strike';
+      } else {
+        playerLabel = `Next ${index - 1}`;
+      }
+      
+      // Power bonus calculation
+      if (playerPower >= 80) {
+        bonus = 10; // 80+ Power: 10 runs
+      } else if (playerPower >= 70) {
+        bonus = 6; // 70-79 Power: 6 runs
+      } else if (playerPower >= 60) {
+        bonus = 4; // 60-69 Power: 4 runs
+      } else {
+        bonus = 2; // Below 60 & Bowlers: 2 runs
+      }
+      
+      totalPowerBonus += bonus;
+      powerAnalysis.push({
+        player: playerLabel,
+        power: playerPower,
+        bonus: bonus,
+        originalPower: playerPower
+      });
     });
-
-    // Add next players contribution (weighted by probability of wickets falling)
-    // If many wickets left, less likely all will fall, so weight it
-    const wicketsRemaining = 10 - wicketsLost;
-    const wicketFallProbability = Math.min(0.7, wicketsRemaining / 10); // Max 70% chance of wickets falling
-    expectedRunsFromRemaining += totalNextPlayersRuns * wicketFallProbability;
-
-    // Calculate projected total score
-    const projectedTotal = runsScored + expectedRunsFromRemaining;
-
-    // Ground size final adjustment
-    let groundMultiplier = 1.0;
-    if (groundSize === 'small') {
-      groundMultiplier = 1.12; // Small ground = 12% easier to score
-    } else if (groundSize === 'big') {
-      groundMultiplier = 0.88; // Big ground = 12% harder to score
-    }
-    // Medium ground = 1.0 (no adjustment)
-
-    // Calculate final target
-    const adjustedProjection = projectedTotal * groundMultiplier;
-    const target = Math.ceil(adjustedProjection) + 1; // +1 to win
-
+    
+    // Final target calculation
+    // Total = Current score + Remaining overs runs + Power bonus
+    const projectedTotal = runsScored + remainingOversRuns + totalPowerBonus;
+    const target = projectedTotal + 1; // +1 to win
+    
     // Calculate required run rate
     const requiredRunRate = target / oversAvailable;
-
-    // Build adjustment reason
-    let adjustmentReason = `Ground: ${groundSize} (${groundMultiplier > 1 ? '+' : ''}${Math.round((groundMultiplier - 1) * 100)}%)`;
+    
+    // Build calculation details
+    const calculationDetails = `CPL METHOD: ${remainingOvers} overs × ${runsPerOver} RPO = ${remainingOversRuns} runs. Power bonus: ${totalPowerBonus} runs.`;
 
     res.json({
       success: true,
@@ -492,17 +494,15 @@ router.post('/target/calculate', async (req, res) => {
         team1Wickets: wicketsLost,
         team2OversAvailable: oversAvailable,
         remainingOvers: parseFloat(remainingOvers.toFixed(1)),
-        currentRunRate: parseFloat(currentRunRate.toFixed(2)),
-        baseProjection: Math.round(baseProjection),
-        expectedRunsFromRemaining: Math.round(expectedRunsFromRemaining),
-        projectedTotal: Math.round(projectedTotal),
-        groundMultiplier: parseFloat(groundMultiplier.toFixed(2)),
-        adjustedProjection: Math.round(adjustedProjection),
+        runsPerOver: runsPerOver,
+        remainingOversRuns: remainingOversRuns,
+        totalPowerBonus: totalPowerBonus,
+        projectedTotal: projectedTotal,
         target,
         requiredRunRate: parseFloat(requiredRunRate.toFixed(2)),
-        groundSize,
+        has70PlusPlayer: has70PlusPlayer,
         powerAnalysis,
-        adjustmentReason
+        calculationDetails
       }
     });
   } catch (error) {
