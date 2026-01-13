@@ -354,11 +354,23 @@ router.post('/users/:userId/active', async (req, res) => {
 });
 
 // Target Calculator based on CPL METHOD (DLS) for rain-affected matches
-// POST: Calculate target based on CPL DLS method
+// POST: Calculate target based on CPL DLS method (available to all users)
 router.post('/target/calculate', async (req, res) => {
   try {
-    const { adminUserId, matchData } = req.body;
-    await requireAdmin(adminUserId);
+    const { userId, matchData } = req.body;
+    
+    // Optional: validate user exists (but don't require admin)
+    if (userId) {
+      try {
+        const user = await User.findById(userId).select('_id name');
+        if (!user) {
+          return res.status(400).json({ message: 'User not found' });
+        }
+      } catch (userError) {
+        // Continue even if user validation fails - allow public access
+        console.warn('User validation failed, continuing:', userError);
+      }
+    }
 
     const {
       team1Score,
