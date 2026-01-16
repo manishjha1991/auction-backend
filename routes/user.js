@@ -2254,6 +2254,782 @@ router.get('/position-calculator/:userId', async (req, res) => {
   }
 });
 
+// Advanced Position Calculator with Permutations
+// GET /api/users/position-calculator-advanced/:userId?targetPosition=1&qualifyFor=top1
+router.get('/position-calculator-advanced/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const targetPos = parseInt(req.query.targetPosition) || 1;
+    const qualifyFor = req.query.qualifyFor || 'top1'; // top1, top2, top3, or any position number
+
+    const TOTAL_MATCHES = 13;
+
+    // Fetch all fixtures to get remaining matches
+    const Fixture = require('../models/Fixture');
+    const allFixtures = await Fixture.find({ isActive: true }).lean();
+
+    // Calculate point table for all teams
+    const users = await User.find({
+      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isActive: true,
+      isTournamentReady: true,
+      isAdmin: { $ne: true }
+    }).lean();
+
+    // Helper functions (same as before)
+    const parseRuns = (scoreString) => {
+      if (!scoreString) return 0;
+      const scoreStr = String(scoreString).trim();
+      if (scoreStr === 'null' || scoreStr === 'TBD' || scoreStr === 'NA' || scoreStr === '' || scoreStr === 'undefined' || scoreStr.toLowerCase() === 'null') {
+        return 0;
+      }
+      const match = scoreStr.match(/^(\d+)/);
+      if (match) {
+        const runs = parseInt(match[1], 10);
+        return isNaN(runs) ? 0 : runs;
+      }
+      const num = parseFloat(scoreStr);
+      return isNaN(num) ? 0 : Math.floor(num);
+    };
+
+    const parseOvers = (oversString) => {
+      if (!oversString) return null;
+      const oversStr = String(oversString).trim();
+      if (oversStr === 'null' || oversStr === 'TBD' || oversStr === 'NA' || oversStr === '') {
+        return null;
+      }
+      const match = oversStr.match(/(\d+)\.?(\d*)/);
+      if (match) {
+        const whole = parseInt(match[1], 10);
+        const fraction = match[2] ? parseInt(match[2], 10) : 0;
+        return whole + (fraction / 6);
+      }
+      return null;
+    };
+
+    const calculateNRR = (fixtures, teamName, userId) => {
+      const DEFAULT_OVERS = 20;
+      let totalRunsScored = 0;
+      let totalRunsConceded = 0;
+      let totalOversFaced = 0;
+      let totalOversBowled = 0;
+      let matchesCount = 0;
+
+      const userIdStr = userId ? userId.toString() : null;
+
+      fixtures.forEach((fixture) => {
+        if (!fixture.winner) return;
+
+        const score1 = fixture.team1Score;
+        const score2 = fixture.team2Score;
+        const team1Runs = parseRuns(score1);
+        const team2Runs = parseRuns(score2);
+
+        if (team1Runs === 0 && team2Runs === 0) return;
+
+        let team1OversActual = parseOvers(fixture.team1Overs);
+        let team2OversActual = parseOvers(fixture.team2Overs);
+
+        if (team1OversActual === null) team1OversActual = DEFAULT_OVERS;
+        if (team2OversActual === null) team2OversActual = DEFAULT_OVERS;
+
+        let team1OversFaced = team1OversActual;
+        let team2OversFaced = team2OversActual;
+
+        let isTeam1 = false;
+        let isTeam2 = false;
+        
+        if (userIdStr) {
+          if (fixture.team1UserId && fixture.team1UserId.toString() === userIdStr) {
+            isTeam1 = true;
+          } else if (fixture.team2UserId && fixture.team2UserId.toString() === userIdStr) {
+            isTeam2 = true;
+          }
+        }
+        
+        if (!isTeam1 && !isTeam2) {
+          if (fixture.team1 && fixture.team1.trim().toLowerCase() === teamName.trim().toLowerCase()) {
+            isTeam1 = true;
+          } else if (fixture.team2 && fixture.team2.trim().toLowerCase() === teamName.trim().toLowerCase()) {
+            isTeam2 = true;
+          }
+        }
+
+        if (!isTeam1 && !isTeam2) return;
+
+        if (isTeam1) {
+          totalRunsScored += team1Runs;
+          totalRunsConceded += team2Runs;
+          totalOversFaced += team1OversFaced;
+          totalOversBowled += team2OversActual;
+        } else {
+          totalRunsScored += team2Runs;
+          totalRunsConceded += team1Runs;
+          totalOversFaced += team2OversFaced;
+          totalOversBowled += team1OversActual;
+        }
+
+        matchesCount++;
+      });
+
+      if (matchesCount === 0) return 0;
+
+      const runsScoredPerOver = totalOversFaced > 0 ? totalRunsScored / totalOversFaced : 0;
+      const runsConcededPerOver = totalOversBowled > 0 ? totalRunsConceded / totalOversBowled : 0;
+      return parseFloat((runsScoredPerOver - runsConcededPerOver).toFixed(3));
+    };
+
+    // Calculate current point table
+    const pointsTable = users.map(user => {
+      const userFixtures = allFixtures.filter(f => 
+        (f.team1 === user.teamName || f.team2 === user.teamName) && f.winner
+      );
+      
+      const wins = userFixtures.filter(f => f.winner === user.teamName).length;
+      const matchesPlayed = userFixtures.length;
+      const points = wins * 2;
+      const nrr = calculateNRR(allFixtures, user.teamName, user._id);
+      const fairness = userFixtures.reduce((sum, f) => {
+        const isTeam1 = f.team1 === user.teamName;
+        return sum + (isTeam1 ? (f.team1Fairness || 0) : (f.team2Fairness || 0));
+      }, 0);
+
+      return {
+        _id: user._id,
+        teamName: user.abbreviation || user.teamName || 'Unknown',
+        originalTeamName: user.teamName || 'Unknown',
+        matchesPlayed,
+        points,
+        wins,
+        losses: matchesPlayed - wins,
+        fairness,
+        nrr,
+        teamImage: user.teamImage || ''
+      };
+    });
+
+    // Sort point table
+    const sortedPointsTable = pointsTable.sort((a, b) => {
+      if (b.points !== a.points) return b.points - a.points;
+      const nrrA = a.nrr || 0;
+      const nrrB = b.nrr || 0;
+      if (nrrB !== nrrA) return nrrB - nrrA;
+      if (b.fairness !== a.fairness) return b.fairness - a.fairness;
+      return (a.matchesPlayed || 0) - (b.matchesPlayed || 0);
+    });
+
+    const rankedPointsTable = sortedPointsTable.map((team, index) => ({
+      rank: index + 1,
+      ...team,
+    }));
+
+    // Find current user
+    const currentUser = rankedPointsTable.find(t => t._id.toString() === userId.toString());
+    if (!currentUser) {
+      return res.status(404).json({ message: 'User not found in point table' });
+    }
+
+    // Get remaining fixtures for all teams
+    const getRemainingFixtures = (teamName, teamId) => {
+      return allFixtures.filter(f => {
+        const isInvolved = (f.team1 === teamName || f.team2 === teamName) ||
+                          (f.team1UserId && f.team1UserId.toString() === teamId.toString()) ||
+                          (f.team2UserId && f.team2UserId.toString() === teamId.toString());
+        return isInvolved && !f.winner;
+      });
+    };
+
+    const userRemainingFixtures = getRemainingFixtures(currentUser.originalTeamName, currentUser._id);
+    
+    // Get all teams' remaining fixtures
+    const allTeamsRemainingFixtures = {};
+    rankedPointsTable.forEach(team => {
+      allTeamsRemainingFixtures[team._id.toString()] = getRemainingFixtures(team.originalTeamName, team._id);
+    });
+
+    // Calculate qualification scenarios
+    const qualificationScenarios = [];
+    const maxScenarios = 30; // Increased for more comprehensive scenarios
+
+    // Generate key match outcome scenarios
+    // Focus on matches involving teams above/below the user
+    const teamsAbove = rankedPointsTable.filter(t => t.rank < currentUser.rank);
+    const teamsBelow = rankedPointsTable.filter(t => t.rank > currentUser.rank);
+    
+    // Calculate current NRR totals for user (for accurate projections)
+    let currentUserTotalRunsScored = 0;
+    let currentUserTotalRunsConceded = 0;
+    let currentUserTotalOversFaced = 0;
+    let currentUserTotalOversBowled = 0;
+    
+    allFixtures.forEach((fixture) => {
+      if (!fixture.winner) return;
+      
+      const score1 = fixture.team1Score;
+      const score2 = fixture.team2Score;
+      const team1Runs = parseRuns(score1);
+      const team2Runs = parseRuns(score2);
+      
+      if (team1Runs === 0 && team2Runs === 0) return;
+      
+      let team1OversActual = parseOvers(fixture.team1Overs) || 20;
+      let team2OversActual = parseOvers(fixture.team2Overs) || 20;
+      
+      const userIdStr = currentUser._id.toString();
+      const team1UserIdStr = fixture.team1UserId ? fixture.team1UserId.toString() : null;
+      const team2UserIdStr = fixture.team2UserId ? fixture.team2UserId.toString() : null;
+      
+      let isTeam1 = false;
+      let isTeam2 = false;
+      
+      if (team1UserIdStr === userIdStr) isTeam1 = true;
+      else if (team2UserIdStr === userIdStr) isTeam2 = true;
+      
+      if (!isTeam1 && !isTeam2) {
+        if (fixture.team1 && fixture.team1.trim().toLowerCase() === currentUser.originalTeamName.trim().toLowerCase()) {
+          isTeam1 = true;
+        } else if (fixture.team2 && fixture.team2.trim().toLowerCase() === currentUser.originalTeamName.trim().toLowerCase()) {
+          isTeam2 = true;
+        }
+      }
+      
+      if (!isTeam1 && !isTeam2) return;
+      
+      if (isTeam1) {
+        currentUserTotalRunsScored += team1Runs;
+        currentUserTotalRunsConceded += team2Runs;
+        currentUserTotalOversFaced += team1OversActual;
+        currentUserTotalOversBowled += team2OversActual;
+      } else {
+        currentUserTotalRunsScored += team2Runs;
+        currentUserTotalRunsConceded += team1Runs;
+        currentUserTotalOversFaced += team2OversActual;
+        currentUserTotalOversBowled += team1OversActual;
+      }
+    });
+
+      // Get all remaining fixtures across all teams (for permutation calculation)
+      const allRemainingFixtures = allFixtures.filter(f => !f.winner);
+      
+      // Create a map of fixtures by teams involved
+      const fixturesByTeam = {};
+      rankedPointsTable.forEach(team => {
+        const teamFixtures = allTeamsRemainingFixtures[team._id.toString()] || [];
+        teamFixtures.forEach(fixture => {
+          const key = fixture._id.toString();
+          if (!fixturesByTeam[key]) {
+            fixturesByTeam[key] = {
+              fixture,
+              teams: []
+            };
+          }
+          fixturesByTeam[key].teams.push({
+            teamId: team._id.toString(),
+            teamName: team.teamName,
+            originalTeamName: team.originalTeamName
+          });
+        });
+      });
+
+    // Scenario generation logic - Comprehensive analysis
+    // Generate scenarios: Win All, Win Some, Lose All, and combinations
+    const scenarioTypes = [
+      { name: 'Win All Matches', wins: userRemainingFixtures.length, losses: 0 },
+      { name: 'Win Most Matches', wins: Math.max(1, Math.floor(userRemainingFixtures.length * 0.75)), losses: userRemainingFixtures.length - Math.max(1, Math.floor(userRemainingFixtures.length * 0.75)) },
+      { name: 'Win Half Matches', wins: Math.max(1, Math.floor(userRemainingFixtures.length / 2)), losses: Math.max(0, userRemainingFixtures.length - Math.floor(userRemainingFixtures.length / 2)) },
+      { name: 'Win Few Matches', wins: Math.max(1, Math.floor(userRemainingFixtures.length * 0.25)), losses: Math.max(0, userRemainingFixtures.length - Math.floor(userRemainingFixtures.length * 0.25)) },
+      { name: 'Lose All Matches', wins: 0, losses: userRemainingFixtures.length }
+    ];
+    
+    // Generate multiple scenarios for each type with different NRR outcomes
+    for (let scenarioTypeIdx = 0; scenarioTypeIdx < scenarioTypes.length; scenarioTypeIdx++) {
+      const scenarioType = scenarioTypes[scenarioTypeIdx];
+      if (scenarioType.wins > userRemainingFixtures.length || scenarioType.wins < 0) continue;
+      
+      // Generate 3-4 variations of each scenario type with different NRR outcomes
+      for (let variation = 0; variation < 4 && qualificationScenarios.length < maxScenarios; variation++) {
+        const simulatedResults = {};
+        let userWins = 0;
+        let userTotalRunsScored = currentUserTotalRunsScored;
+        let userTotalRunsConceded = currentUserTotalRunsConceded;
+        let userTotalOversFaced = currentUserTotalOversFaced;
+        let userTotalOversBowled = currentUserTotalOversBowled;
+
+        // Simulate user's matches based on scenario type
+        let winsSoFar = 0;
+        userRemainingFixtures.forEach((fixture, idx) => {
+          const opponent = fixture.team1 === currentUser.originalTeamName ? fixture.team2 : fixture.team1;
+          const opponentTeam = rankedPointsTable.find(t => 
+            t.originalTeamName === opponent || t.teamName === opponent
+          );
+
+          // Determine if this match should be a win based on scenario type
+          const shouldWin = winsSoFar < scenarioType.wins;
+          
+          if (shouldWin) {
+            userWins++;
+            winsSoFar++;
+            // Simulate win scenarios with varying margins for NRR
+            // Variation 0: Big win (good NRR), Variation 1: Medium win, Variation 2: Small win, Variation 3: Very big win
+            const winMargins = [50, 30, 10, 80]; // Runs margin
+            const margin = winMargins[variation % 4];
+            const yourScore = 180 + (variation * 10);
+            const opponentScore = yourScore - margin;
+            
+            // Vary overs for NRR calculation (chase quickly = better NRR)
+            const yourOvers = variation === 0 ? 16.0 : (variation === 1 ? 18.0 : 20.0); // Quick chase = better NRR
+            const opponentOvers = 20.0;
+            
+            simulatedResults[fixture._id.toString()] = {
+              winner: currentUser.originalTeamName,
+              yourScore,
+              opponentScore,
+              yourOvers,
+              opponentOvers
+            };
+            userTotalRunsScored += yourScore;
+            userTotalRunsConceded += opponentScore;
+            userTotalOversFaced += yourOvers;
+            userTotalOversBowled += opponentOvers;
+          } else {
+            // Loss scenario
+            const yourScore = 150 - (variation * 5);
+            const opponentScore = yourScore + (10 + variation * 5);
+            simulatedResults[fixture._id.toString()] = {
+              winner: opponent,
+              yourScore,
+              opponentScore,
+              yourOvers: 20.0,
+              opponentOvers: 20.0
+            };
+            userTotalRunsScored += yourScore;
+            userTotalRunsConceded += opponentScore;
+            userTotalOversFaced += 20;
+            userTotalOversBowled += 20;
+          }
+        });
+
+        // Simulate other teams' matches - critical for qualification
+        // Teams above need to lose some matches for user to qualify
+        teamsAbove.forEach((team, teamIdx) => {
+          const teamFixtures = allTeamsRemainingFixtures[team._id.toString()] || [];
+          
+          // Calculate how many matches this team should lose to help user
+          // More important teams (closer to user) need to lose more
+          const matchesToLose = Math.min(
+            Math.ceil(teamFixtures.length * (0.3 + (teamIdx * 0.1))), // 30-50% of matches
+            teamFixtures.length
+          );
+          
+          let lossesSoFar = 0;
+          teamFixtures.forEach((fixture, fixIdx) => {
+            if (simulatedResults[fixture._id.toString()]) return; // Already simulated
+            
+            const opponent = fixture.team1 === team.originalTeamName ? fixture.team2 : fixture.team1;
+            const opponentTeam = rankedPointsTable.find(t => 
+              t.originalTeamName === opponent || t.teamName === opponent
+            );
+            
+            // Make team lose if we haven't reached the target losses
+            const shouldLose = lossesSoFar < matchesToLose && (variation % 2 === 0 || fixIdx % 2 === 0);
+            
+            if (shouldLose) {
+              lossesSoFar++;
+              simulatedResults[fixture._id.toString()] = {
+                winner: opponent,
+                team1Score: fixture.team1 === team.originalTeamName ? 140 : 160,
+                team2Score: fixture.team2 === team.originalTeamName ? 140 : 160,
+                teamAbove: team.teamName,
+                opponent: opponentTeam?.teamName || opponent
+              };
+            } else {
+              // Team wins
+              simulatedResults[fixture._id.toString()] = {
+                winner: team.originalTeamName,
+                team1Score: fixture.team1 === team.originalTeamName ? 180 : 150,
+                team2Score: fixture.team2 === team.originalTeamName ? 180 : 150,
+                teamAbove: team.teamName,
+                opponent: opponentTeam?.teamName || opponent
+              };
+            }
+          });
+        });
+
+        // Calculate new NRR after simulation
+        const newUserNRR = userTotalOversFaced > 0 && userTotalOversBowled > 0
+          ? parseFloat(((userTotalRunsScored / userTotalOversFaced) - (userTotalRunsConceded / userTotalOversBowled)).toFixed(3))
+          : currentUser.nrr;
+        
+        // Calculate new points
+        const newUserPoints = currentUser.points + (userWins * 2);
+        
+        // Calculate what rank user would be after this scenario
+        // Simplified check - compare with teams above
+        let newRank = currentUser.rank;
+        let qualifies = false;
+        
+        // Check if qualifies for target position
+        if (qualifyFor === 'top1') {
+          qualifies = newUserPoints > (teamsAbove[0]?.points || 0) || 
+                     (newUserPoints === teamsAbove[0]?.points && newUserNRR > (teamsAbove[0]?.nrr || 0));
+          newRank = qualifies ? 1 : currentUser.rank;
+        } else if (qualifyFor === 'top2') {
+          const secondPlace = teamsAbove.length > 0 ? teamsAbove[teamsAbove.length - 1] : null;
+          qualifies = secondPlace ? (newUserPoints > secondPlace.points || 
+                     (newUserPoints === secondPlace.points && newUserNRR > secondPlace.nrr)) : true;
+          newRank = qualifies ? 2 : currentUser.rank;
+        } else if (qualifyFor === 'top3') {
+          qualifies = currentUser.rank <= 3 || newUserPoints >= (rankedPointsTable[2]?.points || 0);
+          newRank = qualifies ? 3 : currentUser.rank;
+        } else {
+          const targetRank = parseInt(qualifyFor) || targetPos;
+          if (targetRank <= 6) {
+            const targetTeam = rankedPointsTable[targetRank - 1];
+            qualifies = targetTeam ? (newUserPoints > targetTeam.points || 
+                       (newUserPoints === targetTeam.points && newUserNRR > targetTeam.nrr)) : false;
+            newRank = qualifies ? targetRank : currentUser.rank;
+          }
+        }
+
+        // Build detailed match scenarios showing who needs to lose to whom
+        const matchScenarios = [];
+        const criticalMatches = []; // Matches to watch
+        
+        // User's matches
+        userRemainingFixtures.forEach((fixture, idx) => {
+          const opponent = fixture.team1 === currentUser.originalTeamName ? fixture.team2 : fixture.team1;
+          const opponentTeam = rankedPointsTable.find(t => 
+            t.originalTeamName === opponent || t.teamName === opponent
+          );
+          const result = simulatedResults[fixture._id.toString()];
+          
+          if (result) {
+            matchScenarios.push({
+              matchType: 'your_match',
+              fixtureId: fixture._id.toString(),
+              yourTeam: currentUser.teamName,
+              opponent: opponentTeam?.teamName || opponent,
+              outcome: result.winner === currentUser.originalTeamName ? 'win' : 'loss',
+              yourScore: result.yourScore,
+              opponentScore: result.opponentScore,
+              yourOvers: result.yourOvers,
+              opponentOvers: result.opponentOvers,
+              description: result.winner === currentUser.originalTeamName
+                ? `You WIN vs ${opponentTeam?.teamName || opponent}: Score ${result.yourScore} runs, restrict them to ${result.opponentScore} runs`
+                : `You LOSE vs ${opponentTeam?.teamName || opponent}: You score ${result.yourScore}, they score ${result.opponentScore}`,
+              battingFirst: result.yourScore > result.opponentScore ? 'yes' : 'no'
+            });
+          }
+        });
+
+        // Identify ALL remaining matches across ALL teams and determine required outcomes
+        // This is critical for showing what needs to happen in each match
+        
+        // Get all unique remaining fixtures (not just teams above)
+        const allRemainingFixturesMap = new Map();
+        rankedPointsTable.forEach(team => {
+          const teamFixtures = allTeamsRemainingFixtures[team._id.toString()] || [];
+          teamFixtures.forEach(fixture => {
+            const fixtureKey = fixture._id.toString();
+            if (!allRemainingFixturesMap.has(fixtureKey)) {
+              allRemainingFixturesMap.set(fixtureKey, fixture);
+            }
+          });
+        });
+        
+        // Analyze each remaining match to determine required outcome
+        allRemainingFixturesMap.forEach((fixture, fixtureKey) => {
+          const result = simulatedResults[fixtureKey];
+          if (!result) return; // Skip if not simulated
+          
+          const team1Name = fixture.team1;
+          const team2Name = fixture.team2;
+          const team1 = rankedPointsTable.find(t => 
+            t.originalTeamName === team1Name || t.teamName === team1Name
+          );
+          const team2 = rankedPointsTable.find(t => 
+            t.originalTeamName === team2Name || t.teamName === team2Name
+          );
+          
+          // Skip user's own matches (already handled)
+          if (team1?._id.toString() === currentUser._id.toString() || 
+              team2?._id.toString() === currentUser._id.toString()) {
+            return;
+          }
+          
+          const winner = result.winner;
+          const isTeam1Win = winner === team1Name || winner === team1?.originalTeamName;
+          const isTeam2Win = winner === team2Name || winner === team2?.originalTeamName;
+          
+          // Determine if this match is critical for qualification
+          let isCritical = false;
+          let requiredOutcome = '';
+          let reason = '';
+          let importance = 'medium';
+          
+          // Check if team1 is above user and needs to lose
+          if (team1 && team1.rank < currentUser.rank) {
+            if (!isTeam1Win) {
+              isCritical = true;
+              requiredOutcome = `${team1.teamName} must LOSE to ${team2?.teamName || team2Name}`;
+              reason = `${team1.teamName} is above you (Rank ${team1.rank}). If they lose, it helps you move up.`;
+              importance = 'critical';
+            }
+          }
+          
+          // Check if team2 is above user and needs to lose
+          if (team2 && team2.rank < currentUser.rank) {
+            if (!isTeam2Win) {
+              isCritical = true;
+              requiredOutcome = `${team2.teamName} must LOSE to ${team1?.teamName || team1Name}`;
+              reason = `${team2.teamName} is above you (Rank ${team2.rank}). If they lose, it helps you move up.`;
+              importance = 'critical';
+            }
+          }
+          
+          // Check if teams below user need to win (to prevent them from catching up)
+          if (team1 && team1.rank > currentUser.rank) {
+            if (isTeam1Win) {
+              // Team below wins - this is good, prevents them from catching up
+              if (!isCritical) {
+                requiredOutcome = `${team1.teamName} should WIN (they're below you)`;
+                reason = `${team1.teamName} is below you (Rank ${team1.rank}). If they win, they might catch up, but in this scenario they lose.`;
+                importance = 'low';
+              }
+            }
+          }
+          
+          if (team2 && team2.rank > currentUser.rank) {
+            if (isTeam2Win) {
+              if (!isCritical) {
+                requiredOutcome = `${team2.teamName} should WIN (they're below you)`;
+                reason = `${team2.teamName} is below you (Rank ${team2.rank}). If they win, they might catch up, but in this scenario they lose.`;
+                importance = 'low';
+              }
+            }
+          }
+          
+          // Always add ALL remaining matches (not just critical ones)
+          // This ensures user sees what needs to happen in every match
+          const teamAbove = team1 && team1.rank < currentUser.rank ? team1 : 
+                           (team2 && team2.rank < currentUser.rank ? team2 : null);
+          const opponent = teamAbove === team1 ? team2 : team1;
+          
+          // Set default required outcome if not set
+          if (!requiredOutcome) {
+            if (team1 && team1.rank < currentUser.rank) {
+              requiredOutcome = `${team1.teamName} must LOSE to ${team2?.teamName || team2Name}`;
+              reason = `${team1.teamName} is above you (Rank ${team1.rank}). They need to lose for you to move up.`;
+              importance = 'critical';
+              isCritical = true;
+            } else if (team2 && team2.rank < currentUser.rank) {
+              requiredOutcome = `${team2.teamName} must LOSE to ${team1?.teamName || team1Name}`;
+              reason = `${team2.teamName} is above you (Rank ${team2.rank}). They need to lose for you to move up.`;
+              importance = 'critical';
+              isCritical = true;
+            } else {
+              // Both teams are below or equal - show the match anyway
+              requiredOutcome = `${team1Name} vs ${team2Name}`;
+              reason = `Both teams are at or below your rank. This match has less impact on your qualification.`;
+              importance = 'low';
+            }
+          }
+          
+          criticalMatches.push({
+            matchType: 'critical_watch',
+            fixtureId: fixtureKey,
+            team1: team1?.teamName || team1Name,
+            team2: team2?.teamName || team2Name,
+            team1Rank: team1?.rank || 0,
+            team2Rank: team2?.rank || 0,
+            team1Points: team1?.points || 0,
+            team2Points: team2?.points || 0,
+            team1NRR: team1?.nrr || 0,
+            team2NRR: team2?.nrr || 0,
+            teamAbove: teamAbove?.teamName || null,
+            opponent: opponent?.teamName || (teamAbove === team1 ? team2Name : team1Name),
+            teamAbovePoints: teamAbove?.points || 0,
+            teamAboveNRR: teamAbove?.nrr || 0,
+            opponentPoints: opponent?.points || 0,
+            opponentNRR: opponent?.nrr || 0,
+            requiredOutcome: requiredOutcome,
+            actualOutcome: isTeam1Win ? `${team1?.teamName || team1Name} WINS` : 
+                          (isTeam2Win ? `${team2?.teamName || team2Name} WINS` : 'TBD'),
+            importance: importance,
+            reason: reason || 'This match affects your qualification chances',
+            matchDate: fixture.matchTime || fixture.createdAt,
+            helpsYou: isCritical
+          });
+          
+          matchScenarios.push({
+            matchType: 'other_team_match',
+            fixtureId: fixtureKey,
+            team1: team1?.teamName || team1Name,
+            team2: team2?.teamName || team2Name,
+            teamAbove: teamAbove?.teamName || null,
+            opponent: opponent?.teamName || (teamAbove === team1 ? team2Name : team1Name),
+            outcome: isTeam1Win ? (teamAbove === team1 ? 'loss' : 'win') : 
+                    (isTeam2Win ? (teamAbove === team2 ? 'loss' : 'win') : 'unknown'),
+            description: requiredOutcome,
+            importance: importance,
+            helpsYou: isCritical
+          });
+        });
+        
+        // Only add scenario if it's interesting (qualifies, or shows different outcomes)
+        if (qualifies || qualificationScenarios.length < 10 || (scenarioTypeIdx < 2 && variation < 2)) {
+          qualificationScenarios.push({
+            scenarioNumber: qualificationScenarios.length + 1,
+            scenarioType: scenarioType.name,
+            userWins,
+            userLosses: userRemainingFixtures.length - userWins,
+            newUserPoints,
+            newUserNRR,
+            newRank,
+            qualifies,
+            matchScenarios: matchScenarios,
+            criticalMatches: criticalMatches,
+            requirements: {
+              minWinsNeeded: Math.ceil((targetPos === 1 ? teamsAbove[0]?.points - currentUser.points + 1 : 0) / 2),
+              nrrNeeded: teamsAbove[0] ? Math.max(0, teamsAbove[0].nrr - currentUser.nrr + 0.001) : 0
+            },
+            summary: {
+              yourMatches: matchScenarios.filter(m => m.matchType === 'your_match').length,
+              criticalMatches: criticalMatches.length,
+              teamsThatMustLose: [...new Set(criticalMatches.map(m => m.teamAbove))].filter(Boolean),
+              matchesToWatch: criticalMatches.map(m => `${m.teamAbove} vs ${m.opponent}`)
+            }
+          });
+        }
+      }
+    }
+
+    const response = {
+      currentPosition: currentUser.rank,
+      targetPosition: targetPos,
+      qualifyFor,
+      currentStats: {
+        points: currentUser.points,
+        nrr: currentUser.nrr,
+        fairness: currentUser.fairness,
+        matchesPlayed: currentUser.matchesPlayed,
+        remainingMatches: userRemainingFixtures.length
+      },
+      remainingFixtures: userRemainingFixtures.map(f => ({
+        matchId: f._id,
+        opponent: f.team1 === currentUser.originalTeamName ? f.team2 : f.team1,
+        date: f.matchTime || f.createdAt,
+        venue: f.venue || 'TBD'
+      })),
+      allTeamsRemainingFixtures: Object.keys(allTeamsRemainingFixtures).reduce((acc, teamId) => {
+        const team = rankedPointsTable.find(t => t._id.toString() === teamId);
+        if (team) {
+          acc[team.teamName] = allTeamsRemainingFixtures[teamId].map(f => ({
+            opponent: f.team1 === team.originalTeamName ? f.team2 : f.team1,
+            date: f.matchTime || f.createdAt
+          }));
+        }
+        return acc;
+      }, {}),
+      qualificationScenarios: qualificationScenarios.slice(0, 10),
+      teamsAbove: teamsAbove.map(t => ({
+        teamName: t.teamName,
+        points: t.points,
+        nrr: t.nrr,
+        remainingMatches: allTeamsRemainingFixtures[t._id.toString()]?.length || 0
+      })),
+      teamsBelow: teamsBelow.slice(0, 3).map(t => ({
+        teamName: t.teamName,
+        points: t.points,
+        nrr: t.nrr,
+        remainingMatches: allTeamsRemainingFixtures[t._id.toString()]?.length || 0
+      })),
+      // Comprehensive list of ALL remaining matches with required outcomes
+      allRemainingMatchesAnalysis: (() => {
+        const allMatches = [];
+        const processedMatches = new Set();
+        
+        rankedPointsTable.forEach(team => {
+          const teamFixtures = allTeamsRemainingFixtures[team._id.toString()] || [];
+          teamFixtures.forEach(fixture => {
+            const fixtureKey = fixture._id.toString();
+            if (processedMatches.has(fixtureKey)) return;
+            processedMatches.add(fixtureKey);
+            
+            const team1Name = fixture.team1;
+            const team2Name = fixture.team2;
+            const team1 = rankedPointsTable.find(t => 
+              t.originalTeamName === team1Name || t.teamName === team1Name
+            );
+            const team2 = rankedPointsTable.find(t => 
+              t.originalTeamName === team2Name || t.teamName === team2Name
+            );
+            
+            if (!team1 || !team2) return;
+            
+            // Skip user's own matches
+            if (team1._id.toString() === currentUser._id.toString() || 
+                team2._id.toString() === currentUser._id.toString()) {
+              return;
+            }
+            
+            // Determine what needs to happen
+            let requiredOutcome = '';
+            let importance = 'medium';
+            let reason = '';
+            
+            if (team1.rank < currentUser.rank) {
+              requiredOutcome = `${team1.teamName} must LOSE to ${team2.teamName}`;
+              importance = 'critical';
+              reason = `${team1.teamName} is at Rank ${team1.rank} (above you). If they lose, it helps you move up.`;
+            } else if (team2.rank < currentUser.rank) {
+              requiredOutcome = `${team2.teamName} must LOSE to ${team1.teamName}`;
+              importance = 'critical';
+              reason = `${team2.teamName} is at Rank ${team2.rank} (above you). If they lose, it helps you move up.`;
+            } else if (team1.rank > currentUser.rank && team2.rank > currentUser.rank) {
+              requiredOutcome = 'Either outcome is okay (both teams below you)';
+              importance = 'low';
+              reason = `Both ${team1.teamName} (Rank ${team1.rank}) and ${team2.teamName} (Rank ${team2.rank}) are below you.`;
+            } else {
+              requiredOutcome = 'Monitor this match';
+              importance = 'medium';
+              reason = 'This match may affect your position depending on outcomes.';
+            }
+            
+            allMatches.push({
+              matchId: fixtureKey,
+              team1: team1.teamName,
+              team2: team2.teamName,
+              team1Rank: team1.rank,
+              team2Rank: team2.rank,
+              team1Points: team1.points,
+              team2Points: team2.points,
+              team1NRR: team1.nrr,
+              team2NRR: team2.nrr,
+              requiredOutcome,
+              importance,
+              reason,
+              matchDate: fixture.matchTime || fixture.createdAt
+            });
+          });
+        });
+        
+        return allMatches.sort((a, b) => {
+          // Sort by importance: critical first, then by rank
+          if (a.importance === 'critical' && b.importance !== 'critical') return -1;
+          if (b.importance === 'critical' && a.importance !== 'critical') return 1;
+          return Math.min(a.team1Rank, a.team2Rank) - Math.min(b.team1Rank, b.team2Rank);
+        });
+      })()
+    };
+    
+    res.json(response);
+  } catch (error) {
+    console.error('Error in advanced position calculator:', error);
+    res.status(500).json({ message: 'Internal server error', error: error.message });
+  }
+});
+
 module.exports = router;
 
 
