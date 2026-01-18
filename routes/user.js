@@ -1162,12 +1162,10 @@ const calculateNRR = (fixtures, teamName, userId) => {
     const team2Wickets = parseWickets(score2);
 
     // ICC RULE: Use overs from fixture (team1Overs and team2Overs) - these are the actual overs played by both teams
-    // Main fixtures have total overs played by both teams - we MUST use these for accurate NRR calculation
-    let team1OversActual = parseOvers(fixture.team1Overs); // Actual overs (for overs BOWLED)
-    let team2OversActual = parseOvers(fixture.team2Overs); // Actual overs (for overs BOWLED)
+    let team1OversActual = parseOvers(fixture.team1Overs);
+    let team2OversActual = parseOvers(fixture.team2Overs);
     
     // If overs are not provided in fixture, use default (shouldn't happen for completed matches with overs)
-    // But log a warning to help identify data issues
     if (team1OversActual === null) {
       console.warn(`⚠️ Missing team1Overs in fixture for ${fixture.team1} vs ${fixture.team2}. Using default ${DEFAULT_OVERS} overs.`);
       team1OversActual = DEFAULT_OVERS;
@@ -1177,14 +1175,15 @@ const calculateNRR = (fixtures, teamName, userId) => {
       team2OversActual = DEFAULT_OVERS;
     }
 
-    // Based on the calculation method shown in the image:
-    // Use ACTUAL overs for both overs FACED and overs BOWLED (no all-out rule applied)
-    // This matches the calculation: Team 1 NRR = (233/19.5) - (115/17.1667) = +5.25
-    let team1OversFaced = team1OversActual; // Use actual overs (no all-out rule)
-    let team2OversFaced = team2OversActual; // Use actual overs (no all-out rule)
+    // ICC RULE 1 & 2: Overs FACED
+    // If team is all out (10 wickets), use FULL quota (20.0 overs), otherwise use actual overs
+    let team1OversFaced = (team1Wickets === 10) ? DEFAULT_OVERS : team1OversActual;
+    let team2OversFaced = (team2Wickets === 10) ? DEFAULT_OVERS : team2OversActual;
     
-    // Overs bowled are ALWAYS actual overs
-    // team1OversActual and team2OversActual are already set correctly above
+    // ICC RULE 3: Overs BOWLED
+    // If opposition is all out, use FULL quota (20.0 overs), otherwise use actual overs
+    let team1OversBowled = (team2Wickets === 10) ? DEFAULT_OVERS : team2OversActual;
+    let team2OversBowled = (team1Wickets === 10) ? DEFAULT_OVERS : team1OversActual;
 
     // Match by userId first (more reliable), then fall back to teamName
     // Handle both ObjectId and string formats
@@ -1221,17 +1220,17 @@ const calculateNRR = (fixtures, teamName, userId) => {
     if (isTeam1) {
       totalRunsScored += team1Runs;
       totalRunsConceded += team2Runs;
-      // Use ACTUAL overs FACED (no all-out rule - matches the picture calculation method)
+      // ICC RULE: Overs FACED (if all out, use 20.0; otherwise actual)
       totalOversFaced += team1OversFaced;
-      // Use ACTUAL overs BOWLED (always actual overs)
-      totalOversBowled += team2OversActual;
+      // ICC RULE: Overs BOWLED (if opposition all out, use 20.0; otherwise actual)
+      totalOversBowled += team1OversBowled;
     } else {
       totalRunsScored += team2Runs;
       totalRunsConceded += team1Runs;
-      // Use ACTUAL overs FACED (no all-out rule - matches the picture calculation method)
+      // ICC RULE: Overs FACED (if all out, use 20.0; otherwise actual)
       totalOversFaced += team2OversFaced;
-      // Use ACTUAL overs BOWLED (always actual overs)
-      totalOversBowled += team1OversActual;
+      // ICC RULE: Overs BOWLED (if opposition all out, use 20.0; otherwise actual)
+      totalOversBowled += team2OversBowled;
     }
 
     matchesCount++;

@@ -150,18 +150,19 @@ const calculateTournamentNRR = (fixtures, teamName) => {
     const team1Wickets = parseWickets(score1);
     const team2Wickets = parseWickets(score2);
 
-    // Parse overs - use actual overs if provided, otherwise default to 20
-    let team1Overs = parseOvers(fixture.team1Overs) ?? DEFAULT_OVERS;
-    let team2Overs = parseOvers(fixture.team2Overs) ?? DEFAULT_OVERS;
+    // ICC RULE: Use overs from fixture (team1Overs and team2Overs) - these are the actual overs played by both teams
+    let team1OversActual = parseOvers(fixture.team1Overs) ?? DEFAULT_OVERS;
+    let team2OversActual = parseOvers(fixture.team2Overs) ?? DEFAULT_OVERS;
 
-    // REAL CRICKET RULE: If a team is all out (10 wickets), use full quota (20 overs) for NRR
-    // This is the standard rule in cricket - all-out teams are considered to have faced full quota
-    if (team1Wickets === 10) {
-      team1Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
-    }
-    if (team2Wickets === 10) {
-      team2Overs = DEFAULT_OVERS; // Use full quota (20 overs) for NRR calculation
-    }
+    // ICC RULE 1 & 2: Overs FACED
+    // If team is all out (10 wickets), use FULL quota (20.0 overs), otherwise use actual overs
+    let team1OversFaced = (team1Wickets === 10) ? DEFAULT_OVERS : team1OversActual;
+    let team2OversFaced = (team2Wickets === 10) ? DEFAULT_OVERS : team2OversActual;
+    
+    // ICC RULE 3: Overs BOWLED
+    // If opposition is all out, use FULL quota (20.0 overs), otherwise use actual overs
+    let team1OversBowled = (team2Wickets === 10) ? DEFAULT_OVERS : team2OversActual;
+    let team2OversBowled = (team1Wickets === 10) ? DEFAULT_OVERS : team1OversActual;
 
     // Match by teamName (flexible matching to handle variations like spaces, special chars)
     const normalizeTeamName = (name) => {
@@ -190,13 +191,17 @@ const calculateTournamentNRR = (fixtures, teamName) => {
     if (isTeam1) {
       totalRunsScored += team1Runs;
       totalRunsConceded += team2Runs;
-      totalOversFaced += team1Overs;
-      totalOversBowled += team2Overs;
+      // ICC RULE: Overs FACED (if all out, use 20.0; otherwise actual)
+      totalOversFaced += team1OversFaced;
+      // ICC RULE: Overs BOWLED (if opposition all out, use 20.0; otherwise actual)
+      totalOversBowled += team1OversBowled;
     } else {
       totalRunsScored += team2Runs;
       totalRunsConceded += team1Runs;
-      totalOversFaced += team2Overs;
-      totalOversBowled += team1Overs;
+      // ICC RULE: Overs FACED (if all out, use 20.0; otherwise actual)
+      totalOversFaced += team2OversFaced;
+      // ICC RULE: Overs BOWLED (if opposition all out, use 20.0; otherwise actual)
+      totalOversBowled += team2OversBowled;
     }
 
     matchesCount++;
