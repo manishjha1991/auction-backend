@@ -3224,6 +3224,490 @@ router.get('/position-calculator-advanced/:userId', async (req, res) => {
   }
 });
 
+// NRR Calculator Endpoint
+router.get('/nrr-calculator', async (req, res) => {
+  try {
+    const { yourTeamId, opponentTeamId, targetTeamId } = req.query;
+
+    if (!yourTeamId || !opponentTeamId || !targetTeamId) {
+      return res.status(400).json({ 
+        message: 'Missing required parameters: yourTeamId, opponentTeamId, targetTeamId' 
+      });
+    }
+
+    // Fetch all teams
+    const allTeams = await User.find({ 
+      teamName: { $exists: true, $ne: null, $ne: "NA" }, 
+      isActive: true 
+    })
+    .select('_id teamName abbreviation')
+    .lean();
+
+    // Find the three teams
+    const yourTeam = allTeams.find(t => 
+      t._id.toString() === yourTeamId || t.teamName === yourTeamId
+    );
+    const opponentTeam = allTeams.find(t => 
+      t._id.toString() === opponentTeamId || t.teamName === opponentTeamId
+    );
+    const targetTeam = allTeams.find(t => 
+      t._id.toString() === targetTeamId || t.teamName === targetTeamId
+    );
+
+    if (!yourTeam || !opponentTeam || !targetTeam) {
+      return res.status(404).json({ 
+        message: 'One or more teams not found',
+        yourTeam: !!yourTeam,
+        opponentTeam: !!opponentTeam,
+        targetTeam: !!targetTeam
+      });
+    }
+
+    // Fetch all completed fixtures
+    const fixtures = await Fixture.find({
+      isActive: true,
+      winner: { $ne: null, $exists: true }
+    })
+    .select('team1 team2 team1UserId team2UserId team1Score team2Score team1Overs team2Overs winner')
+    .lean();
+
+    // Calculate current NRR for your team and target team
+    const yourTeamNRR = calculateNRR(fixtures, yourTeam.teamName, yourTeam._id);
+    const targetTeamNRR = calculateNRR(fixtures, targetTeam.teamName, targetTeam._id);
+
+    // Calculate your team's current stats (for NRR calculation)
+    const yourTeamStats = getTeamStats(fixtures, yourTeam.teamName, yourTeam._id);
+    const targetTeamStats = getTeamStats(fixtures, targetTeam.teamName, targetTeam._id);
+
+    // Target NRR needed (slightly above target team's NRR)
+    const targetNRR = targetTeamNRR + 0.001; // Need to surpass by at least 0.001
+
+    // Calculate required match result scenarios
+    const scenarios = calculateNRRScenarios(
+      yourTeamStats,
+      targetNRR,
+      yourTeamNRR
+    );
+
+    res.json({
+      yourTeam: {
+        _id: yourTeam._id,
+        teamName: yourTeam.teamName,
+        abbreviation: yourTeam.abbreviation,
+        currentNRR: yourTeamNRR
+      },
+      opponentTeam: {
+        _id: opponentTeam._id,
+        teamName: opponentTeam.teamName,
+        abbreviation: opponentTeam.abbreviation
+      },
+      targetTeam: {
+        _id: targetTeam._id,
+        teamName: targetTeam.teamName,
+        abbreviation: targetTeam.abbreviation,
+        currentNRR: targetTeamNRR
+      },
+      targetNRR: parseFloat(targetNRR.toFixed(3)),
+      scenarios
+    });
+  } catch (error) {
+    console.error('Error in NRR calculator:', error);
+    res.status(500).json({ message: 'Internal server error', error: error.message });
+  }
+});
+
+// Helper function to get team stats for NRR calculation
+function getTeamStats(fixtures, teamName, userId) {
+  const DEFAULT_OVERS = 20;
+  let totalRunsScored = 0;
+  let totalRunsConceded = 0;
+  let totalOversFaced = 0;
+  let totalOversBowled = 0;
+  let matchesCount = 0;
+
+  const userIdStr = userId ? userId.toString() : null;
+
+  fixtures.forEach((fixture) => {
+    if (!fixture.winner) return;
+
+    const score1 = fixture.team1Score;
+    const score2 = fixture.team2Score;
+    const team1Runs = parseRuns(score1);
+    const team2Runs = parseRuns(score2);
+
+    if (team1Runs === 0 && team2Runs === 0) return;
+
+    const team1Wickets = parseWickets(score1);
+    const team2Wickets = parseWickets(score2);
+
+    let team1OversActual = parseOvers(fixture.team1Overs);
+    let team2OversActual = parseOvers(fixture.team2Overs);
+    
+    if (team1OversActual === null) team1OversActual = DEFAULT_OVERS;
+    if (team2OversActual === null) team2OversActual = DEFAULT_OVERS;
+
+    let team1OversFaced = (team1Wickets === 10) ? DEFAULT_OVERS : team1OversActual;
+    let team2OversFaced = (team2Wickets === 10) ? DEFAULT_OVERS : team2OversActual;
+    
+    let team1OversBowled = (team2Wickets === 10) ? DEFAULT_OVERS : team2OversActual;
+    let team2OversBowled = (team1Wickets === 10) ? DEFAULT_OVERS : team1OversActual;
+
+    const team1UserIdStr = fixture.team1UserId ? 
+      (fixture.team1UserId.toString ? fixture.team1UserId.toString() : String(fixture.team1UserId)) : null;
+    const team2UserIdStr = fixture.team2UserId ? 
+      (fixture.team2UserId.toString ? fixture.team2UserId.toString() : String(fixture.team2UserId)) : null;
+
+    let isTeam1 = false;
+    let isTeam2 = false;
+    
+    if (userIdStr) {
+      if (team1UserIdStr && team1UserIdStr === userIdStr) {
+        isTeam1 = true;
+      } else if (team2UserIdStr && team2UserIdStr === userIdStr) {
+        isTeam2 = true;
+      }
+    }
+    
+    if (!isTeam1 && !isTeam2) {
+      if (fixture.team1 && fixture.team1.trim().toLowerCase() === teamName.trim().toLowerCase()) {
+        isTeam1 = true;
+      } else if (fixture.team2 && fixture.team2.trim().toLowerCase() === teamName.trim().toLowerCase()) {
+        isTeam2 = true;
+      }
+    }
+
+    if (!isTeam1 && !isTeam2) return;
+
+    if (isTeam1) {
+      totalRunsScored += team1Runs;
+      totalRunsConceded += team2Runs;
+      totalOversFaced += team1OversFaced;
+      totalOversBowled += team1OversBowled;
+    } else {
+      totalRunsScored += team2Runs;
+      totalRunsConceded += team1Runs;
+      totalOversFaced += team2OversFaced;
+      totalOversBowled += team2OversBowled;
+    }
+    matchesCount++;
+  });
+
+  return {
+    totalRunsScored,
+    totalRunsConceded,
+    totalOversFaced,
+    totalOversBowled,
+    matchesCount
+  };
+}
+
+// Calculate NRR scenarios for batting first and second
+function calculateNRRScenarios(currentStats, targetNRR, currentNRR) {
+  const DEFAULT_OVERS = 20;
+  const scenarios = {
+    battingFirst: [],
+    battingSecond: []
+  };
+
+  // Current totals
+  const currentRunsScored = currentStats.totalRunsScored;
+  const currentRunsConceded = currentStats.totalRunsConceded;
+  const currentOversFaced = currentStats.totalOversFaced;
+  const currentOversBowled = currentStats.totalOversBowled;
+
+  // For batting first: We set a score, opponent chases
+  // We need: (currentRunsScored + yourScore) / (currentOversFaced + yourOversFaced) - 
+  //          (currentRunsConceded + opponentScore) / (currentOversBowled + opponentOversBowled) >= targetNRR
+  
+  // Try different realistic scores and overs
+  const scoreRanges = [
+    { min: 120, max: 200, step: 5 },
+    { min: 200, max: 250, step: 10 }
+  ];
+
+  for (const range of scoreRanges) {
+    for (let yourScore = range.min; yourScore <= range.max; yourScore += range.step) {
+      // Try different overs (15.0 to 20.0, not all out)
+      for (let yourOvers = 15.0; yourOvers <= 20.0; yourOvers += 0.5) {
+        // Realistic wickets: more overs = fewer wickets lost
+        const yourWickets = yourOvers >= 19.5 ? 9 : Math.max(0, Math.floor((20.0 - yourOvers) * 1.2));
+        const yourOversFaced = (yourWickets === 10) ? DEFAULT_OVERS : yourOvers;
+
+        // Calculate what opponent score/overs would give us target NRR
+        // targetNRR = (newRunsScored / newOversFaced) - (newRunsConceded / newOversBowled)
+        // Rearranging: newRunsConceded / newOversBowled = (newRunsScored / newOversFaced) - targetNRR
+        
+        const newRunsScored = currentRunsScored + yourScore;
+        const newOversFaced = currentOversFaced + yourOversFaced;
+        const runsScoredPerOver = newRunsScored / newOversFaced;
+        const targetRunsConcededPerOver = runsScoredPerOver - targetNRR;
+
+        if (targetRunsConcededPerOver <= 0) continue; // Invalid scenario
+
+        // Try different opponent overs (they chase, so >= your overs)
+        for (let opponentOvers = yourOvers; opponentOvers <= 20.0; opponentOvers += 0.5) {
+          // Opponent loses all wickets if they're all out (for win scenario)
+          const opponentWickets = 10; // Assume all out when losing
+          const opponentOversBowled = DEFAULT_OVERS; // All out = 20.0 overs
+          
+          const newOversBowled = currentOversBowled + opponentOversBowled;
+          const requiredOpponentScore = Math.floor(targetRunsConcededPerOver * newOversBowled - currentRunsConceded);
+          
+          if (requiredOpponentScore < 0 || requiredOpponentScore >= yourScore) continue; // Must win
+
+          // Verify the NRR
+          const newRunsConceded = currentRunsConceded + requiredOpponentScore;
+          const newNRR = (newRunsScored / newOversFaced) - (newRunsConceded / newOversBowled);
+
+          if (newNRR >= targetNRR && newNRR <= targetNRR + 0.3) {
+            scenarios.battingFirst.push({
+              yourScore,
+              yourOvers: parseFloat(yourOvers.toFixed(1)),
+              yourWickets,
+              opponentScore: requiredOpponentScore,
+              opponentOvers: parseFloat(opponentOvers.toFixed(1)),
+              opponentWickets,
+              newNRR: parseFloat(newNRR.toFixed(3)),
+              winMargin: `${yourScore - requiredOpponentScore} runs`,
+              requiredRunRate: parseFloat((requiredOpponentScore / opponentOvers).toFixed(2))
+            });
+
+            if (scenarios.battingFirst.length >= 5) break;
+          }
+        }
+        if (scenarios.battingFirst.length >= 5) break;
+      }
+      if (scenarios.battingFirst.length >= 5) break;
+    }
+    if (scenarios.battingFirst.length >= 5) break;
+  }
+
+  // For batting second: Opponent sets score, we chase
+  // We need to chase in fewer overs for better NRR
+  for (let opponentScore = 100; opponentScore <= 250; opponentScore += 10) {
+    for (let opponentOvers = 15.0; opponentOvers <= 20.0; opponentOvers += 0.5) {
+      const opponentWickets = 0; // Opponent batting first, assume not all out
+      const opponentOversBowled = opponentOvers; // Not all out
+
+      // Calculate what we need to score and in how many overs
+      const newRunsConceded = currentRunsConceded + opponentScore;
+      const newOversBowled = currentOversBowled + opponentOversBowled;
+      
+      // targetNRR = (newRunsScored / newOversFaced) - (newRunsConceded / newOversBowled)
+      // Rearranging: newRunsScored / newOversFaced = targetNRR + (newRunsConceded / newOversBowled)
+      
+      const runsConcededPerOver = newRunsConceded / newOversBowled;
+      const targetRunsScoredPerOver = targetNRR + runsConcededPerOver;
+
+      if (targetRunsScoredPerOver <= 0) continue;
+
+      // Try different overs to chase (less than opponent overs for better NRR)
+      for (let yourOvers = 10.0; yourOvers < opponentOvers; yourOvers += 0.5) {
+        // Realistic wickets: more overs = fewer wickets lost
+        const yourWickets = yourOvers >= 19.5 ? 9 : Math.max(0, Math.floor((20.0 - yourOvers) * 1.2));
+        const yourOversFaced = (yourWickets === 10) ? DEFAULT_OVERS : yourOvers;
+        
+        const newOversFaced = currentOversFaced + yourOversFaced;
+        const requiredYourScore = Math.ceil(targetRunsScoredPerOver * newOversFaced - currentRunsScored);
+        
+        if (requiredYourScore <= opponentScore) continue; // Must win
+
+        // Verify the NRR
+        const newRunsScored = currentRunsScored + requiredYourScore;
+        const newNRR = (newRunsScored / newOversFaced) - (newRunsConceded / newOversBowled);
+
+        if (newNRR >= targetNRR && newNRR <= targetNRR + 0.3) {
+          const ballsRemaining = Math.floor((opponentOvers - yourOvers) * 6);
+          const requiredRunRate = parseFloat((requiredYourScore / yourOvers).toFixed(2));
+          const wicketsRemaining = 10 - yourWickets;
+
+          scenarios.battingSecond.push({
+            opponentScore,
+            opponentOvers: parseFloat(opponentOvers.toFixed(1)),
+            opponentWickets,
+            yourScore: requiredYourScore,
+            yourOvers: parseFloat(yourOvers.toFixed(1)),
+            yourWickets,
+            newNRR: parseFloat(newNRR.toFixed(3)),
+            winMargin: `${wicketsRemaining} wicket${wicketsRemaining !== 1 ? 's' : ''}`,
+            ballsRemaining,
+            wicketsRemaining,
+            requiredRunRate
+          });
+
+          if (scenarios.battingSecond.length >= 5) break;
+        }
+      }
+      if (scenarios.battingSecond.length >= 5) break;
+    }
+    if (scenarios.battingSecond.length >= 5) break;
+  }
+
+  // Sort scenarios by newNRR (closest to target first)
+  scenarios.battingFirst.sort((a, b) => Math.abs(a.newNRR - targetNRR) - Math.abs(b.newNRR - targetNRR));
+  scenarios.battingSecond.sort((a, b) => Math.abs(a.newNRR - targetNRR) - Math.abs(b.newNRR - targetNRR));
+
+  // Limit to top 5 scenarios each
+  scenarios.battingFirst = scenarios.battingFirst.slice(0, 5);
+  scenarios.battingSecond = scenarios.battingSecond.slice(0, 5);
+
+  return scenarios;
+}
+
+// NRR Impact Calculator - Calculate how a match affects your NRR
+router.post('/nrr-impact', async (req, res) => {
+  try {
+    const { teamId, runsScored, oversFaced, runsConceded, oversBowled, wicketsLost, opponentWickets } = req.body;
+
+    if (!teamId || runsScored === undefined || oversFaced === undefined || 
+        runsConceded === undefined || oversBowled === undefined) {
+      return res.status(400).json({ 
+        message: 'Missing required parameters: teamId, runsScored, oversFaced, runsConceded, oversBowled' 
+      });
+    }
+
+    // Find the team
+    const team = await User.findOne({ 
+      _id: teamId,
+      teamName: { $exists: true, $ne: null, $ne: "NA" }, 
+      isActive: true 
+    })
+    .select('_id teamName abbreviation')
+    .lean();
+
+    if (!team) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    // Fetch all completed fixtures
+    const fixtures = await Fixture.find({
+      isActive: true,
+      winner: { $ne: null, $exists: true }
+    })
+    .select('team1 team2 team1UserId team2UserId team1Score team2Score team1Overs team2Overs winner')
+    .lean();
+
+    // Calculate current NRR
+    const currentNRR = calculateNRR(fixtures, team.teamName, team._id);
+    const currentStats = getTeamStats(fixtures, team.teamName, team._id);
+
+    // Parse inputs
+    const DEFAULT_OVERS = 20;
+    const runsScoredNum = parseFloat(runsScored) || 0;
+    const runsConcededNum = parseFloat(runsConceded) || 0;
+    const wicketsLostNum = parseInt(wicketsLost) || 0;
+    const opponentWicketsNum = parseInt(opponentWickets) || 0;
+
+    // Parse overs (handle format like 7.3 = 7 overs 3 balls = 7.5 overs)
+    const parseOversInput = (oversInput) => {
+      if (typeof oversInput === 'number') return oversInput;
+      const str = String(oversInput);
+      const parts = str.split('.');
+      if (parts.length === 2) {
+        const overs = parseInt(parts[0]) || 0;
+        const balls = parseInt(parts[1]) || 0;
+        return overs + (balls / 6);
+      }
+      return parseFloat(oversInput) || 0;
+    };
+
+    const oversFacedNum = parseOversInput(oversFaced);
+    const oversBowledNum = parseOversInput(oversBowled);
+
+    // Apply ICC rules for overs
+    const oversFacedFinal = (wicketsLostNum === 10) ? DEFAULT_OVERS : oversFacedNum;
+    const oversBowledFinal = (opponentWicketsNum === 10) ? DEFAULT_OVERS : oversBowledNum;
+
+    // Calculate new totals
+    const newRunsScored = currentStats.totalRunsScored + runsScoredNum;
+    const newRunsConceded = currentStats.totalRunsConceded + runsConcededNum;
+    const newOversFaced = currentStats.totalOversFaced + oversFacedFinal;
+    const newOversBowled = currentStats.totalOversBowled + oversBowledFinal;
+
+    // Calculate new NRR
+    const runsScoredPerOver = newOversFaced > 0 ? newRunsScored / newOversFaced : 0;
+    const runsConcededPerOver = newOversBowled > 0 ? newRunsConceded / newOversBowled : 0;
+    const newNRR = runsScoredPerOver - runsConcededPerOver;
+
+    const nrrChange = newNRR - currentNRR;
+    const nrrChangePercent = currentNRR !== 0 ? ((nrrChange / Math.abs(currentNRR)) * 100) : 0;
+
+    // Get current point table to calculate new position
+    const allUsers = await User.find({ 
+      teamName: { $exists: true, $ne: null, $ne: "NA" }, 
+      isActive: true,
+      isAdmin: false
+    })
+    .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage')
+    .lean();
+
+    // Calculate current point table with NRR
+    const currentPointTable = allUsers.map((user) => {
+      const userNRR = calculateNRR(fixtures, user.teamName, user._id);
+      return {
+        ...user,
+        nrr: userNRR,
+        points: user.points || 0,
+        matchesPlayed: user.matchesPlayed || 0,
+        fairness: user.fairnessPoint || 0
+      };
+    });
+
+    // Calculate new point table with updated NRR for selected team
+    const newPointTable = currentPointTable.map((user) => {
+      if (user._id.toString() === team._id.toString()) {
+        return {
+          ...user,
+          nrr: parseFloat(newNRR.toFixed(3))
+        };
+      }
+      return user;
+    });
+
+    // Sort both tables
+    const sortTable = (table) => {
+      return [...table].sort((a, b) => {
+        if (b.points !== a.points) return b.points - a.points;
+        if (b.nrr !== a.nrr) return b.nrr - a.nrr;
+        return b.fairness - a.fairness;
+      });
+    };
+
+    const sortedCurrent = sortTable(currentPointTable);
+    const sortedNew = sortTable(newPointTable);
+
+    const currentPosition = sortedCurrent.findIndex(t => t._id.toString() === team._id.toString()) + 1;
+    const newPosition = sortedNew.findIndex(t => t._id.toString() === team._id.toString()) + 1;
+    const positionChange = currentPosition - newPosition; // Positive = moved up, Negative = moved down
+
+    res.json({
+      team: {
+        _id: team._id,
+        teamName: team.teamName,
+        abbreviation: team.abbreviation
+      },
+      currentNRR: parseFloat(currentNRR.toFixed(3)),
+      newNRR: parseFloat(newNRR.toFixed(3)),
+      nrrChange: parseFloat(nrrChange.toFixed(3)),
+      nrrChangePercent: parseFloat(nrrChangePercent.toFixed(2)),
+      currentPosition,
+      newPosition,
+      positionChange,
+      matchStats: {
+        runsScored: runsScoredNum,
+        oversFaced: parseFloat(oversFacedFinal.toFixed(1)),
+        wicketsLost: wicketsLostNum,
+        runsConceded: runsConcededNum,
+        oversBowled: parseFloat(oversBowledFinal.toFixed(1)),
+        opponentWickets: opponentWicketsNum
+      }
+    });
+  } catch (error) {
+    console.error('Error in NRR impact calculator:', error);
+    res.status(500).json({ message: 'Internal server error', error: error.message });
+  }
+});
+
 module.exports = router;
 
 
