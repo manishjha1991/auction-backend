@@ -11,6 +11,18 @@ const {
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
+const TRADE_LOCK_HOURS = 48;
+
+async function isTradeLocked(playerDoc) {
+  if (!playerDoc?.tradeLocked) return false;
+  if (playerDoc.tradeLockedUntil && new Date(playerDoc.tradeLockedUntil) <= new Date()) {
+    await Player.findByIdAndUpdate(playerDoc._id, {
+      $set: { tradeLocked: false, tradeLockedUntil: null }
+    });
+    return false;
+  }
+  return true;
+}
 
 async function getUserTypeCounts(userId) {
   // 🚀 PERFORMANCE: Use .lean() for read-only query
@@ -129,6 +141,12 @@ router.post('/', async (req, res) => {
 
     if (!offeredUP || !requestedUP) {
       return res.status(400).json({ message: 'One or both players are not available for trade.' });
+    }
+
+    if ((await isTradeLocked(offeredPlayer)) || (await isTradeLocked(requestedPlayer))) {
+      return res.status(409).json({
+        message: 'One or both players are already trade-locked and cannot be traded again.'
+      });
     }
 
     // REMOVED: Heavy validation (type limits, purse validation) - moved to admin approval
@@ -335,6 +353,12 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
         Player.findById(trade.offeredPlayer),
         Player.findById(trade.requestedPlayer)
       ]);
+
+      if ((await isTradeLocked(offeredPlayer)) || (await isTradeLocked(requestedPlayer))) {
+        return res.status(400).json({
+          message: 'Trade blocked: one or both players are already trade-locked.'
+        });
+      }
       
       // Simulate post-trade counts
       if (offeredPlayer?.type) team1Counts[offeredPlayer.type] = Math.max(0, (team1Counts[offeredPlayer.type] || 0) - 1);
@@ -396,9 +420,10 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       ]);
 
       // Lock both players from further trading
+      const tradeLockedUntil = new Date(Date.now() + TRADE_LOCK_HOURS * 60 * 60 * 1000);
       await Promise.all([
-        Player.findByIdAndUpdate(trade.offeredPlayer, { $set: { tradeLocked: true } }),
-        Player.findByIdAndUpdate(trade.requestedPlayer, { $set: { tradeLocked: true } })
+        Player.findByIdAndUpdate(trade.offeredPlayer, { $set: { tradeLocked: true, tradeLockedUntil } }),
+        Player.findByIdAndUpdate(trade.requestedPlayer, { $set: { tradeLocked: true, tradeLockedUntil } })
       ]);
 
       trade.status = 'completed';

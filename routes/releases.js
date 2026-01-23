@@ -237,7 +237,8 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
               isActive: false,
               currentBid: null,
               currentBidder: null,
-              tradeLocked: false // Reset trade lock when player is released
+              tradeLocked: false,
+              tradeLockedUntil: null // Reset trade lock window when player is released
             }
           });
         } catch (playerUpdateError) {
