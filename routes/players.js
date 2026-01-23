@@ -129,6 +129,7 @@ router.get("/:playerId/bids", async (req, res) => {
         battingStyle: player.style || null,
         score: player.overallScore || null,
         status: player.isSold,
+        isActive: player.isActive,
         basePrice: player.basePrice,
         // NEW FIELDS (assuming they exist in your Player schema)
         totalRuns: player.totalRuns || 0,
@@ -152,6 +153,42 @@ router.get("/:playerId/bids", async (req, res) => {
   } catch (error) {
     console.error("Error fetching bids for player:", error);
     res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+// Admin: deactivate a player (only if unsold and active)
+router.post('/:playerId/deactivate', async (req, res) => {
+  try {
+    const { playerId } = req.params;
+    const { adminUserId } = req.body;
+    if (!adminUserId) {
+      return res.status(400).json({ message: 'Admin user ID is required' });
+    }
+    const admin = await User.findById(adminUserId).select('isAdmin name');
+    if (!admin || !admin.isAdmin) {
+      return res.status(403).json({ message: 'Only admin can deactivate players' });
+    }
+
+    const player = await Player.findById(playerId);
+    if (!player) {
+      return res.status(404).json({ message: 'Player not found' });
+    }
+    if (player.isSold) {
+      return res.status(400).json({ message: 'Cannot deactivate a sold player' });
+    }
+    if (!player.isActive) {
+      return res.status(400).json({ message: 'Player is already inactive' });
+    }
+
+    player.isActive = false;
+    await player.save();
+
+    invalidateCache('players:data');
+
+    return res.json({ message: 'Player deactivated', playerId: player._id, isActive: false });
+  } catch (error) {
+    console.error('Deactivate player error', error);
+    res.status(500).json({ message: 'Internal server error' });
   }
 });
 
