@@ -83,6 +83,22 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'You have used all 4 trades.' });
     }
 
+    // Prevent duplicate/parallel trade requests for the same players while active
+    const activeTrade = await TradeRequest.findOne({
+      status: { $in: ['pending', 'counter', 'admin_pending'] },
+      $or: [
+        { offeredPlayer: offeredPlayerId },
+        { requestedPlayer: requestedPlayerId },
+        { offeredPlayer: requestedPlayerId },
+        { requestedPlayer: offeredPlayerId }
+      ]
+    }).lean();
+    if (activeTrade) {
+      return res.status(409).json({
+        message: 'One or both players already have an active trade request. Please wait for admin decision or withdraw the existing request.'
+      });
+    }
+
     const [fromUser, offeredOwner, requestedOwner] = await Promise.all([
       User.findById(fromUserId), // Not using .lean() - might be modified later
       getOwnerOfPlayer(offeredPlayerId),
