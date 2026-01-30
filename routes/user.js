@@ -26,6 +26,7 @@ const multer = require('multer');
 const path = require('path');
 // Configure Multer for file uploads
 const upload = multer({ dest: 'uploads/' });
+
 // Signup Route
 router.post('/signup', async (req, res) => {
   const { name, email, password, teamName, playStationId } = req.body;
@@ -891,6 +892,7 @@ router.get('/all', async (req, res) => {
     res.status(500).json({ message: 'An error occurred while fetching users.' });
   }
 });
+
 
 // Get teams for team directory
 router.get('/teams', async (req, res) => {

@@ -17,6 +17,7 @@ const ReleaseRequest = require('../models/ReleaseRequest');
 const Schedule = require('../models/Schedule');
 const TradeRequest = require('../models/TradeRequest');
 const AppSettings = require('../models/AppSettings');
+const { invalidateCache } = require('../utils/cache');
 
 // Helper function to get original base price based on player type
 const getOriginalBasePrice = (playerType) => {
@@ -199,9 +200,10 @@ router.post('/retain', async (req, res) => {
 
     // All players cost 17 crores to retain
     const retentionValue = 170000000; // 17 crores for all players
-
-    // Note: Purse deduction will happen when admin releases all other players
-    // For now, just create the retention record without deducting from purse
+    const currentPurse = Number(user.purse ? parseFloat(user.purse.toString()) : 0);
+    if (currentPurse < retentionValue) {
+      return res.status(400).json({ message: 'Insufficient purse balance to retain this player' });
+    }
 
     // Create retained player record
     const retainedPlayer = await RetainedPlayer.create({
@@ -213,10 +215,15 @@ router.post('/retain', async (req, res) => {
       playerRole: player.role
     });
 
+    // Deduct retention cost immediately
+    user.purse = currentPurse - retentionValue;
+    await user.save();
+    invalidateCache(`user-details:${userId}`);
+
     res.status(201).json({
       message: 'Player retained successfully',
       retainedPlayer,
-      note: 'Purse will be deducted when admin releases all other players'
+      note: 'Purse deducted for retention'
     });
 
   } catch (error) {
@@ -596,7 +603,7 @@ router.post('/undo/:retainedPlayerId', async (req, res) => {
 
     // Check if admin has already released players
     const settings = await AppSettings.findOne();
-    if (settings && settings.adminReleasedPlayers) {
+    if (settings && settings.adminReleasedPlayers && settings.enablePlayerRetention !== true) {
       return res.status(403).json({ 
         message: 'Cannot undo retained players after admin has released all other players. This action is no longer available.' 
       });
@@ -621,6 +628,12 @@ router.post('/undo/:retainedPlayerId', async (req, res) => {
     // Deactivate the retained player
     retainedPlayer.isActive = false;
     await retainedPlayer.save();
+
+    // Refund retention cost immediately
+    if (retainedPlayer.retainedValue) {
+      await User.findByIdAndUpdate(userId, { $inc: { purse: retainedPlayer.retainedValue } });
+      invalidateCache(`user-details:${userId}`);
+    }
 
     res.json({ message: 'Retained player undone successfully' });
   } catch (error) {
@@ -657,7 +670,7 @@ router.post('/withdraw/:retainedPlayerId', async (req, res) => {
 
     // Check if admin has already released players
     const settings = await AppSettings.findOne();
-    if (settings && settings.adminReleasedPlayers) {
+    if (settings && settings.adminReleasedPlayers && settings.enablePlayerRetention !== true) {
       return res.status(400).json({ message: 'Cannot withdraw after admin has released all other players' });
     }
 

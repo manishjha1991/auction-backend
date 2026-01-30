@@ -9,6 +9,7 @@ const Bid = require('../models/Bid');
 const BidHistory = require('../models/BidHistory');
 const Fixture = require('../models/Fixture');
 const PlayerStats = require('../models/PlayerStats');
+const Bet = require('../models/Bet');
 const TradeRequest = require('../models/TradeRequest');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const PickRequest = require('../models/PickRequest');
@@ -46,67 +47,71 @@ router.post('/create-all', async (req, res) => {
     console.log('📈 Creating BidHistory indexes...');
     results.bidHistory = await createBidHistoryIndexes();
 
-    // 5. MATCH RESULT COLLECTION INDEXES
+    // 5. BET COLLECTION INDEXES
+    console.log('🎯 Creating Bet indexes...');
+    results.bets = await createBetIndexes();
+
+    // 6. MATCH RESULT COLLECTION INDEXES
     console.log('🥇 Creating MatchResult indexes...');
     results.matchResults = await createMatchResultIndexes();
 
-    // 6. FIXTURE COLLECTION INDEXES
+    // 7. FIXTURE COLLECTION INDEXES
     console.log('🏆 Creating Fixture indexes...');
     results.fixtures = await createFixtureIndexes();
 
-    // 7. PLAYER STATS COLLECTION INDEXES
+    // 8. PLAYER STATS COLLECTION INDEXES
     console.log('📊 Creating PlayerStats indexes...');
     results.playerStats = await createPlayerStatsIndexes();
 
-    // 8. TRADE REQUEST COLLECTION INDEXES
+    // 9. TRADE REQUEST COLLECTION INDEXES
     console.log('🔄 Creating TradeRequest indexes...');
     results.tradeRequests = await createTradeRequestIndexes();
 
-    // 9. RELEASE REQUEST COLLECTION INDEXES
+    // 10. RELEASE REQUEST COLLECTION INDEXES
     console.log('🔓 Creating ReleaseRequest indexes...');
     results.releaseRequests = await createReleaseRequestIndexes();
 
-    // 10. PICK REQUEST COLLECTION INDEXES
+    // 11. PICK REQUEST COLLECTION INDEXES
     console.log('✋ Creating PickRequest indexes...');
     results.pickRequests = await createPickRequestIndexes();
 
-    // 11. COMMENT COLLECTION INDEXES
+    // 12. COMMENT COLLECTION INDEXES
     console.log('💬 Creating Comment indexes...');
     results.comments = await createCommentIndexes();
 
-    // 12. POST LIKE COLLECTION INDEXES
+    // 13. POST LIKE COLLECTION INDEXES
     console.log('👍 Creating PostLike indexes...');
     results.postLikes = await createPostLikeIndexes();
 
-    // 13. NOTIFICATION COLLECTION INDEXES
+    // 14. NOTIFICATION COLLECTION INDEXES
     console.log('🔔 Creating Notification indexes...');
     results.notifications = await createNotificationIndexes();
 
-    // 14. BID NOTIFICATION COLLECTION INDEXES
+    // 15. BID NOTIFICATION COLLECTION INDEXES
     console.log('📢 Creating BidNotification indexes...');
     results.bidNotifications = await createBidNotificationIndexes();
 
-    // 15. SCHEDULE COLLECTION INDEXES
+    // 16. SCHEDULE COLLECTION INDEXES
     console.log('📅 Creating Schedule indexes...');
     results.schedules = await createScheduleIndexes();
 
-    // 16. USER PLAYER COLLECTION INDEXES
+    // 17. USER PLAYER COLLECTION INDEXES
     console.log('👤 Creating UserPlayer indexes...');
     results.userPlayers = await createUserPlayerIndexes();
 
-    // 17. PLAYOFF FIXTURE COLLECTION INDEXES
+    // 18. PLAYOFF FIXTURE COLLECTION INDEXES
     console.log('🏆 Creating PlayoffFixture indexes...');
     results.playoffFixtures = await createPlayoffFixtureIndexes();
 
-    // 18. APP SETTINGS COLLECTION INDEXES
+    // 19. APP SETTINGS COLLECTION INDEXES
     console.log('⚙️ Creating AppSettings indexes...');
     results.appSettings = await createAppSettingsIndexes();
 
-    // 19. TOURNAMENT COLLECTION INDEXES
+    // 20. TOURNAMENT COLLECTION INDEXES
     console.log('🏟️ Creating Tournament indexes...');
     results.tournaments = await createTournamentIndexes();
 
-    // 20. RETAINED PLAYER COLLECTION INDEXES
+    // 21. RETAINED PLAYER COLLECTION INDEXES
     console.log('🔒 Creating RetainedPlayer indexes...');
     results.retainedPlayers = await createRetainedPlayerIndexes();
 
@@ -153,6 +158,7 @@ async function createUserIndexes() {
     // Search and filtering
     { teamName: 1, isActive: 1 },
     { name: 1, isActive: 1 },
+    { streamLink: 1, isActive: 1, isAdmin: 1 },
     
     // Admin queries
     { isAdmin: 1, isActive: 1 },
@@ -289,6 +295,26 @@ async function createBidHistoryIndexes() {
   for (const index of indexes) {
     try {
       await BidHistory.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// BET COLLECTION INDEXES
+async function createBetIndexes() {
+  const indexes = [
+    { userId: 1, status: 1 },
+    { status: 1, createdAt: -1 },
+    { team1: 1, team2: 1, status: 1 }
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await Bet.collection.createIndex(index);
       results.push({ index, status: 'created' });
     } catch (error) {
       results.push({ index, status: 'error', error: error.message });
@@ -882,7 +908,7 @@ async function createRetainedPlayerIndexes() {
 router.get('/stats', async (req, res) => {
   try {
     const collections = [
-      'users', 'players', 'bids', 'bidhistories', 'matchresults', 'fixtures',
+      'users', 'players', 'bids', 'bidhistories', 'bets', 'matchresults', 'fixtures',
       'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
@@ -928,7 +954,7 @@ router.get('/stats', async (req, res) => {
 router.post('/drop-all', async (req, res) => {
   try {
     const collections = [
-      'users', 'players', 'bids', 'bidhistories', 'matchresults', 'fixtures',
+      'users', 'players', 'bids', 'bidhistories', 'bets', 'matchresults', 'fixtures',
       'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
