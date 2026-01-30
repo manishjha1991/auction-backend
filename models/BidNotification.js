@@ -9,6 +9,11 @@ const bidNotificationSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  playerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Player',
+    required: false
+  },
   currentBid: {
     type: Number,
     required: true

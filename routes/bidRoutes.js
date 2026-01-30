@@ -541,6 +541,7 @@ router.post("/:playerId/exit", async (req, res) => {
     const notificationData = {
       message: `Bid exit: ${user.name} (2nd highest) has exited the bid on ${player.name}. Locked amount refunded.`,
       playername: player.name,
+      playerId: player._id,
       currentBid: player.currentBid,
       currentBidder: player.currentBidder,
       exitedUser: user.name
@@ -1573,6 +1574,7 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null) {
   const notificationData = {
     message:      `Bid exit: ${user.name} exited on ${player.name}.`,
     playername:   player.name,
+    playerId:     player._id,
     currentBid:   player.currentBid,
     currentBidder:player.currentBidder,
     exitedUser:   user.name

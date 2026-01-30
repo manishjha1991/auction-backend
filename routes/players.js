@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const Player = require('../models/Player');
 const upload = require('../config/multerConfig'); // Import Multer configuration
 const Bid = require("../models/Bid");
+const BidNotification = require("../models/BidNotification");
 const User = require("../models/User");
 const UserPlayer = require("../models/UserPlayer");
 const ReleaseRequest = require("../models/ReleaseRequest");
@@ -116,6 +117,18 @@ router.get("/:playerId/bids", async (req, res) => {
       .lean()
       .exec();
 
+    // 2.1 Fetch last exit notification time for this player
+    const lastExit = await BidNotification.findOne({
+      message: { $regex: 'Bid exit', $options: 'i' },
+      $or: [
+        { playerId: player._id },
+        { playername: player.name }
+      ]
+    })
+      .sort({ timestamp: -1 })
+      .select('timestamp exitedUser')
+      .lean();
+
     // 3. Get the top two bids
     const lastTwoBids = allBids ? allBids.slice(0, 2) : [];
 
@@ -131,6 +144,8 @@ router.get("/:playerId/bids", async (req, res) => {
         status: player.isSold,
         isActive: player.isActive,
         basePrice: player.basePrice,
+        lastExitTime: lastExit?.timestamp || null,
+        lastExitUser: lastExit?.exitedUser || null,
         // NEW FIELDS (assuming they exist in your Player schema)
         totalRuns: player.totalRuns || 0,
         totalWickets: player.totalWickets || 0
