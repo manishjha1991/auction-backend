@@ -273,7 +273,7 @@ router.get("/players/data", async (req, res) => {
                       isActive: true,
                     },
                   },
-                  { $project: { name: 1, teamName: 1 } }
+                  { $project: { _id: 1, name: 1, teamName: 1 } }
                 ],
                 as: 'bidder'
               }
@@ -310,6 +310,19 @@ router.get("/players/data", async (req, res) => {
                   if: { $gt: [{ $size: '$highestBid' }, 0] },
                   then: { $arrayElemAt: ['$highestBid.bidder.name', 0] },
                   else: 'N/A'
+                }
+              }
+            }
+          },
+          currentBidderId: {
+            $cond: {
+              if: { $gt: [{ $size: '$userPlayer' }, 0] },
+              then: { $arrayElemAt: ['$userPlayer.userId', 0] },
+              else: {
+                $cond: {
+                  if: { $gt: [{ $size: '$highestBid' }, 0] },
+                  then: { $arrayElemAt: ['$highestBid.bidder._id', 0] },
+                  else: null
                 }
               }
             }
