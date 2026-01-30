@@ -364,7 +364,6 @@ router.get("/:userId/details", async (req, res) => {
         image: user.teamImage,
         teamName: user.teamName,
         purse: user.purse,
-        betWallet: user.betWallet || 1000000000, // Return betWallet for betting (default 100 CR)
         timezone: user.timezone,
         streamLink: user.streamLink,
         abbreviation: user.abbreviation,
@@ -388,6 +387,70 @@ router.get("/:userId/details", async (req, res) => {
   } catch (error) {
     console.error("Error fetching user details:", error);
     res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+// Get full bids list for a user (active + past)
+router.get("/:userId/bids", async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const user = await User.findById(userId).select('_id name').lean();
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const userBids = await Bid.find({ bidder: userId })
+      .populate("playerId", "name type role basePrice")
+      .sort({ timestamp: -1 })
+      .lean()
+      .exec();
+
+    const bidPlayerIds = userBids.map((bid) => bid.playerId?._id).filter(Boolean);
+    const highestBids = await Bid.aggregate([
+      { $match: { playerId: { $in: bidPlayerIds } } },
+      { $sort: { playerId: 1, bidAmount: -1 } },
+      {
+        $group: {
+          _id: "$playerId",
+          highestBid: { $first: "$$ROOT" }
+        }
+      }
+    ]);
+    const highestBidMap = new Map();
+    highestBids.forEach((item) => {
+      highestBidMap.set(item._id.toString(), item.highestBid);
+    });
+
+    const bids = userBids.map((bid) => {
+      const highestBid = highestBidMap.get(bid.playerId?._id?.toString());
+      const isActive = bid.isBidOn && bid.isActive;
+      let status = "Out";
+      if (isActive) {
+        if (highestBid && highestBid.bidder?.toString() === userId.toString()) {
+          status = "Winning";
+        } else {
+          status = "Losing";
+        }
+      } else if (highestBid && highestBid.bidder?.toString() === userId.toString()) {
+        status = "Won";
+      } else {
+        status = "Lost";
+      }
+
+      return {
+        playerId: bid.playerId?._id,
+        playerName: bid.playerId?.name,
+        playerType: bid.playerId?.type,
+        playerRole: bid.playerId?.role,
+        bidAmount: bid.bidAmount,
+        status
+      };
+    });
+
+    res.json({ bids });
+  } catch (error) {
+    console.error("Error fetching user bids:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
 

@@ -9,7 +9,6 @@ const Bid = require('../models/Bid');
 const BidHistory = require('../models/BidHistory');
 const Fixture = require('../models/Fixture');
 const PlayerStats = require('../models/PlayerStats');
-const Bet = require('../models/Bet');
 const TradeRequest = require('../models/TradeRequest');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const PickRequest = require('../models/PickRequest');
@@ -47,11 +46,7 @@ router.post('/create-all', async (req, res) => {
     console.log('📈 Creating BidHistory indexes...');
     results.bidHistory = await createBidHistoryIndexes();
 
-    // 5. BET COLLECTION INDEXES
-    console.log('🎯 Creating Bet indexes...');
-    results.bets = await createBetIndexes();
-
-    // 6. MATCH RESULT COLLECTION INDEXES
+    // 5. MATCH RESULT COLLECTION INDEXES
     console.log('🥇 Creating MatchResult indexes...');
     results.matchResults = await createMatchResultIndexes();
 
@@ -298,26 +293,6 @@ async function createBidHistoryIndexes() {
   for (const index of indexes) {
     try {
       await BidHistory.collection.createIndex(index);
-      results.push({ index, status: 'created' });
-    } catch (error) {
-      results.push({ index, status: 'error', error: error.message });
-    }
-  }
-  return results;
-}
-
-// BET COLLECTION INDEXES
-async function createBetIndexes() {
-  const indexes = [
-    { userId: 1, status: 1 },
-    { status: 1, createdAt: -1 },
-    { team1: 1, team2: 1, status: 1 }
-  ];
-
-  const results = [];
-  for (const index of indexes) {
-    try {
-      await Bet.collection.createIndex(index);
       results.push({ index, status: 'created' });
     } catch (error) {
       results.push({ index, status: 'error', error: error.message });
@@ -911,7 +886,7 @@ async function createRetainedPlayerIndexes() {
 router.get('/stats', async (req, res) => {
   try {
     const collections = [
-      'users', 'players', 'bids', 'bidhistories', 'bets', 'matchresults', 'fixtures',
+      'users', 'players', 'bids', 'bidhistories', 'matchresults', 'fixtures',
       'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
@@ -957,7 +932,7 @@ router.get('/stats', async (req, res) => {
 router.post('/drop-all', async (req, res) => {
   try {
     const collections = [
-      'users', 'players', 'bids', 'bidhistories', 'bets', 'matchresults', 'fixtures',
+      'users', 'players', 'bids', 'bidhistories', 'matchresults', 'fixtures',
       'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
