@@ -148,6 +148,8 @@ async function createUserIndexes() {
     { isActive: 1, group: 1 },
     { isTournamentReady: 1, group: 1 },
     { isActive: 1, isTournamentReady: 1, group: 1 },
+    { isAdmin: 1, isActive: 1, isTournamentReady: 1 },
+    { isAdmin: 1, isActive: 1, isTournamentReady: 1, teamName: 1 },
     
     // Points table queries
     { points: -1, fairnessPoint: -1 },
@@ -261,6 +263,7 @@ async function createBidIndexes() {
     { playerId: 1, isActive: 1, isBidOn: 1 },
     { bidder: 1, isActive: 1, isBidOn: 1 },
     { playerId: 1, bidAmount: -1, isActive: 1 },
+    { isActive: 1, isBidOn: 1, bidAmount: -1 },
     
     // Sorting and filtering
     { timestamp: -1, isActive: 1 },
