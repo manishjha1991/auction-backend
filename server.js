@@ -35,7 +35,6 @@ const tournamentRoutes = require('./routes/tournaments');
 const matchResultsRoutes = require('./routes/matchResults');
 const adminToolsRoutes = require('./routes/adminTools');
 const monitoringRoutes = require('./routes/monitoring');
-const bettingRoutes = require('./routes/betting');
 // require('./scheduler');
 
 // Allow Express to trust proxy headers (needed to read real client IPs)
@@ -171,7 +170,6 @@ app.use('/api/tournaments', tournamentRoutes);
 app.use('/api/match-results', matchResultsRoutes);
 app.use('/api/admin-tools', adminToolsRoutes);
 app.use('/api/monitoring', monitoringRoutes);
-app.use('/api/betting', bettingRoutes);
 
 
 // 🚀 NOTIFICATION: Socket user mapping for targeted notifications
