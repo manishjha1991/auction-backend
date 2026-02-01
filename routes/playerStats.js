@@ -5,6 +5,7 @@ const PlayerStats = require('../models/PlayerStats'); // Adjust the path as need
 const Player = require('../models/Player'); // Adjust the path
 const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
+const MatchResult = require('../models/MatchResult');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 
 // 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats) - keeping for backward compatibility
@@ -1159,6 +1160,25 @@ router.get('/stats-overview', async (req, res) => {
       return userReady && opponentReady;
     });
 
+    const matchResults = await MatchResult.find({
+      matchStatus: 'completed',
+      winner: { $nin: ['no_result', 'tie'] },
+    }).lean();
+    const teamTotals = matchResults.flatMap((match) => ([
+      {
+        teamName: match.team1,
+        runs: match.team1Score || 0,
+        overs: match.team1Overs || 0,
+        wickets: match.team1Wickets ?? 0,
+      },
+      {
+        teamName: match.team2,
+        runs: match.team2Score || 0,
+        overs: match.team2Overs || 0,
+        wickets: match.team2Wickets ?? 0,
+      },
+    ]));
+
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
       // Minimum 10 balls required for realistic strike rate calculation
@@ -1574,6 +1594,15 @@ router.get('/stats-overview', async (req, res) => {
     averageArray.sort((a, b) => b.average - a.average);
     const top5BestBattingAverage = averageArray.slice(0, 5);
 
+    const highestTeamTotal = teamTotals.reduce((acc, entry) => {
+      if (!acc || entry.runs > acc.runs) return entry;
+      return acc;
+    }, null);
+    const lowestTeamTotal = teamTotals.reduce((acc, entry) => {
+      if (!acc || entry.runs < acc.runs) return entry;
+      return acc;
+    }, null);
+
     // 7) Construct final response
     const response = {
       highestStrikeRate: highestStrikeRateDoc || {
@@ -1618,6 +1647,18 @@ router.get('/stats-overview', async (req, res) => {
         playerName: '',
         teamName: '',
         totalRuns: 0,
+      },
+      highestTeamTotal: highestTeamTotal || {
+        teamName: '',
+        runs: 0,
+        overs: 0,
+        wickets: 0,
+      },
+      lowestTeamTotal: lowestTeamTotal || {
+        teamName: '',
+        runs: 0,
+        overs: 0,
+        wickets: 0,
       },
       highestFiveWicketHauls,
       highestFourWicketHauls,
