@@ -1167,12 +1167,14 @@ router.get('/stats-overview', async (req, res) => {
     const teamTotals = matchResults.flatMap((match) => ([
       {
         teamName: match.team1,
+        opponentTeam: match.team2,
         runs: match.team1Score || 0,
         overs: match.team1Overs || 0,
         wickets: match.team1Wickets ?? 0,
       },
       {
         teamName: match.team2,
+        opponentTeam: match.team1,
         runs: match.team2Score || 0,
         overs: match.team2Overs || 0,
         wickets: match.team2Wickets ?? 0,
@@ -1650,12 +1652,14 @@ router.get('/stats-overview', async (req, res) => {
       },
       highestTeamTotal: highestTeamTotal || {
         teamName: '',
+        opponentTeam: '',
         runs: 0,
         overs: 0,
         wickets: 0,
       },
       lowestTeamTotal: lowestTeamTotal || {
         teamName: '',
+        opponentTeam: '',
         runs: 0,
         overs: 0,
         wickets: 0,
