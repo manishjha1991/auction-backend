@@ -6,6 +6,7 @@ const Player = require('../models/Player'); // Adjust the path
 const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
 const MatchResult = require('../models/MatchResult');
+const Fixture = require('../models/Fixture');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 
 // 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats) - keeping for backward compatibility
@@ -1160,26 +1161,56 @@ router.get('/stats-overview', async (req, res) => {
       return userReady && opponentReady;
     });
 
-    const matchResults = await MatchResult.find({
-      matchStatus: 'completed',
-      winner: { $nin: ['no_result', 'tie'] },
+    const parseScore = (scoreValue) => {
+      if (scoreValue === null || scoreValue === undefined) {
+        return { runs: 0, wickets: 0, valid: false };
+      }
+      const scoreStr = String(scoreValue).trim();
+      if (!scoreStr) return { runs: 0, wickets: 0, valid: false };
+      if (scoreStr.includes('/')) {
+        const [runsPart, wicketsPart] = scoreStr.split('/');
+        const runs = Number.parseInt(runsPart, 10);
+        const wickets = Number.parseInt(wicketsPart, 10);
+        return {
+          runs: Number.isNaN(runs) ? 0 : runs,
+          wickets: Number.isNaN(wickets) ? 0 : wickets,
+          valid: true,
+        };
+      }
+      const runs = Number.parseInt(scoreStr, 10);
+      return {
+        runs: Number.isNaN(runs) ? 0 : runs,
+        wickets: 0,
+        valid: true,
+      };
+    };
+
+    const fixtures = await Fixture.find({
+      team1Score: { $ne: null },
+      team2Score: { $ne: null },
+      winner: { $ne: null },
     }).lean();
-    const teamTotals = matchResults.flatMap((match) => ([
-      {
-        teamName: match.team1,
-        opponentTeam: match.team2,
-        runs: match.team1Score || 0,
-        overs: match.team1Overs || 0,
-        wickets: match.team1Wickets ?? 0,
-      },
-      {
-        teamName: match.team2,
-        opponentTeam: match.team1,
-        runs: match.team2Score || 0,
-        overs: match.team2Overs || 0,
-        wickets: match.team2Wickets ?? 0,
-      },
-    ]));
+
+    const teamTotals = fixtures.flatMap((match) => {
+      const team1Parsed = parseScore(match.team1Score);
+      const team2Parsed = parseScore(match.team2Score);
+      return [
+        {
+          teamName: match.team1,
+          opponentTeam: match.team2,
+          runs: team1Parsed.runs,
+          overs: match.team1Overs || 0,
+          wickets: team1Parsed.wickets,
+        },
+        {
+          teamName: match.team2,
+          opponentTeam: match.team1,
+          runs: team2Parsed.runs,
+          overs: match.team2Overs || 0,
+          wickets: team2Parsed.wickets,
+        },
+      ];
+    });
 
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
