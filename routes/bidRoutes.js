@@ -1877,7 +1877,10 @@ router.get('/live-dashboard', async (req, res) => {
 router.get('/users-dashboard', async (req, res) => {
   try {
     // Get all non-admin users with their purse and abbreviation
-    const users = await User.find({ isAdmin: { $ne: true } })
+    const users = await User.find({
+      isAdmin: { $ne: true },
+      teamName: { $exists: true, $ne: null }
+    })
       .select('name teamName purse _id abbreviation')
       .lean();
 
@@ -1898,6 +1901,7 @@ router.get('/users-dashboard', async (req, res) => {
       }
       bidsByPlayer[playerId].push({
         bidderId: bid.bidder._id.toString(),
+        bidderName: bid.bidder.name,
         bidderAbbreviation: bid.bidder.abbreviation || bid.bidder.teamName?.substring(0, 3).toUpperCase() || bid.bidder.name?.substring(0, 3).toUpperCase() || 'N/A',
         bidAmount: bid.bidAmount,
         timestamp: bid.timestamp
@@ -1927,10 +1931,13 @@ router.get('/users-dashboard', async (req, res) => {
       
       // Get the other bidder's abbreviation
       let otherBidderAbbr = null;
+      let otherBidderName = null;
       if (isHighest && playerBids[1]) {
         otherBidderAbbr = playerBids[1].bidderAbbreviation;
+        otherBidderName = playerBids[1].bidderName || null;
       } else if (isSecond && playerBids[0]) {
         otherBidderAbbr = playerBids[0].bidderAbbreviation;
+        otherBidderName = playerBids[0].bidderName || null;
       }
       
       // Group by player - keep highest bid per player for this user
@@ -1955,7 +1962,8 @@ router.get('/users-dashboard', async (req, res) => {
           timestamp: bid.timestamp,
           isWinning: isHighest,
           isLosing: isSecond,
-          otherBidderAbbr: otherBidderAbbr
+          otherBidderAbbr: otherBidderAbbr,
+          otherBidderName: otherBidderName
         });
       }
     });
