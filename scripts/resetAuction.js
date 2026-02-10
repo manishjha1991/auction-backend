@@ -24,7 +24,6 @@ const collectionsToClear = [
   'playofffixtures',
   'postlikes',
   'releaserequests',
-  'retainedplayers',
   'schedules',
   'traderequests',
   'useractivities',
