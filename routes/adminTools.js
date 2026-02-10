@@ -5,6 +5,7 @@ const router = express.Router();
 const User = require('../models/User');
 const Player = require('../models/Player');
 const UserPlayer = require('../models/UserPlayer');
+const RetainedPlayer = require('../models/RetainedPlayer');
 const {
   previewAuctionFixes,
   executeAuctionFixes,
@@ -14,6 +15,24 @@ const {
   executePursePlan,
   runPurseAutoFix,
 } = require('../utils/purseAuditHelpers');
+const { invalidateCache } = require('../utils/cache');
+
+const AUCTION_RESET_COLLECTIONS = [
+  'bidhistories',
+  'bidnotifications',
+  'bids',
+  'comments',
+  'fixtures',
+  'notifications',
+  'pickrequests',
+  'playerstats',
+  'playofffixtures',
+  'postlikes',
+  'releaserequests',
+  'schedules',
+  'traderequests',
+  'useractivities',
+];
 
 const VALID_TYPES = ['Sapphire', 'Emerald', 'Gold', 'Silver'];
 
@@ -141,6 +160,155 @@ const buildSyncPlan = async () => {
   };
 };
 
+const collectionExists = async (name) => {
+  const cursor = mongoose.connection.db.listCollections({ name });
+  return await cursor.hasNext();
+};
+
+const runAuctionReset = async () => {
+  const retainedPlayers = await RetainedPlayer.find({
+    isActive: true,
+    status: { $in: ['approved', 'active'] },
+  })
+    .select('userId playerId')
+    .lean();
+
+  const retainedPlayerIds = retainedPlayers.map((rp) => rp.playerId);
+  const retainedUserIds = retainedPlayers.map((rp) => rp.userId);
+  const retainedPairs = retainedPlayers.map((rp) => ({
+    userId: rp.userId,
+    playerId: rp.playerId,
+  }));
+
+  await mongoose.connection.collection('users').updateMany(
+    {},
+    {
+      $set: {
+        fairnessPoint: 0,
+        points: 0,
+        matchesPlayed: 0,
+        allPlayersReleased: false,
+        isRetentionLocked: false,
+        tradesUsed: 0,
+        currentBids: [],
+        currentBid: null,
+        boughtPlayers: [],
+      },
+    }
+  );
+
+  if (retainedPlayerIds.length > 0) {
+    const retainedByUser = retainedPlayers.reduce((acc, rp) => {
+      const key = rp.userId.toString();
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(rp.playerId);
+      return acc;
+    }, {});
+
+    const userUpdates = Object.entries(retainedByUser).map(([userId, playerIds]) => {
+      const retainedCount = playerIds.length;
+      const purseValue = 1000000000 - retainedCount * 170000000;
+      return {
+        updateOne: {
+          filter: { _id: new mongoose.Types.ObjectId(userId) },
+          update: { $set: { boughtPlayers: playerIds, purse: purseValue } },
+        },
+      };
+    });
+
+    if (userUpdates.length > 0) {
+      await mongoose.connection.collection('users').bulkWrite(userUpdates);
+    }
+  }
+
+  if (retainedPairs.length > 0) {
+    await UserPlayer.deleteMany({ $nor: retainedPairs });
+  } else {
+    await UserPlayer.deleteMany({});
+  }
+
+  if (retainedPairs.length > 0) {
+    const existingPairs = await UserPlayer.find({
+      userId: { $in: retainedUserIds },
+      playerId: { $in: retainedPlayerIds },
+    })
+      .select('userId playerId')
+      .lean();
+
+    const existingSet = new Set(
+      existingPairs.map((p) => `${p.userId.toString()}-${p.playerId.toString()}`)
+    );
+
+    const missing = retainedPairs.filter(
+      (rp) => !existingSet.has(`${rp.userId.toString()}-${rp.playerId.toString()}`)
+    );
+
+    if (missing.length > 0) {
+      await UserPlayer.insertMany(
+        missing.map((rp) => ({
+          userId: rp.userId,
+          playerId: rp.playerId,
+          bidValue: 170000000,
+          isActive: true,
+        }))
+      );
+    }
+
+    await UserPlayer.updateMany(
+      { userId: { $in: retainedUserIds }, playerId: { $in: retainedPlayerIds } },
+      { $set: { bidValue: 170000000, isActive: true } }
+    );
+  }
+
+  if (retainedPlayerIds.length > 0) {
+    await Player.updateMany(
+      { _id: { $in: retainedPlayerIds } },
+      { $set: { basePrice: 170000000, isSold: true, isActive: true } }
+    );
+  }
+
+  const nonRetainedMatch = retainedPlayerIds.length > 0 ? { $nin: retainedPlayerIds } : { $exists: true };
+  await Player.updateMany(
+    { _id: nonRetainedMatch, type: 'Sapphire' },
+    { $set: { basePrice: 20000000, isSold: false, isActive: false } }
+  );
+  await Player.updateMany(
+    { _id: nonRetainedMatch, type: 'Emerald' },
+    { $set: { basePrice: 15000000, isSold: false, isActive: false } }
+  );
+  await Player.updateMany(
+    { _id: nonRetainedMatch, type: 'Gold' },
+    { $set: { basePrice: 10000000, isSold: false, isActive: false } }
+  );
+  await Player.updateMany(
+    { _id: nonRetainedMatch, type: 'Silver' },
+    { $set: { basePrice: 1000000, isSold: false, isActive: false } }
+  );
+
+  const cleared = [];
+  for (const name of AUCTION_RESET_COLLECTIONS) {
+    const exists = await collectionExists(name);
+    if (!exists) {
+      cleared.push({ name, deletedCount: 0, skipped: true });
+      continue;
+    }
+    const result = await mongoose.connection.collection(name).deleteMany({});
+    cleared.push({ name, deletedCount: result.deletedCount || 0, skipped: false });
+  }
+
+  invalidateCache('user-purses');
+  invalidateCache('players:data');
+  invalidateCache('stats-overview');
+
+  return {
+    retained: {
+      users: new Set(retainedUserIds.map((id) => id.toString())).size,
+      players: retainedPlayerIds.length,
+    },
+    cleared,
+  };
+};
+
 router.get('/player-type/status', async (req, res) => {
   try {
     const { adminUserId } = req.query;
@@ -194,6 +362,23 @@ router.post('/player-type/toggle', async (req, res) => {
     res
       .status(error.status || 500)
       .json({ message: error.message || 'Failed to toggle player type' });
+  }
+});
+
+router.post('/auction/reset', async (req, res) => {
+  try {
+    const { adminUserId } = req.body;
+    await requireAdmin(adminUserId);
+    const result = await runAuctionReset();
+    res.json({
+      message: 'Auction reset completed',
+      ...result,
+    });
+  } catch (error) {
+    console.error('auction/reset error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to reset auction' });
   }
 });
 

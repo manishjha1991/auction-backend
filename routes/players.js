@@ -210,7 +210,8 @@ router.post('/:playerId/deactivate', async (req, res) => {
 
 router.get("/players/data", async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (2 minute cache for players data)
-  const cacheKey = 'players:data';
+  const includeInactive = req.query.includeInactive === 'true';
+  const cacheKey = includeInactive ? 'players:data:all' : 'players:data';
   const cached = cacheConfig.medium.get(cacheKey);
   if (cached) {
     console.log(`✅ Players data cache HIT`);
@@ -219,8 +220,9 @@ router.get("/players/data", async (req, res) => {
 
   try {
     // Use aggregation pipeline for better performance
+    const matchStage = includeInactive ? {} : { isActive: true };
     const players = await Player.aggregate([
-      { $match: { isActive: true } },
+      { $match: matchStage },
       {
         $lookup: {
           from: 'userplayers',
