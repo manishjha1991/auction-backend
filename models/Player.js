@@ -15,6 +15,9 @@ const PlayerSchema = new mongoose.Schema({
     isActive:{ type: Boolean, default: true },
     tradeLocked: { type: Boolean, default: false },
     tradeLockedUntil: { type: Date, default: null },
+    lastBidAt: { type: Date, default: null },
+    lastExitAt: { type: Date, default: null },
+    lastExitBy: { type: String, enum: ['user', 'system'], default: null },
       // NEW FIELDS:
     totalRuns: { type: Number, default: 0 },
     totalBalls: { type: Number, default: 0 },

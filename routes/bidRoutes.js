@@ -344,6 +344,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     // 13. Update the player's currentBid & currentBidder
     player.currentBid = bidAmount;
     player.currentBidder = bidder;
+    player.lastBidAt = new Date();
     await player.save();
 
     // Determine secondBidder: the bidder in activeBidders that is not the current bidder.
@@ -1019,6 +1020,8 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
           player.currentBid = null;
           player.currentBidder = null;
         }
+        player.lastExitAt = new Date();
+        player.lastExitBy = 'system';
         await player.save();
 
         return {
@@ -1566,6 +1569,8 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null) {
     player.currentBid    = null;
     player.currentBidder = null;
   }
+  player.lastExitAt = new Date();
+  player.lastExitBy = 'user';
   // Defensive: remove accidental currentBids field if present
   if (player.currentBids !== undefined) delete player.currentBids;
   await player.save();

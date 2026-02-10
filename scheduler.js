@@ -2,9 +2,15 @@
  * Auction Scheduler
  *
  * Business rules:
- * 1. 23:30 IST nightly – sell any player that has only ever received a single bid.
- * 2. Every 15 minutes – remove the second-highest bidder from every player (no auto-sell).
- * 3. 22:00 IST nightly – lock users who are bidding without the minimum required
+ * 1. 22:30 IST nightly – sell any player that has only ever received a single bid.
+ * 2. 18:00–22:00 IST – every 10 minutes bulk exit second-highest (admin toggle).
+ * 3. 22:30–23:00 IST – every 5 minutes remove second-highest bidder only (no auto-sell).
+ * 4. 23:30–00:30 IST – every 5 minutes remove second-highest bidder; if no new bid
+ *    since last exit for 5 minutes, sell.
+ * 5. 00:30–02:00 IST – every 2 minutes, if no new bid since last exit for 2 minutes, sell;
+ *    else remove second-highest.
+ * 5. Every 15 minutes – remove the second-highest bidder from every player (no auto-sell).
+ * 6. 22:00 IST nightly – lock users who are bidding without the minimum required
  *    Sapphire/Emerald/Gold/Silver holdings.
  * 4. Every 10 minutes from 12:30–23:50 IST – if the “single-bid monitor” is enabled
  *    (and the bulk-exit job is disabled) remove the second-highest bidder from each
@@ -16,6 +22,7 @@
 
 const cron = require('node-cron');
 const axios = require('axios');
+const Player = require('./models/Player');
 const { 
   runBulkExitAll,
   getSingleBidPlayers,
@@ -141,6 +148,58 @@ async function processPlayer(pid) {
   }
 }
 
+async function shouldSellNoNewBidSinceExit(player, windowMs) {
+  if (!player?.lastExitAt) return false;
+  const lastExitTime = new Date(player.lastExitAt).getTime();
+  const lastBidTime = player.lastBidAt ? new Date(player.lastBidAt).getTime() : 0;
+  const now = Date.now();
+  return lastBidTime <= lastExitTime && now - lastExitTime >= windowMs;
+}
+
+async function processCounterBidWindow(pid, windowMs, isFirstRun = false) {
+  const player = await Player.findById(pid).lean();
+  if (!player || player.isSold) return;
+  const result = await getBidderCount(pid);
+  const count = result.count ?? 0;
+  if (count <= 0) return;
+  if (count < 2) {
+    if (isFirstRun) {
+      await sellPlayer(pid, null);
+      return;
+    }
+    if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
+      await sellPlayer(pid, null);
+    }
+    return;
+  }
+
+  if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
+    await sellPlayer(pid, null);
+    return;
+  }
+  await exitSecondHighestForPlayerSingle(pid, null);
+}
+
+async function processPostWindow(pid) {
+  const player = await Player.findById(pid).lean();
+  if (!player || player.isSold) return;
+  const result = await getBidderCount(pid);
+  const count = result.count ?? 0;
+  if (count <= 0) return;
+  if (count < 2) {
+    if (await shouldSellNoNewBidSinceExit(player, 2 * 60 * 1000)) {
+      await sellPlayer(pid, null);
+    }
+    return;
+  }
+
+  if (await shouldSellNoNewBidSinceExit(player, 2 * 60 * 1000)) {
+    await sellPlayer(pid, null);
+    return;
+  }
+  await exitSecondHighestForPlayerSingle(pid, null);
+}
+
 async function sellingSingleBidSinceStarting() {
   if (!(await isCronEnabled('cronSingleBidFinalizerEnabled'))) {
     console.log('⏸️ 23:30 single-bid finalizer disabled via admin settings.');
@@ -209,6 +268,92 @@ async function tenMinuteSingleBidJob() {
   }
 }
 
+async function counterBidWindowJob(windowMinutes) {
+  const settings = await getCronSettings();
+  if (settings.cronBulkExitEnabled) {
+    console.log('⏸️ Counter-bid window paused because bulk exit is active.');
+    return;
+  }
+  if (settings.cronSingleBidEnabled === false) {
+    console.log('⏸️ Counter-bid window disabled via admin settings.');
+    return;
+  }
+
+  const now = new Date();
+  const isFirstRun = now.getHours() === 23 && now.getMinutes() === 30;
+  console.log(`⏱️ [${now.toISOString()}] Running ${windowMinutes}-minute counter-bid window`);
+  try {
+    const result = await getUnsoldPlayers();
+    const players = result.players || [];
+    const batchSize = parseInt(process.env.SCHEDULER_MONITOR_BATCH_SIZE, 10) || DEFAULT_BATCH_SIZE;
+    await runInBatches(
+      players,
+      batchSize,
+      async ({ _id: pid, id }) => {
+        await processCounterBidWindow(pid || id, windowMinutes * 60 * 1000, isFirstRun);
+      }
+    );
+  } catch (err) {
+    console.error('⚠️ counterBidWindowJob error:', err.message);
+  }
+}
+
+async function exitOnlyWindowJob(windowMinutes) {
+  const settings = await getCronSettings();
+  if (settings.cronBulkExitEnabled) {
+    console.log('⏸️ Exit-only window paused because bulk exit is active.');
+    return;
+  }
+  if (settings.cronSingleBidEnabled === false) {
+    console.log('⏸️ Exit-only window disabled via admin settings.');
+    return;
+  }
+
+  console.log(`⏱️ [${new Date().toISOString()}] Running exit-only window every ${windowMinutes} minutes`);
+  try {
+    const result = await getUnsoldPlayers();
+    const players = result.players || [];
+    const batchSize = parseInt(process.env.SCHEDULER_MONITOR_BATCH_SIZE, 10) || DEFAULT_BATCH_SIZE;
+    await runInBatches(
+      players,
+      batchSize,
+      async ({ _id: pid, id }) => {
+        await exitSecondHighestForPlayerSingle(pid || id, null);
+      }
+    );
+  } catch (err) {
+    console.error('⚠️ exitOnlyWindowJob error:', err.message);
+  }
+}
+
+async function postWindowJob() {
+  const settings = await getCronSettings();
+  if (settings.cronBulkExitEnabled) {
+    console.log('⏸️ Post-window job paused because bulk exit is active.');
+    return;
+  }
+  if (settings.cronSingleBidEnabled === false) {
+    console.log('⏸️ Post-window job disabled via admin settings.');
+    return;
+  }
+
+  console.log(`⏱️ [${new Date().toISOString()}] Running post-window 2-minute cycle`);
+  try {
+    const result = await getUnsoldPlayers();
+    const players = result.players || [];
+    const batchSize = parseInt(process.env.SCHEDULER_MONITOR_BATCH_SIZE, 10) || DEFAULT_BATCH_SIZE;
+    await runInBatches(
+      players,
+      batchSize,
+      async ({ _id: pid, id }) => {
+        await processPostWindow(pid || id);
+      }
+    );
+  } catch (err) {
+    console.error('⚠️ postWindowJob error:', err.message);
+  }
+}
+
 // This function is no longer needed - using exitSecondHighestForPlayerSingle directly
 
 async function runBulkExitJob() {
@@ -272,10 +417,34 @@ cron.schedule('0 30 22 * * *', sellingSingleBidSinceStarting, {
   timezone: 'Asia/Kolkata',
 });
 
-// Bulk exit every 10 minutes (mutually exclusive with the ten-minute monitor)
-// Schedule: runs at 0 seconds of every 10th minute (00:00, 00:10, 00:20, 00:30, 00:40, 00:50, 01:00, etc.)
-cron.schedule('0 */10 * * * *', () => {
-  console.log(`⏰ [${new Date().toISOString()}] Bulk exit cron triggered (every 10 minutes)`);
+// 22:30–22:59 IST – every 5 minutes exit-only window (no auto-sell)
+cron.schedule('0 30-59/5 22 * * *', () => exitOnlyWindowJob(5), {
+  timezone: 'Asia/Kolkata',
+});
+
+// 23:30–00:30 IST – every 5 minutes counter-bid window
+cron.schedule('0 30-59/5 23 * * *', () => counterBidWindowJob(5), {
+  timezone: 'Asia/Kolkata',
+});
+
+// 00:00–00:30 IST – every 5 minutes counter-bid window
+cron.schedule('0 0-30/5 0 * * *', () => counterBidWindowJob(5), {
+  timezone: 'Asia/Kolkata',
+});
+
+// 00:30–00:59 IST – every 2 minutes post-window cycle
+cron.schedule('0 30-59/2 0 * * *', () => postWindowJob(), {
+  timezone: 'Asia/Kolkata',
+});
+
+// 01:00–01:59 IST – every 2 minutes post-window cycle
+cron.schedule('0 */2 1 * * *', () => postWindowJob(), {
+  timezone: 'Asia/Kolkata',
+});
+
+// Bulk exit every 10 minutes from 18:00–21:59 IST (mutually exclusive with the ten-minute monitor)
+cron.schedule('0 */10 18-21 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit cron triggered (18:00–22:00 window)`);
   runBulkExitJob();
 }, {
   timezone: 'Asia/Kolkata',
