@@ -253,11 +253,13 @@ async function createBidIndexes() {
     { bidder: 1, isBidOn: 1 },
     { playerId: 1, bidAmount: -1 },
     { bidder: 1, timestamp: -1 },
+    { playerId: 1, timestamp: -1 },
     
     // Complex queries
     { playerId: 1, isActive: 1, isBidOn: 1 },
     { bidder: 1, isActive: 1, isBidOn: 1 },
     { playerId: 1, bidAmount: -1, isActive: 1 },
+    { playerId: 1, isActive: 1, timestamp: -1 },
     { isActive: 1, isBidOn: 1, bidAmount: -1 },
     
     // Sorting and filtering
@@ -619,9 +621,12 @@ async function createBidNotificationIndexes() {
     { currentBidder: 1 },
     { secondBidder: 1 },
     { playername: 1 },
+    { playerId: 1 },
     { active: 1, timestamp: -1 },
     { currentBidder: 1, active: 1 },
-    { playername: 1, active: 1 }
+    { playername: 1, active: 1 },
+    { playerId: 1, timestamp: -1 },
+    { playername: 1, timestamp: -1 }
   ];
 
   const results = [];
