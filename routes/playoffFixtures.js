@@ -4,6 +4,194 @@ const PlayoffFixture = require('../models/PlayoffFixture');
 const User = require('../models/User');
 const Tournament = require('../models/Tournament');
 const AppSettings = require('../models/AppSettings');
+const Fixture = require('../models/Fixture');
+
+// Helper function to parse score string and extract runs
+const parseRuns = (scoreString) => {
+  if (!scoreString) {
+    return 0;
+  }
+
+  const scoreStr = String(scoreString).trim();
+  if (scoreStr === 'null' || scoreStr === 'TBD' || scoreStr === 'NA' ||
+      scoreStr === '' || scoreStr === 'undefined' || scoreStr.toLowerCase() === 'null') {
+    return 0;
+  }
+
+  const match = scoreStr.match(/^(\d+)/);
+  if (match) {
+    const runs = parseInt(match[1], 10);
+    return isNaN(runs) ? 0 : runs;
+  }
+
+  const num = parseFloat(scoreStr);
+  return isNaN(num) ? 0 : Math.floor(num);
+};
+
+// Helper function to parse wickets from score string
+const parseWickets = (scoreString) => {
+  if (!scoreString) {
+    return 0;
+  }
+
+  const scoreStr = String(scoreString).trim();
+  if (scoreStr === 'null' || scoreStr === 'TBD' || scoreStr === 'NA' ||
+      scoreStr === '' || scoreStr === 'undefined' || scoreStr.toLowerCase() === 'null') {
+    return 0;
+  }
+
+  const slashMatch = scoreStr.match(/\/(\d+)/);
+  if (slashMatch) {
+    const wickets = parseInt(slashMatch[1], 10);
+    if (!isNaN(wickets) && wickets >= 0 && wickets <= 10) {
+      return wickets;
+    }
+  }
+
+  const hyphenMatch = scoreStr.match(/-(\d+)/);
+  if (hyphenMatch) {
+    const wickets = parseInt(hyphenMatch[1], 10);
+    if (!isNaN(wickets) && wickets >= 0 && wickets <= 10) {
+      return wickets;
+    }
+  }
+
+  return 0;
+};
+
+// Helper function to parse overs string and convert to decimal
+const parseOvers = (oversString) => {
+  if (!oversString) {
+    return null;
+  }
+
+  const oversStr = String(oversString).trim();
+  if (oversStr === 'null' || oversStr === 'TBD' || oversStr === 'NA' ||
+      oversStr === '' || oversStr === 'undefined' || oversStr.toLowerCase() === 'null') {
+    return null;
+  }
+
+  const decimalMatch = oversStr.match(/^(\d+)\.(\d+)$/);
+  if (decimalMatch) {
+    const overs = parseInt(decimalMatch[1], 10);
+    const balls = parseInt(decimalMatch[2], 10);
+    if (!isNaN(overs) && !isNaN(balls) && balls >= 0 && balls <= 5) {
+      return overs + (balls / 6);
+    }
+  }
+
+  const wholeMatch = oversStr.match(/^(\d+)$/);
+  if (wholeMatch) {
+    const overs = parseInt(wholeMatch[1], 10);
+    if (!isNaN(overs)) {
+      return overs;
+    }
+  }
+
+  const num = parseFloat(oversStr);
+  if (!isNaN(num) && num >= 0) {
+    return num;
+  }
+
+  return null;
+};
+
+// Calculate Net Run Rate (NRR) for a team following ICC rules
+const calculateNRR = (fixtures, teamName, userId) => {
+  const DEFAULT_OVERS = 20;
+  let totalRunsScored = 0;
+  let totalRunsConceded = 0;
+  let totalOversFaced = 0;
+  let totalOversBowled = 0;
+  let matchesCount = 0;
+
+  const userIdStr = userId ? userId.toString() : null;
+
+  fixtures.forEach((fixture) => {
+    if (!fixture.winner) {
+      return;
+    }
+
+    const score1 = fixture.team1Score;
+    const score2 = fixture.team2Score;
+
+    const team1Runs = parseRuns(score1);
+    const team2Runs = parseRuns(score2);
+    if (team1Runs === 0 && team2Runs === 0) {
+      return;
+    }
+
+    const team1Wickets = parseWickets(score1);
+    const team2Wickets = parseWickets(score2);
+
+    let team1OversActual = parseOvers(fixture.team1Overs);
+    let team2OversActual = parseOvers(fixture.team2Overs);
+
+    if (team1OversActual === null) {
+      team1OversActual = DEFAULT_OVERS;
+    }
+    if (team2OversActual === null) {
+      team2OversActual = DEFAULT_OVERS;
+    }
+
+    const team1OversFaced = (team1Wickets === 10) ? DEFAULT_OVERS : team1OversActual;
+    const team2OversFaced = (team2Wickets === 10) ? DEFAULT_OVERS : team2OversActual;
+    const team1OversBowled = (team2Wickets === 10) ? DEFAULT_OVERS : team2OversActual;
+    const team2OversBowled = (team1Wickets === 10) ? DEFAULT_OVERS : team1OversActual;
+
+    const team1UserIdStr = fixture.team1UserId ?
+      (fixture.team1UserId.toString ? fixture.team1UserId.toString() : String(fixture.team1UserId)) : null;
+    const team2UserIdStr = fixture.team2UserId ?
+      (fixture.team2UserId.toString ? fixture.team2UserId.toString() : String(fixture.team2UserId)) : null;
+
+    let isTeam1 = false;
+    let isTeam2 = false;
+
+    if (userIdStr) {
+      if (team1UserIdStr && team1UserIdStr === userIdStr) {
+        isTeam1 = true;
+      } else if (team2UserIdStr && team2UserIdStr === userIdStr) {
+        isTeam2 = true;
+      }
+    }
+
+    if (!isTeam1 && !isTeam2) {
+      if (fixture.team1 && fixture.team1.trim().toLowerCase() === teamName.trim().toLowerCase()) {
+        isTeam1 = true;
+      } else if (fixture.team2 && fixture.team2.trim().toLowerCase() === teamName.trim().toLowerCase()) {
+        isTeam2 = true;
+      }
+    }
+
+    if (!isTeam1 && !isTeam2) {
+      return;
+    }
+
+    if (isTeam1) {
+      totalRunsScored += team1Runs;
+      totalRunsConceded += team2Runs;
+      totalOversFaced += team1OversFaced;
+      totalOversBowled += team1OversBowled;
+    } else {
+      totalRunsScored += team2Runs;
+      totalRunsConceded += team1Runs;
+      totalOversFaced += team2OversFaced;
+      totalOversBowled += team2OversBowled;
+    }
+
+    matchesCount++;
+  });
+
+  if (matchesCount === 0) {
+    return 0;
+  }
+
+  const runsScoredPerOver = totalOversFaced > 0 ? totalRunsScored / totalOversFaced : 0;
+  const runsConcededPerOver = totalOversBowled > 0 ? totalRunsConceded / totalOversBowled : 0;
+  const nrr = runsScoredPerOver - runsConcededPerOver;
+
+  return parseFloat(nrr.toFixed(3));
+};
 
 // Get all playoff fixtures
 router.get('/', async (req, res) => {
@@ -267,13 +455,29 @@ router.post('/initialize', async (req, res) => {
       })
         .select('_id teamName points matchesPlayed fairnessPoint')
         .lean();
+
+      const fixtures = await Fixture.find({
+        isActive: true,
+        winner: { $ne: null, $exists: true }
+      })
+        .select('team1 team2 team1UserId team2UserId team1Score team2Score team1Overs team2Overs winner')
+        .lean();
+
+      const teamsWithNrr = allTeams.map((team) => ({
+        ...team,
+        nrr: calculateNRR(fixtures, team.teamName, team._id)
+      }));
       
-      // Sort exactly like point table
-      const teams = allTeams.sort((a, b) => {
+      // Sort exactly like point table: points → NRR → fairness → matches → name
+      const teams = teamsWithNrr.sort((a, b) => {
         const pointsA = a.points || 0;
         const pointsB = b.points || 0;
         if (pointsB !== pointsA) return pointsB - pointsA;
-        
+
+        const nrrA = a.nrr || 0;
+        const nrrB = b.nrr || 0;
+        if (nrrB !== nrrA) return nrrB - nrrA;
+
         const fairnessA = a.fairnessPoint || 0;
         const fairnessB = b.fairnessPoint || 0;
         if (fairnessB !== fairnessA) return fairnessB - fairnessA;
