@@ -1906,6 +1906,25 @@ router.get('/users-dashboard', async (req, res) => {
       .sort({ bidAmount: -1 })
       .lean();
 
+    // Fetch last exit info for players shown in dashboard
+    const activePlayerIds = [...new Set(activeBids.map(bid => bid.playerId?._id).filter(Boolean))];
+    const exitNotifications = activePlayerIds.length > 0
+      ? await BidNotification.find({
+          playerId: { $in: activePlayerIds },
+          exitedUser: { $ne: null }
+        })
+          .select('playerId exitedUser timestamp')
+          .sort({ timestamp: -1 })
+          .lean()
+      : [];
+    const lastExitByPlayer = new Map();
+    exitNotifications.forEach((entry) => {
+      const key = entry.playerId?.toString();
+      if (key && !lastExitByPlayer.has(key)) {
+        lastExitByPlayer.set(key, entry);
+      }
+    });
+
     // First, group bids by player to find highest and second highest
     const bidsByPlayer = {};
     
@@ -1967,6 +1986,7 @@ router.get('/users-dashboard', async (req, res) => {
           bidsByUser[bidderId].splice(index, 1);
         }
         
+        const lastExit = lastExitByPlayer.get(playerId);
         bidsByUser[bidderId].push({
           playerId: bid.playerId._id,
           playerName: bid.playerId.name,
@@ -1978,7 +1998,9 @@ router.get('/users-dashboard', async (req, res) => {
           isWinning: isHighest,
           isLosing: isSecond,
           otherBidderAbbr: otherBidderAbbr,
-          otherBidderName: otherBidderName
+          otherBidderName: otherBidderName,
+          lastExitUser: lastExit?.exitedUser || null,
+          lastExitAt: lastExit?.timestamp || null
         });
       }
     });
