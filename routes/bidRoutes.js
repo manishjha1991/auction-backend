@@ -115,23 +115,21 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     };
 
     // Count all bought players of this type
-    const boughtPlayersOfThisType = await Player.countDocuments({
-      _id: { $in: user.boughtPlayers },
-      type: player.type,
-    });
-
-    // Count retained players of this type (these should NOT count towards the limit)
-    const retainedPlayersOfThisType = await RetainedPlayer.countDocuments({
-      userId: user._id,
-      playerType: player.type,
-      isActive: true,
-    });
-
-    // Count current bids of this type
-    const currentBidPlayersOfThisType = await Player.countDocuments({
-      _id: { $in: user.currentBids.map((bid) => bid.playerId) },
-      type: player.type,
-    });
+    const [boughtPlayersOfThisType, retainedPlayersOfThisType, currentBidPlayersOfThisType] = await Promise.all([
+      Player.countDocuments({
+        _id: { $in: user.boughtPlayers },
+        type: player.type,
+      }),
+      RetainedPlayer.countDocuments({
+        userId: user._id,
+        playerType: player.type,
+        isActive: true,
+      }),
+      Player.countDocuments({
+        _id: { $in: user.currentBids.map((bid) => bid.playerId) },
+        type: player.type,
+      })
+    ]);
 
     // Total count = bought players + current bids
     // Retained players ARE included in boughtPlayers, so they count towards the limit
@@ -173,7 +171,9 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     }
     // Fetch active bids on this player
     // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).lean();
+    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
+      .select('bidder bidAmount isActive isBidOn')
+      .lean();
 
     // Ensure only two bidders can actively bid on the player
     const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
@@ -199,17 +199,17 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       const currentBidPlayerIds = user.currentBids.map(bid => bid.playerId);
       
       // Count players of this type in current bids
-      const playersOfThisTypeInCurrentBids = await Player.countDocuments({
-        _id: { $in: currentBidPlayerIds },
-        type: player.type
-      });
-      
-      // Count retained players of this type
-      const retainedCount = await RetainedPlayer.countDocuments({
-        userId: user._id,
-        playerType: player.type,
-        isActive: true
-      });
+      const [playersOfThisTypeInCurrentBids, retainedCount] = await Promise.all([
+        Player.countDocuments({
+          _id: { $in: currentBidPlayerIds },
+          type: player.type
+        }),
+        RetainedPlayer.countDocuments({
+          userId: user._id,
+          playerType: player.type,
+          isActive: true
+        })
+      ]);
       
       // boughtPlayersOfThisType already includes retained players
       // So total owned = boughtPlayersOfThisType (which includes retained + non-retained bought)
@@ -242,6 +242,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     // ============================
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const highestBid = await Bid.findOne({ playerId, isActive: true })
+      .select('bidder bidAmount')
       .sort({ bidAmount: -1 })
       .lean();
 
@@ -373,7 +374,9 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     const { getSocketIdsForUsers } = require('../utils/socketUserMap');
     
     // Re-fetch active bidders AFTER the new bid is saved to include the new bidder
-    const currentActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).lean();
+    const currentActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
+      .select('bidder')
+      .lean();
     const currentActiveBidders = [...new Set(currentActiveBids.map((bid) => bid.bidder.toString()))];
     
     // Exclude the current bidder (they don't need notification about their own bid)
@@ -443,7 +446,10 @@ router.post("/:playerId/exit", async (req, res) => {
     }
 
     // Fetch all active bids for the player
-    const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
+    const activeBids = await Bid.find({ playerId, isActive: true })
+      .select('bidder bidAmount')
+      .sort({ bidAmount: -1 })
+      .lean();
 
     if (!activeBids || activeBids.length === 0) {
       return res.status(400).json({ message: "No active bids found for this player." });
@@ -555,7 +561,9 @@ router.post("/:playerId/exit", async (req, res) => {
     const { getSocketIdsForUsers } = require('../utils/socketUserMap');
     
     // Get remaining active bidders (excluding the exited user)
-    const remainingActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).lean();
+    const remainingActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
+      .select('bidder')
+      .lean();
     const remainingBidders = remainingActiveBids.map(bid => bid.bidder.toString());
     
     // Only notify remaining bidders (exclude the user who exited)
@@ -1830,6 +1838,7 @@ router.get('/live-dashboard', async (req, res) => {
   try {
     // Get all active bids with player and bidder information
     const activeBids = await Bid.find({ isActive: true, isBidOn: true })
+      .select('playerId bidder bidAmount timestamp')
       .populate('playerId', 'name type role basePrice profilePicture')
       .populate('bidder', 'name teamName')
       .sort({ bidAmount: -1 })
@@ -1891,6 +1900,7 @@ router.get('/users-dashboard', async (req, res) => {
 
     // Get all active bids with player and bidder info (including abbreviation)
     const activeBids = await Bid.find({ isActive: true, isBidOn: true })
+      .select('playerId bidder bidAmount timestamp isActive isBidOn')
       .populate('playerId', 'name type role basePrice')
       .populate('bidder', 'name teamName _id abbreviation')
       .sort({ bidAmount: -1 })
