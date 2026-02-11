@@ -35,7 +35,7 @@ const tournamentRoutes = require('./routes/tournaments');
 const matchResultsRoutes = require('./routes/matchResults');
 const adminToolsRoutes = require('./routes/adminTools');
 const monitoringRoutes = require('./routes/monitoring');
-// require('./scheduler');
+require('./scheduler');
 
 // Allow Express to trust proxy headers (needed to read real client IPs)
 app.set('trust proxy', true);
