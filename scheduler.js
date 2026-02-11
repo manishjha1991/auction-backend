@@ -450,8 +450,8 @@ cron.schedule('0 */10 18-21 * * *', () => {
   timezone: 'Asia/Kolkata',
 });
 
-// Lock users that violate roster requirements at 22:30 IST (10:30 PM) daily
-cron.schedule('30 22 * * *', lockUnderLimitJob, {
+// Lock users that violate roster requirements at 22:00 IST (10:00 PM) daily
+cron.schedule('0 22 * * *', lockUnderLimitJob, {
   timezone: 'Asia/Kolkata',
 });
 
