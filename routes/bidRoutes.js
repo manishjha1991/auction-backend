@@ -551,7 +551,8 @@ router.post("/:playerId/exit", async (req, res) => {
       playerId: player._id,
       currentBid: player.currentBid,
       currentBidder: player.currentBidder,
-      exitedUser: user.name
+      exitedUser: user.name,
+      exitBy: user.isAdmin ? 'system' : 'user'
     };
     // Save notification to database
     const newNotification = new BidNotification(notificationData);
@@ -1529,7 +1530,7 @@ router.post("/players/singlebid", async (req, res) => {
  */
 
 // Helper: encapsulate your existing exit logic into a function
-async function exitBidForUserOnPlayer(userId, playerId, io = null) {
+async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'user') {
   // 1) Load player
   const player = await Player.findById(playerId);
   if (!player)   return { playerId, userId, error: "Player not found" };
@@ -1578,7 +1579,7 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null) {
     player.currentBidder = null;
   }
   player.lastExitAt = new Date();
-  player.lastExitBy = 'user';
+  player.lastExitBy = exitBy;
   // Defensive: remove accidental currentBids field if present
   if (player.currentBids !== undefined) delete player.currentBids;
   await player.save();
@@ -1590,7 +1591,8 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null) {
     playerId:     player._id,
     currentBid:   player.currentBid,
     currentBidder:player.currentBidder,
-    exitedUser:   user.name
+    exitedUser:   user.name,
+    exitBy
   };
   
   const newNotification = new BidNotification(notificationData);
@@ -1644,7 +1646,7 @@ async function runBulkExitAll(io = null) {
       }
       for (const playerDoc of players) {
         const playerId = playerDoc._id;
-        const result = await exitBidForUserOnPlayer(userId.toString(), playerId.toString(), io);
+        const result = await exitBidForUserOnPlayer(userId.toString(), playerId.toString(), io, 'system');
         report.push(result);
       }
     }
@@ -1913,7 +1915,7 @@ router.get('/users-dashboard', async (req, res) => {
           playerId: { $in: activePlayerIds },
           exitedUser: { $ne: null }
         })
-          .select('playerId exitedUser timestamp')
+          .select('playerId exitedUser exitBy timestamp')
           .sort({ timestamp: -1 })
           .lean()
       : [];

@@ -34,6 +34,11 @@ const bidNotificationSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  exitBy: {
+    type: String,
+    enum: ['user', 'system'],
+    default: null
+  },
   active: {
     type: Boolean,
     default: true

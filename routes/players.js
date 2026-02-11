@@ -127,7 +127,7 @@ router.get("/:playerId/bids", async (req, res) => {
       ]
     })
       .sort({ timestamp: -1 })
-      .select('timestamp exitedUser')
+      .select('timestamp exitedUser exitBy')
       .lean();
 
     // 3. Get the top two bids
@@ -147,6 +147,7 @@ router.get("/:playerId/bids", async (req, res) => {
         basePrice: player.basePrice,
         lastExitTime: lastExit?.timestamp || null,
         lastExitUser: lastExit?.exitedUser || null,
+        lastExitBy: player.lastExitBy || lastExit?.exitBy || null,
         // NEW FIELDS (assuming they exist in your Player schema)
         totalRuns: player.totalRuns || 0,
         totalWickets: player.totalWickets || 0
