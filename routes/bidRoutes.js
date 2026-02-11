@@ -1702,6 +1702,17 @@ async function lockUnderLimitAll() {
     // - Total must be 6 Silver players at any cost
     const SILVER_MINIMUM_TOTAL = 6; // Minimum 6 Silver players total (bought + bidding)
 
+    // Sapphire + Emerald combined requirement:
+    // Valid combinations:
+    // ✅ 2 Sapphire + 2 Emerald
+    // ✅ 2 Sapphire + 3 Emerald
+    // ✅ 1 Sapphire + 3 Emerald
+    // ✅ 1 Sapphire + 4 Emerald
+    // Rule: Sapphire >= 1 AND Emerald >= 2 AND (Sapphire + Emerald) >= 4
+    const SAPPHIRE_MINIMUM_TOTAL = 1;
+    const EMERALD_MINIMUM_TOTAL = 2;
+    const SAPPHIRE_EMERALD_MINIMUM_TOTAL = 4;
+
     // ── 2. SCAN EVERY USER ───────────────────────────────────────────────────
     const users = await User.find({}, { boughtPlayers: 1, currentBids: 1 }).lean();
 
@@ -1795,6 +1806,48 @@ async function lockUnderLimitAll() {
           }
         });
       }
+
+      // ── 2-c. Check Sapphire + Emerald combined requirement ──────────────────
+      const sapphireBought = counts['Sapphire'] || 0;
+      const emeraldBought = counts['Emerald'] || 0;
+
+      const sapphireBidding = user.currentBids.filter(bid => {
+        return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Sapphire';
+      }).length;
+      const emeraldBidding = user.currentBids.filter(bid => {
+        return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Emerald';
+      }).length;
+
+      const sapphireTotal = sapphireBought + sapphireBidding;
+      const emeraldTotal = emeraldBought + emeraldBidding;
+      const sapphireEmeraldTotal = sapphireTotal + emeraldTotal;
+
+      if (
+        sapphireTotal < SAPPHIRE_MINIMUM_TOTAL ||
+        emeraldTotal < EMERALD_MINIMUM_TOTAL ||
+        sapphireEmeraldTotal < SAPPHIRE_EMERALD_MINIMUM_TOTAL
+      ) {
+        toLock.push(user._id);
+        details.push({
+          userId: user._id,
+          reason: 'sapphireEmeraldRequirement',
+          data: {
+            sapphireBought,
+            sapphireBidding,
+            sapphireTotal,
+            emeraldBought,
+            emeraldBidding,
+            emeraldTotal,
+            sapphireEmeraldTotal,
+            minimumRequired: {
+              sapphire: SAPPHIRE_MINIMUM_TOTAL,
+              emerald: EMERALD_MINIMUM_TOTAL,
+              total: SAPPHIRE_EMERALD_MINIMUM_TOTAL
+            },
+            explanation: `Has ${sapphireTotal} Sapphire total (${sapphireBought} bought + ${sapphireBidding} bidding) and ${emeraldTotal} Emerald total (${emeraldBought} bought + ${emeraldBidding} bidding); needs Sapphire >= ${SAPPHIRE_MINIMUM_TOTAL}, Emerald >= ${EMERALD_MINIMUM_TOTAL}, and total >= ${SAPPHIRE_EMERALD_MINIMUM_TOTAL}`
+          }
+        });
+      }
     }
 
     // ── 3. BULK UPDATE ───────────────────────────────────────────────────────
@@ -1808,9 +1861,10 @@ async function lockUnderLimitAll() {
     // ── 4. RESPONSE ──────────────────────────────────────────────────────────
     const goldLocked = details.filter(d => d.reason === 'goldRequirement').length;
     const silverLocked = details.filter(d => d.reason === 'silverRequirement').length;
+    const sapphireEmeraldLocked = details.filter(d => d.reason === 'sapphireEmeraldRequirement').length;
     
     return {
-      message     : `Locked ${toLock.length} user(s): ${goldLocked} for Gold requirement (minimum 8 Gold total), ${silverLocked} for Silver requirement (minimum 6 Silver total: bought + bidding).`,
+      message     : `Locked ${toLock.length} user(s): ${goldLocked} for Gold requirement (minimum 8 Gold total), ${silverLocked} for Silver requirement (minimum 6 Silver total: bought + bidding), ${sapphireEmeraldLocked} for Sapphire/Emerald requirement (S>=1, E>=2, total>=4).`,
       totalLocked : toLock.length,
       details,
     };
