@@ -169,6 +169,10 @@ async function createUserIndexes() {
     { isRetentionLocked: 1, allPlayersReleased: 1 },
     { isActive: 1, isAdmin: 1, allPlayersReleased: 1 },
     
+    // NEW: Array membership queries
+    { boughtPlayers: 1 },
+    { 'currentBids.playerId': 1 },
+    
     // NEW: Anti-proxy bidding indexes
     { lastLoginIP: 1 },
     { lastBidIP: 1 },
@@ -793,7 +797,8 @@ async function createAppSettingsIndexes() {
     
     // NEW: Retention-related compound indexes
     { enablePlayerRetention: 1, adminReleasedPlayers: 1 },
-    { adminReleasedPlayers: 1, allPlayersReleased: 1 }
+    { adminReleasedPlayers: 1, allPlayersReleased: 1 },
+    { auctionStartAt: 1 }
   ];
 
   const results = [];
