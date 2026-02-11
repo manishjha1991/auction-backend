@@ -112,6 +112,7 @@ router.get("/:playerId/bids", async (req, res) => {
     // 2. Fetch all bids for the player
     // 🚀 PERFORMANCE: Use .lean() for faster queries
     const allBids = await Bid.find({ playerId })
+      .select('bidder bidAmount isBidOn timestamp')
       .populate("bidder", "name email") // Populate bidder's name and email
       .sort({ bidAmount: -1 }) // Sort by bid value (descending)
       .lean()

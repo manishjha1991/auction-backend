@@ -228,6 +228,7 @@ router.get("/:userId/details", async (req, res) => {
     // 🚀 PERFORMANCE: Use .lean() for faster queries
     const bidsStart = Date.now();
     const userBids = await Bid.find({ bidder: userId })
+      .select('playerId bidAmount isBidOn isActive timestamp bidder')
       .populate("playerId", "name type role basePrice")
       .sort({ timestamp: -1 })
       .lean()
@@ -408,6 +409,7 @@ router.get("/:userId/bids", async (req, res) => {
     const bidPlayerIds = userBids.map((bid) => bid.playerId?._id).filter(Boolean);
     const highestBids = await Bid.aggregate([
       { $match: { playerId: { $in: bidPlayerIds } } },
+      { $project: { playerId: 1, bidder: 1, bidAmount: 1, isActive: 1, isBidOn: 1 } },
       { $sort: { playerId: 1, bidAmount: -1 } },
       {
         $group: {
@@ -474,13 +476,17 @@ router.get("/purses", async (req, res) => {
     // 🚀 PERFORMANCE: All queries already use .lean() - optimized!
     const [users, allUserPlayers, allActiveBids, matchResults, worldCupTournaments] = await Promise.all([
       User.find({ isAdmin: { $ne: true } }).select("name teamName purse _id").lean(),
-      UserPlayer.find({ isActive: true }).populate("playerId", "name type role").lean(),
+      UserPlayer.find({ isActive: true })
+        .select('userId playerId bidValue')
+        .populate("playerId", "name type role")
+        .lean(),
       Bid.find({ isActive: true, isBidOn: true })
+        .select('playerId bidder bidAmount timestamp isActive isBidOn')
         .populate("playerId", "name type role")
         .populate("bidder", "name _id")
         .sort({ bidAmount: -1 })
         .lean(),
-      MatchResult.find({}).lean(),
+      MatchResult.find({}).select('winner team1 team2').lean(),
       Tournament.find({ 
         status: 'completed',
         name: { $regex: /^World Cup/ }
