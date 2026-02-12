@@ -405,6 +405,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       playerId: playerId.toString(),
       currentBid: player.currentBid,
       currentBidder: player.currentBidder,
+      bidderName: user.name,
       bidAmount: bidAmount,
       playerName: player.name
     });
@@ -1687,8 +1688,18 @@ router.post('/exit-second-highest/all', async (req, res) => {
  * Response  ➜  { totalLocked, details: [ { userId, missing: { Gold: 3 … } } ] }
  */
 // Function: Lock users under limit
-async function lockUnderLimitAll() {
+// options: { lockCheckCategories?: string[] } - from AppSettings. If empty/missing, checks all.
+async function lockUnderLimitAll(options = {}) {
   try {
+    // ── 0. FETCH LOCK CATEGORIES FROM SETTINGS ───────────────────────────────
+    const AppSettings = require('../models/AppSettings');
+    const settings = await AppSettings.findOne().lean();
+    const raw = options.lockCheckCategories ?? settings?.lockCheckCategories;
+    const categories = Array.isArray(raw) && raw.length > 0 ? raw : ['sapphireEmerald', 'gold', 'silver'];
+    const checkGold = categories.includes('gold');
+    const checkSilver = categories.includes('silver');
+    const checkSapphireEmerald = categories.includes('sapphireEmerald');
+
     // ── 1. RULES ─────────────────────────────────────────────────────────────
     // Gold type minimum requirement:
     // - Users must have MINIMUM 8 Gold players total (bought + bidding)
@@ -1714,7 +1725,7 @@ async function lockUnderLimitAll() {
     const SAPPHIRE_EMERALD_MINIMUM_TOTAL = 4;
 
     // ── 2. SCAN EVERY USER ───────────────────────────────────────────────────
-    const users = await User.find({}, { boughtPlayers: 1, currentBids: 1 }).lean();
+    const users = await User.find({}, { boughtPlayers: 1, currentBids: 1, isAdmin: 1 }).lean();
 
     const toLock  = [];     // array of ObjectId
     const details = [];     // { userId, reason, data }
@@ -1745,108 +1756,114 @@ async function lockUnderLimitAll() {
       }, {});
 
       // ── 2-a. Check Gold type minimum requirement ─────────────────────────────
-      const goldBought = counts['Gold'] || 0;
-      const goldBidding = user.currentBids.filter(bid => {
-        // Count only Gold players in current bids
-        return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Gold';
-      }).length;
-      const goldTotal = goldBought + goldBidding;
-      
-      // Lock user if they have less than minimum 8 Gold total
-      if (goldTotal < GOLD_MINIMUM_TOTAL) {
-        toLock.push(user._id);
-        details.push({
-          userId: user._id,
-          reason: 'goldRequirement',
-          data: {
-            goldBought,
-            goldBidding,
-            goldTotal,
-            minimumRequired: GOLD_MINIMUM_TOTAL,
-            explanation: `Has ${goldTotal} Gold total (${goldBought} bought + ${goldBidding} bidding), needs minimum ${GOLD_MINIMUM_TOTAL} Gold total`
-          }
-        });
+      if (checkGold) {
+        const goldBought = counts['Gold'] || 0;
+        const goldBidding = user.currentBids.filter(bid => {
+          // Count only Gold players in current bids
+          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Gold';
+        }).length;
+        const goldTotal = goldBought + goldBidding;
+        
+        // Lock user if they have less than minimum 8 Gold total
+        if (goldTotal < GOLD_MINIMUM_TOTAL) {
+          toLock.push(user._id);
+          details.push({
+            userId: user._id,
+            reason: 'goldRequirement',
+            data: {
+              goldBought,
+              goldBidding,
+              goldTotal,
+              minimumRequired: GOLD_MINIMUM_TOTAL,
+              explanation: `Has ${goldTotal} Gold total (${goldBought} bought + ${goldBidding} bidding), needs minimum ${GOLD_MINIMUM_TOTAL} Gold total`
+            }
+          });
+        }
       }
 
       // ── 2-b. Check Silver type minimum requirement ────────────────────────────
-      // Count retained Silver players (they are in boughtPlayers)
-      const retainedSilverCount = await RetainedPlayer.countDocuments({
-        userId: user._id,
-        playerType: 'Silver',
-        isActive: true
-      });
-
-      // Count all Silver players in boughtPlayers (includes retained)
-      const silverBought = counts['Silver'] || 0;
-      
-      // Count Silver players in current bids
-      const silverBidding = user.currentBids.filter(bid => {
-        return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Silver';
-      }).length;
-      
-      const silverTotal = silverBought + silverBidding;
-      
-      // Lock user if they have less than minimum 6 Silver total
-      // Example: 1 retained + 5 bidding = 6 total ✓
-      // Example: 0 retained + 6 bidding = 6 total ✓
-      // Example: 1 retained + 4 bidding = 5 total ✗ (LOCK)
-      // Example: 0 retained + 5 bidding = 5 total ✗ (LOCK)
-      if (silverTotal < SILVER_MINIMUM_TOTAL) {
-        toLock.push(user._id);
-        details.push({
+      if (checkSilver) {
+        // Count retained Silver players (they are in boughtPlayers)
+        const retainedSilverCount = await RetainedPlayer.countDocuments({
           userId: user._id,
-          reason: 'silverRequirement',
-          data: {
-            retainedSilver: retainedSilverCount,
-            silverBought,
-            silverBidding,
-            silverTotal,
-            minimumRequired: SILVER_MINIMUM_TOTAL,
-            explanation: `Has ${silverTotal} Silver total (${retainedSilverCount} retained + ${silverBought - retainedSilverCount} other bought + ${silverBidding} bidding), needs minimum ${SILVER_MINIMUM_TOTAL} Silver total`
-          }
+          playerType: 'Silver',
+          isActive: true
         });
+
+        // Count all Silver players in boughtPlayers (includes retained)
+        const silverBought = counts['Silver'] || 0;
+        
+        // Count Silver players in current bids
+        const silverBidding = user.currentBids.filter(bid => {
+          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Silver';
+        }).length;
+        
+        const silverTotal = silverBought + silverBidding;
+        
+        // Lock user if they have less than minimum 6 Silver total
+        // Example: 1 retained + 5 bidding = 6 total ✓
+        // Example: 0 retained + 6 bidding = 6 total ✓
+        // Example: 1 retained + 4 bidding = 5 total ✗ (LOCK)
+        // Example: 0 retained + 5 bidding = 5 total ✗ (LOCK)
+        if (silverTotal < SILVER_MINIMUM_TOTAL) {
+          toLock.push(user._id);
+          details.push({
+            userId: user._id,
+            reason: 'silverRequirement',
+            data: {
+              retainedSilver: retainedSilverCount,
+              silverBought,
+              silverBidding,
+              silverTotal,
+              minimumRequired: SILVER_MINIMUM_TOTAL,
+              explanation: `Has ${silverTotal} Silver total (${retainedSilverCount} retained + ${silverBought - retainedSilverCount} other bought + ${silverBidding} bidding), needs minimum ${SILVER_MINIMUM_TOTAL} Silver total`
+            }
+          });
+        }
       }
 
       // ── 2-c. Check Sapphire + Emerald combined requirement ──────────────────
-      const sapphireBought = counts['Sapphire'] || 0;
-      const emeraldBought = counts['Emerald'] || 0;
+      if (checkSapphireEmerald) {
+        const sapphireBought = counts['Sapphire'] || 0;
+        const emeraldBought = counts['Emerald'] || 0;
 
-      const sapphireBidding = user.currentBids.filter(bid => {
-        return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Sapphire';
-      }).length;
-      const emeraldBidding = user.currentBids.filter(bid => {
-        return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Emerald';
-      }).length;
+        const sapphireBidding = user.currentBids.filter(bid => {
+          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Sapphire';
+        }).length;
+        const emeraldBidding = user.currentBids.filter(bid => {
+          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Emerald';
+        }).length;
 
-      const sapphireTotal = sapphireBought + sapphireBidding;
-      const emeraldTotal = emeraldBought + emeraldBidding;
-      const sapphireEmeraldTotal = sapphireTotal + emeraldTotal;
+        const sapphireTotal = sapphireBought + sapphireBidding;
+        const emeraldTotal = emeraldBought + emeraldBidding;
+        const sapphireEmeraldTotal = sapphireTotal + emeraldTotal;
 
-      if (
-        sapphireTotal < SAPPHIRE_MINIMUM_TOTAL ||
-        emeraldTotal < EMERALD_MINIMUM_TOTAL ||
-        sapphireEmeraldTotal < SAPPHIRE_EMERALD_MINIMUM_TOTAL
-      ) {
-        toLock.push(user._id);
-        details.push({
-          userId: user._id,
-          reason: 'sapphireEmeraldRequirement',
-          data: {
-            sapphireBought,
-            sapphireBidding,
-            sapphireTotal,
-            emeraldBought,
-            emeraldBidding,
-            emeraldTotal,
-            sapphireEmeraldTotal,
-            minimumRequired: {
-              sapphire: SAPPHIRE_MINIMUM_TOTAL,
-              emerald: EMERALD_MINIMUM_TOTAL,
-              total: SAPPHIRE_EMERALD_MINIMUM_TOTAL
-            },
-            explanation: `Has ${sapphireTotal} Sapphire total (${sapphireBought} bought + ${sapphireBidding} bidding) and ${emeraldTotal} Emerald total (${emeraldBought} bought + ${emeraldBidding} bidding); needs Sapphire >= ${SAPPHIRE_MINIMUM_TOTAL}, Emerald >= ${EMERALD_MINIMUM_TOTAL}, and total >= ${SAPPHIRE_EMERALD_MINIMUM_TOTAL}`
-          }
-        });
+        if (
+          sapphireTotal < SAPPHIRE_MINIMUM_TOTAL ||
+          emeraldTotal < EMERALD_MINIMUM_TOTAL ||
+          sapphireEmeraldTotal < SAPPHIRE_EMERALD_MINIMUM_TOTAL
+        ) {
+          toLock.push(user._id);
+          details.push({
+            userId: user._id,
+            reason: 'sapphireEmeraldRequirement',
+            data: {
+              sapphireBought,
+              sapphireBidding,
+              sapphireTotal,
+              emeraldBought,
+              emeraldBidding,
+              emeraldTotal,
+              sapphireEmeraldTotal,
+              minimumRequired: {
+                sapphire: SAPPHIRE_MINIMUM_TOTAL,
+                emerald: EMERALD_MINIMUM_TOTAL,
+                total: SAPPHIRE_EMERALD_MINIMUM_TOTAL
+              },
+              explanation: `Has ${sapphireTotal} Sapphire total (${sapphireBought} bought + ${sapphireBidding} bidding) and ${emeraldTotal} Emerald total (${emeraldBought} bought + ${emeraldBidding} bidding); needs Sapphire >= ${SAPPHIRE_MINIMUM_TOTAL}, Emerald >= ${EMERALD_MINIMUM_TOTAL}, and total >= ${SAPPHIRE_EMERALD_MINIMUM_TOTAL}`
+            }
+          });
+        }
       }
     }
 
@@ -1862,11 +1879,17 @@ async function lockUnderLimitAll() {
     const goldLocked = details.filter(d => d.reason === 'goldRequirement').length;
     const silverLocked = details.filter(d => d.reason === 'silverRequirement').length;
     const sapphireEmeraldLocked = details.filter(d => d.reason === 'sapphireEmeraldRequirement').length;
+    const checkedWhat = [
+      checkSapphireEmerald && 'Sapphire+Emerald',
+      checkGold && 'Gold',
+      checkSilver && 'Silver'
+    ].filter(Boolean).join(', ');
     
     return {
-      message     : `Locked ${toLock.length} user(s): ${goldLocked} for Gold requirement (minimum 8 Gold total), ${silverLocked} for Silver requirement (minimum 6 Silver total: bought + bidding), ${sapphireEmeraldLocked} for Sapphire/Emerald requirement (S>=1, E>=2, total>=4).`,
+      message     : `Locked ${toLock.length} user(s) [checked: ${checkedWhat}]: ${goldLocked} for Gold, ${silverLocked} for Silver, ${sapphireEmeraldLocked} for Sapphire/Emerald.`,
       totalLocked : toLock.length,
       details,
+      lockCheckCategories: categories,
     };
   } catch (err) {
     console.error('[lock-under-limit] fatal:', err);

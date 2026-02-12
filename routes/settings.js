@@ -22,6 +22,7 @@ router.get('/', async (_req, res) => {
       cronSingleBidFinalizerEnabled: doc.cronSingleBidFinalizerEnabled,
       cronBulkExitEnabled: doc.cronBulkExitEnabled,
       cronLockEnabled: doc.cronLockEnabled,
+      lockCheckCategories: doc.lockCheckCategories || ['sapphireEmerald', 'gold', 'silver'],
       worldCupMode: doc.worldCupMode,
       auctionStartAt: doc.auctionStartAt,
     });
@@ -30,7 +31,7 @@ router.get('/', async (_req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, worldCupMode, auctionStartAt } = req.body;
+    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt } = req.body;
     const admin = await User.findById(adminUserId);
     if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update settings' });
     const doc = await getSettingsDoc();
@@ -43,6 +44,11 @@ router.post('/', async (req, res) => {
     if (typeof cronSingleBidFinalizerEnabled === 'boolean') doc.cronSingleBidFinalizerEnabled = cronSingleBidFinalizerEnabled;
     if (typeof cronBulkExitEnabled === 'boolean') doc.cronBulkExitEnabled = cronBulkExitEnabled;
     if (typeof cronLockEnabled === 'boolean') doc.cronLockEnabled = cronLockEnabled;
+    if (Array.isArray(lockCheckCategories)) {
+      const valid = ['sapphireEmerald', 'gold', 'silver'];
+      doc.lockCheckCategories = lockCheckCategories.filter((c) => valid.includes(c));
+      if (doc.lockCheckCategories.length === 0) doc.lockCheckCategories = valid;
+    }
     if (typeof worldCupMode === 'boolean') doc.worldCupMode = worldCupMode;
     if (auctionStartAt === null) doc.auctionStartAt = null;
     if (typeof auctionStartAt === 'string' && auctionStartAt.trim()) {
@@ -60,6 +66,7 @@ router.post('/', async (req, res) => {
       cronSingleBidFinalizerEnabled: doc.cronSingleBidFinalizerEnabled,
       cronBulkExitEnabled: doc.cronBulkExitEnabled,
       cronLockEnabled: doc.cronLockEnabled,
+      lockCheckCategories: doc.lockCheckCategories || ['sapphireEmerald', 'gold', 'silver'],
       worldCupMode: doc.worldCupMode,
       auctionStartAt: doc.auctionStartAt,
     });
