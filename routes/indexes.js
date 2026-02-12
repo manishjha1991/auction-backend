@@ -130,8 +130,7 @@ router.post('/create-all', async (req, res) => {
 // USER COLLECTION INDEXES
 async function createUserIndexes() {
   const indexes = [
-    // Basic indexes
-    { email: 1 }, // Unique index already exists
+    // Basic indexes (skip email - unique index from schema)
     { teamName: 1 },
     { isActive: 1 },
     { isTournamentReady: 1 },
@@ -201,8 +200,7 @@ async function createUserIndexes() {
 // PLAYER COLLECTION INDEXES
 async function createPlayerIndexes() {
   const indexes = [
-    // Basic indexes
-    { playerID: 1 }, // Unique index already exists
+    // Basic indexes (skip playerID - unique index from schema)
     { isActive: 1 },
     { isSold: 1 },
     { type: 1 },
@@ -314,7 +312,7 @@ async function createBidHistoryIndexes() {
 // MATCH RESULT COLLECTION INDEXES
 async function createMatchResultIndexes() {
   const indexes = [
-    { matchNumber: 1 },
+    // Skip matchNumber - unique index from schema
     { matchDate: -1 },
     { matchType: 1 },
     { trophyType: 1 },
@@ -559,8 +557,7 @@ async function createCommentIndexes() {
 // POST LIKE COLLECTION INDEXES
 async function createPostLikeIndexes() {
   const indexes = [
-    // Basic indexes (unique compound index already exists)
-    { newsId: 1, userId: 1 }, // Unique compound index
+    // Skip newsId+userId - unique compound index from schema
     
     // Additional indexes
     { newsId: 1 },
