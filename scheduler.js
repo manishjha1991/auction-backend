@@ -249,6 +249,26 @@ async function tenMinuteSingleBidJob() {
     return;
   }
 
+  // Only allow this job to run from 11:30 PM–2:00 AM IST
+  const nowParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  const timeBag = {};
+  nowParts.forEach((p) => {
+    if (p.type !== 'literal') timeBag[p.type] = p.value;
+  });
+  const hour = Number(timeBag.hour);
+  const minute = Number(timeBag.minute);
+  const isAfter1130 = hour > 23 || (hour === 23 && minute >= 30);
+  const isBefore2 = hour < 2;
+  if (!(isAfter1130 || isBefore2)) {
+    console.log('⏸️ Ten-minute single-bid monitor skipped (outside 11:30 PM–2:00 AM IST window).');
+    return;
+  }
+
   console.log(`⏱️ [${new Date().toISOString()}] Running ten-minute single-bid monitor`);
   try {
     const result = await getUnsoldPlayers();
