@@ -4,7 +4,7 @@
  * Business rules:
  * 1. 22:30 IST nightly – sell any player that has only ever received a single bid.
  * 2. 18:00–22:00 IST – every 10 minutes bulk exit second-highest (admin toggle).
- * 3. 22:30–23:00 IST – every 5 minutes remove second-highest bidder only (no auto-sell), including 23:00.
+ * 3. 22:30–23:20 IST – every 5 minutes remove second-highest bidder only (no auto-sell).
  * 4. 23:30–00:30 IST – every 5 minutes remove second-highest bidder; if no new bid
  *    since last exit for 5 minutes, sell.
  * 5. 00:30–02:00 IST – every 2 minutes, if no new bid since last exit for 2 minutes, sell;
@@ -437,11 +437,11 @@ cron.schedule('0 30 22 * * *', sellingSingleBidSinceStarting, {
   timezone: 'Asia/Kolkata',
 });
 
-// 22:30–23:00 IST – every 5 minutes exit-only window (no auto-sell), extended till 11 PM
+// 22:30–23:20 IST – every 5 minutes exit-only window (no auto-sell), extended till 11:20 PM
 cron.schedule('0 30,35,40,45,50,55 22 * * *', () => exitOnlyWindowJob(5), {
   timezone: 'Asia/Kolkata',
 });
-cron.schedule('0 0 23 * * *', () => exitOnlyWindowJob(5), {
+cron.schedule('0 0,5,10,15,20 23 * * *', () => exitOnlyWindowJob(5), {
   timezone: 'Asia/Kolkata',
 });
 
