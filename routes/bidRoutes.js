@@ -1100,55 +1100,27 @@ router.get('/players', async (req, res) => {
 
 
 // Function: Get bidder count for a player
+// Returns: count=0 when ONLY ONE active bidder (second has exited) → SELL
+//          count=1 when TWO+ active bidders (second hasn't exited) → EXIT first, never sell
 async function getBidderCount(playerId) {
   try {
-    // pull the two newest bids regardless of their active status
-    const recentBids = await Bid
-      .find({ playerId })       // Mongoose will cast playerId → ObjectId
-      .sort({ timestamp: -1 })
-      .limit(2)
-      .lean();
+    const activeBids = await Bid.find({
+      playerId,
+      isActive: true,
+      isBidOn: true,
+    }).select('bidder').lean();
 
-    console.log("→ recentBids:", JSON.stringify(recentBids, null, 2));
-
-    // no bids at all → count as "keep polling"
-    if (recentBids.length === 0) {
-      return { count: 1 };
+    if (activeBids.length === 0) {
+      return { count: 1 }; // no bids → keep polling, don't sell
     }
 
-    const [latest, second] = recentBids;
+    const uniqueBidders = new Set(activeBids.map((b) => b.bidder?.toString()).filter(Boolean));
 
-    console.log(
-      "latest:", {
-        isActive: latest.isActive,
-        isBidOn:  latest.isBidOn,
-        timestamp: latest.timestamp
-      }
-    );
-    if (second) {
-      console.log(
-        "second:", {
-          isActive: second.isActive,
-          isBidOn:  second.isBidOn,
-          timestamp: second.timestamp
-        }
-      );
-    }
+    // count=0: one bidder only (second exited) → scheduler will SELL
+    // count=1: two+ bidders (second hasn't exited) → scheduler will EXIT, never sell
+    const count = uniqueBidders.size === 1 ? 0 : 1;
 
-    const hasLatestActive  = (latest.isActive === true && latest.isBidOn === true);
-    const hasSecondInactive = Boolean(
-      second &&
-      second.isActive === false &&
-      second.isBidOn === false
-    );
-
-    // exactly one new active bid over a previously closed bid?
-    const zeroCounterCondition = hasLatestActive && hasSecondInactive;
-    const count = zeroCounterCondition ? 0 : 1;
-
-    console.log(`→ computed count=${count} for playerId=${playerId}`);
     return { count };
-
   } catch (error) {
     console.error("Error fetching bidder count:", error);
     throw error;

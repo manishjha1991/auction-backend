@@ -157,27 +157,21 @@ async function shouldSellNoNewBidSinceExit(player, windowMs) {
   return lastBidTime <= lastExitTime && now - lastExitTime >= windowMs;
 }
 
-async function processCounterBidWindow(pid, windowMs, isFirstRun = false) {
+async function processCounterBidWindow(pid, windowMs) {
   const player = await Player.findById(pid).lean();
   if (!player || player.isSold) return;
   const result = await getBidderCount(pid);
   const count = result.count ?? 0;
-  if (count <= 0) return;
-  if (count < 2) {
-    if (isFirstRun) {
-      await sellPlayer(pid, null);
-      return;
-    }
+
+  // count=0: one bidder only (second exited) → sell only if window elapsed
+  if (count === 0) {
     if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
       await sellPlayer(pid, null);
     }
     return;
   }
 
-  if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
-    await sellPlayer(pid, null);
-    return;
-  }
+  // count=1: two+ bidders (second hasn't exited) → never sell, only exit second
   await exitSecondHighestForPlayerSingle(pid, null);
 }
 
@@ -186,18 +180,17 @@ async function processPostWindow(pid) {
   if (!player || player.isSold) return;
   const result = await getBidderCount(pid);
   const count = result.count ?? 0;
-  if (count <= 0) return;
-  if (count < 2) {
-    if (await shouldSellNoNewBidSinceExit(player, 2 * 60 * 1000)) {
+  const windowMs = 2 * 60 * 1000;
+
+  // count=0: one bidder only (second exited) → sell only if window elapsed
+  if (count === 0) {
+    if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
       await sellPlayer(pid, null);
     }
     return;
   }
 
-  if (await shouldSellNoNewBidSinceExit(player, 2 * 60 * 1000)) {
-    await sellPlayer(pid, null);
-    return;
-  }
+  // count=1: two+ bidders (second hasn't exited) → never sell, only exit second
   await exitSecondHighestForPlayerSingle(pid, null);
 }
 
@@ -301,7 +294,6 @@ async function counterBidWindowJob(windowMinutes) {
   }
 
   const now = new Date();
-  const isFirstRun = now.getHours() === 23 && now.getMinutes() === 30;
   console.log(`⏱️ [${now.toISOString()}] Running ${windowMinutes}-minute counter-bid window`);
   try {
     const result = await getUnsoldPlayers();
@@ -311,7 +303,7 @@ async function counterBidWindowJob(windowMinutes) {
       players,
       batchSize,
       async ({ _id: pid, id }) => {
-        await processCounterBidWindow(pid || id, windowMinutes * 60 * 1000, isFirstRun);
+        await processCounterBidWindow(pid || id, windowMinutes * 60 * 1000);
       }
     );
   } catch (err) {
