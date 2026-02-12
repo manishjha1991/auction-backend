@@ -180,7 +180,10 @@ async function createUserIndexes() {
     { suspiciousActivityCount: 1 },
     { lastLoginIP: 1, lastLoginTime: -1 },
     { lastBidIP: 1, lastBidTime: -1 },
-    { suspiciousActivityCount: -1, isActive: 1 }
+    { suspiciousActivityCount: -1, isActive: 1 },
+    // Device fingerprint for anti-proxy bidding (bid placement)
+    { lastDeviceFingerprint: 1, lastLoginTime: -1 },
+    { isAdmin: 1, lastDeviceFingerprint: 1, lastLoginTime: -1 }
   ];
 
   const results = [];
@@ -261,6 +264,7 @@ async function createBidIndexes() {
     
     // Complex queries
     { playerId: 1, isActive: 1, isBidOn: 1 },
+    { playerId: 1, isActive: 1, isBidOn: 1, bidAmount: -1 }, // Hot path: sell flow + sort by bidAmount
     { bidder: 1, isActive: 1, isBidOn: 1 },
     { playerId: 1, bidAmount: -1, isActive: 1 },
     { playerId: 1, isActive: 1, timestamp: -1 },
@@ -471,9 +475,11 @@ async function createReleaseRequestIndexes() {
     { user: 1, status: 1 },
     { player: 1, status: 1 },
     { user: 1, player: 1 },
+    { user: 1, player: 1, status: 1 }, // Hot path: release request check
     { status: 1, createdAt: -1 },
     { user: 1, createdAt: -1 },
-    { player: 1, createdAt: -1 }
+    { player: 1, createdAt: -1 },
+    { 'adminDecision.status': 1 }
   ];
 
   const results = [];
@@ -630,7 +636,9 @@ async function createBidNotificationIndexes() {
     { currentBidder: 1, active: 1 },
     { playername: 1, active: 1 },
     { playerId: 1, timestamp: -1 },
-    { playername: 1, timestamp: -1 }
+    { playername: 1, timestamp: -1 },
+    { playerId: 1, exitedUser: 1, timestamp: -1 }, // Hot path: dashboard last exit
+    { playerId: 1, playername: 1, timestamp: -1 }
   ];
 
   const results = [];
@@ -705,7 +713,8 @@ async function createUserPlayerIndexes() {
     
     // Complex queries
     { userId: 1, isActive: 1, bidValue: -1 },
-    { playerId: 1, isActive: 1, bidValue: -1 }
+    { playerId: 1, isActive: 1, bidValue: -1 },
+    { userId: 1, playerId: 1, isActive: 1 } // Hot path: release/trade ownership check
   ];
 
   const results = [];
