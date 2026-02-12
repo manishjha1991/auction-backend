@@ -2038,9 +2038,9 @@ router.get('/users-dashboard', async (req, res) => {
         bidsByUser[bidderId] = [];
       }
       
-      // Find if this user is highest or second
+      // Find if this user is highest or second (second = losing to someone else)
       const isHighest = playerBids[0]?.bidderId === bidderId;
-      const isSecond = playerBids[1]?.bidderId === bidderId;
+      const isSecond = playerBids[1]?.bidderId === bidderId && playerBids[1]?.bidderId !== playerBids[0]?.bidderId;
       
       // Get the other bidder's abbreviation
       let otherBidderAbbr = null;
