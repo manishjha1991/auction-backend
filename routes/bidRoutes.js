@@ -1179,6 +1179,16 @@ async function sellPlayer(playerId, io = null) {
       return { playerID: playerId, status: 'error', message: 'No active bids found.' };
     }
 
+    // CRITICAL: Never sell when second bidder is still active (2+ bidders)
+    const uniqueBidders = new Set(allBids.map((b) => b.bidder?.toString()).filter(Boolean));
+    if (uniqueBidders.size > 1) {
+      return {
+        playerID: playerId,
+        status: 'error',
+        message: 'Cannot sell: second bidder has not exited. Only sell when one bidder remains.'
+      };
+    }
+
     // Find the highest bid (regardless of active status)
     const highestBid = allBids[0];
     

@@ -216,6 +216,11 @@ async function sellingSingleBidSinceStarting() {
       batchSize,
       async (playerId) => {
         try {
+          const { count } = await getBidderCount(playerId);
+          if (count !== 0) {
+            console.log(`   ⏭️ Skip ${playerId}: second bidder still active (count=${count})`);
+            return;
+          }
           const result = await sellPlayer(playerId, null);
           if (result.status === 'success') {
             console.log(`   ✅ Sold player ${playerId}`);
