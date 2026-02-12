@@ -33,6 +33,7 @@ const {
   lockUnderLimitAll
 } = require('./routes/bidRoutes');
 
+// For local dev, set SCHEDULER_API=http://localhost:3000 in .env so settings fetch works
 const API_ENDPOINTS = process.env.SCHEDULER_API || 'https://cpl.in.net';
 
 // Settings endpoint still needs HTTP call (it's in a different route file)
@@ -320,12 +321,9 @@ async function counterBidWindowJob(windowMinutes) {
 
 async function exitOnlyWindowJob(windowMinutes) {
   const settings = await getCronSettings();
-  if (settings.cronBulkExitEnabled) {
-    console.log('⏸️ Exit-only window paused because bulk exit is active.');
-    return;
-  }
+  // Note: cronBulkExitEnabled only affects 18:00–22:00. Exit-only runs 22:30–23:20, so no overlap.
   if (settings.cronSingleBidEnabled === false) {
-    console.log('⏸️ Exit-only window disabled via admin settings.');
+    console.log('⏸️ Exit-only window disabled via admin settings (cronSingleBidEnabled=false).');
     return;
   }
 
