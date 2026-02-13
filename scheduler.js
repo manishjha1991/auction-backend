@@ -23,6 +23,7 @@
 const cron = require('node-cron');
 const axios = require('axios');
 const Player = require('./models/Player');
+const AppSettings = require('./models/AppSettings');
 const { 
   runBulkExitAll,
   getSingleBidPlayers,
@@ -420,6 +421,103 @@ async function runBulkExitJob() {
   }
 }
 
+const VALID_PLAYER_TYPES = ['Sapphire', 'Emerald', 'Gold', 'Silver'];
+
+async function auctionAutoModeStartJob() {
+  try {
+    const doc = await AppSettings.findOne();
+    if (!doc || doc.auctionAutoModeEnabled !== true) return;
+    const categories = doc.auctionAutoModeCategories || ['Gold', 'Silver', 'Sapphire', 'Emerald'];
+    const typesToEnable = categories.filter((t) => VALID_PLAYER_TYPES.includes(String(t).trim()));
+    if (typesToEnable.length === 0) return;
+
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode START: enabling ${typesToEnable.join(', ')}`);
+    for (const type of typesToEnable) {
+      const r = await Player.updateMany({ type, isSold: false }, { $set: { isActive: true } });
+      console.log(`   → ${type}: ${r.modifiedCount || 0} players enabled`);
+    }
+    doc.cronBulkExitEnabled = true;
+    doc.cronSingleBidEnabled = false;
+    doc.cronSingleBidFinalizerEnabled = false; // enable at 10:25
+    await doc.save();
+    console.log(`   → cronBulkExitEnabled=true, cronSingleBidEnabled=false, cronSingleBidFinalizerEnabled=false`);
+  } catch (err) {
+    console.error('   ❌ auctionAutoModeStartJob error:', err.message);
+  }
+}
+
+async function auctionAutoModeSwitchJob() {
+  try {
+    const doc = await AppSettings.findOne();
+    if (!doc || doc.auctionAutoModeEnabled !== true) return;
+
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 9:40 PM: bulk off, single-bid on (exit-only 10:30–11:20)`);
+    doc.cronBulkExitEnabled = false;
+    doc.cronSingleBidEnabled = true;
+    await doc.save();
+    console.log(`   → cronBulkExitEnabled=false, cronSingleBidEnabled=true`);
+  } catch (err) {
+    console.error('   ❌ auctionAutoModeSwitchJob error:', err.message);
+  }
+}
+
+async function auctionAutoModeFinalizerOn() {
+  try {
+    const doc = await AppSettings.findOne();
+    if (!doc || doc.auctionAutoModeEnabled !== true) return;
+
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 10:25 PM: finalizer ON`);
+    doc.cronSingleBidFinalizerEnabled = true;
+    await doc.save();
+    console.log(`   → cronSingleBidFinalizerEnabled=true (10:30 PM run will execute)`);
+  } catch (err) {
+    console.error('   ❌ auctionAutoModeFinalizerOn error:', err.message);
+  }
+}
+
+async function auctionAutoModeBulk2On() {
+  try {
+    const doc = await AppSettings.findOne();
+    if (!doc || doc.auctionAutoModeEnabled !== true) return;
+
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 10:35 PM: bulk exit ON (window 2)`);
+    doc.cronBulkExitEnabled = true;
+    doc.cronSingleBidEnabled = false;
+    await doc.save();
+    console.log(`   → cronBulkExitEnabled=true, cronSingleBidEnabled=false`);
+  } catch (err) {
+    console.error('   ❌ auctionAutoModeBulk2On error:', err.message);
+  }
+}
+
+async function auctionAutoModeBulk2Off() {
+  try {
+    const doc = await AppSettings.findOne();
+    if (!doc || doc.auctionAutoModeEnabled !== true) return;
+
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 11:20 PM: bulk exit OFF`);
+    doc.cronBulkExitEnabled = false;
+    await doc.save();
+    console.log(`   → cronBulkExitEnabled=false`);
+  } catch (err) {
+    console.error('   ❌ auctionAutoModeBulk2Off error:', err.message);
+  }
+}
+
+async function auctionAutoModeSellAfterExitOn() {
+  try {
+    const doc = await AppSettings.findOne();
+    if (!doc || doc.auctionAutoModeEnabled !== true) return;
+
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 11:25 PM: sell-after-exit ON`);
+    doc.cronSingleBidEnabled = true;
+    await doc.save();
+    console.log(`   → cronSingleBidEnabled=true (11:30 PM–2:00 AM)`);
+  } catch (err) {
+    console.error('   ❌ auctionAutoModeSellAfterExitOn error:', err.message);
+  }
+}
+
 async function lockUnderLimitJob() {
   if (!(await isCronEnabled('cronLockEnabled'))) {
     console.log('⏸️ Lock-under-limit cron disabled via admin settings.');
@@ -494,5 +592,12 @@ cron.schedule('0 22 * * *', lockUnderLimitJob, {
   timezone: 'Asia/Kolkata',
 });
 
+// Auction Auto Mode: 6 PM start; 9:40 bulk off; 10:25 finalizer on; 10:35 bulk on; 11:20 bulk off; 11:25 sell-after-exit on
+cron.schedule('0 0 18 * * *', auctionAutoModeStartJob, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 40 21 * * *', auctionAutoModeSwitchJob, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 25 22 * * *', auctionAutoModeFinalizerOn, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 34 22 * * *', auctionAutoModeBulk2On, { timezone: 'Asia/Kolkata' }); // 10:34 so bulk is ready for 10:35 run
+cron.schedule('0 20 23 * * *', auctionAutoModeBulk2Off, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 25 23 * * *', auctionAutoModeSellAfterExitOn, { timezone: 'Asia/Kolkata' });
 
 console.log('🕒 Auction scheduler running…');
