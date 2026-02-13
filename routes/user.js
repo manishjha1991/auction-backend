@@ -697,11 +697,12 @@ router.get("/purses", async (req, res) => {
       });
     });
     
-    // Calculate bidding status for each player
+    // Calculate bidding status for each player (use string keys for consistency)
     playerBiddersMap.forEach((bidders, playerName) => {
       const sortedBidders = bidders.sort((a, b) => b.bidAmount - a.bidAmount);
       sortedBidders.forEach((bidder, index) => {
-        biddingStatusMap.set(`${bidder.userId}-${playerName}`, {
+        const key = `${String(bidder.userId || '')}-${playerName}`;
+        biddingStatusMap.set(key, {
           isHighest: index === 0,
           isSecondHighest: index === 1,
           position: index + 1,
@@ -760,15 +761,16 @@ router.get("/purses", async (req, res) => {
           return player;
         }
         
-        const biddingStatus = biddingStatusMap.get(`${user.id}-${player.name}`) || {
+        const biddingStatusKey = `${String(user.id || user._id)}-${player.name}`;
+        const biddingStatus = biddingStatusMap.get(biddingStatusKey) || {
           isHighest: false,
           isSecondHighest: false,
           position: 1,
           totalBidders: 1
         };
         
-        // Get competitor info
-        const competitorKey = `${user.id}-${player.id}`;
+        // Get competitor info (normalize IDs to string for consistent lookup)
+        const competitorKey = `${String(user.id || user._id)}-${String(player.id || player._id)}`;
         const competitorInfo = competitorInfoMap.get(competitorKey) || {
           competitorName: null,
           position: biddingStatus.position
