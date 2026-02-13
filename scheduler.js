@@ -157,24 +157,39 @@ async function shouldSellNoNewBidSinceExit(player, windowMs) {
   return lastBidTime <= lastExitTime && now - lastExitTime >= windowMs;
 }
 
+/**
+ * 23:30–00:30 IST: Every 5 min (11:30, 11:35, 11:40 … 12:30)
+ * - 2 active bidders → NEVER sell, only exit second-highest
+ * - 1 active bidder (second exited) + lastExit >= 5 min + no new bid → sell
+ * - Else → exit second-highest
+ * Cycle repeats every 5 min until 12:30.
+ */
 async function processCounterBidWindow(pid, windowMs) {
   const player = await Player.findById(pid).lean();
   if (!player || player.isSold) return;
   const result = await getBidderCount(pid);
   const count = result.count ?? 0;
 
-  // count=0: one bidder only (second exited) → sell only if window elapsed
-  if (count === 0) {
-    if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
-      await sellPlayer(pid, null);
-    }
+  if (count === 1) {
+    // 2+ active bidders: NEVER sell at sharp 11:30 or any run – only exit
+    await exitSecondHighestForPlayerSingle(pid, null);
     return;
   }
 
-  // count=1: two+ bidders (second hasn't exited) → never sell, only exit second
-  await exitSecondHighestForPlayerSingle(pid, null);
+  // count=0: one bidder only (second exited) → sell only if 5 min elapsed since last exit
+  if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
+    await sellPlayer(pid, null);
+  } else {
+    // Window not elapsed yet – do nothing (already 1 bidder, can't exit)
+  }
 }
 
+/**
+ * 00:30–02:00 IST: Every 2 min (12:30, 12:32, 12:34 … 2:00)
+ * Same logic as counter-bid window but with 2 min instead of 5 min:
+ * - 2 active bidders → NEVER sell, only exit second-highest
+ * - 1 active bidder + lastExit >= 2 min + no new bid → sell
+ */
 async function processPostWindow(pid) {
   const player = await Player.findById(pid).lean();
   if (!player || player.isSold) return;
@@ -182,16 +197,15 @@ async function processPostWindow(pid) {
   const count = result.count ?? 0;
   const windowMs = 2 * 60 * 1000;
 
-  // count=0: one bidder only (second exited) → sell only if window elapsed
-  if (count === 0) {
-    if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
-      await sellPlayer(pid, null);
-    }
+  if (count === 1) {
+    await exitSecondHighestForPlayerSingle(pid, null);
     return;
   }
 
-  // count=1: two+ bidders (second hasn't exited) → never sell, only exit second
-  await exitSecondHighestForPlayerSingle(pid, null);
+  // count=0: one bidder only (second exited) → sell only if 2 min elapsed
+  if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
+    await sellPlayer(pid, null);
+  }
 }
 
 async function sellingSingleBidSinceStarting() {
