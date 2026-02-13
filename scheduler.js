@@ -3,7 +3,7 @@
  *
  * Business rules:
  * 1. 22:30 IST nightly – sell any player that has only ever received a single bid.
- * 2. 18:00–22:00 IST – every 10 minutes bulk exit second-highest (admin toggle).
+ * 2. 6:00–9:40 PM & 10:35–11:05 PM IST – bulk exit second-highest every 10 min (admin toggle).
  * 3. 22:30–23:20 IST – every 5 minutes remove second-highest bidder only (no auto-sell).
  * 4. 23:30–00:30 IST – every 5 minutes remove second-highest bidder; if no new bid
  *    since last exit for 5 minutes, sell.
@@ -435,11 +435,8 @@ async function lockUnderLimitJob() {
   }
 }
 
-// Run at 12:05 AM IST, then every 15 minutes continuously
-// Schedule: 00:05, 00:20, 00:35, 00:50, 01:05, 01:20, ... (every 15 minutes)
-cron.schedule('5,20,35,50 * * * *', tenMinuteSingleBidJob, {
-  timezone: 'Asia/Kolkata',
-});
+// tenMinuteSingleBidJob DISABLED – counterBidWindowJob (5 min) and postWindowJob (2 min) handle 11:30–2:00
+// Requirement: from 11:30 sell single-bid where second exited; then 5 min cycle till 12:30; after 12:30 use 2 min cycle
 
 // 22:30 IST nightly – sell players that never received a counter bid
 cron.schedule('0 30 22 * * *', sellingSingleBidSinceStarting, {
@@ -474,13 +471,23 @@ cron.schedule('0 */2 1 * * *', () => postWindowJob(), {
   timezone: 'Asia/Kolkata',
 });
 
-// Bulk exit every 10 minutes from 18:00–21:59 IST (mutually exclusive with the ten-minute monitor)
-cron.schedule('0 */10 18-21 * * *', () => {
-  console.log(`⏰ [${new Date().toISOString()}] Bulk exit cron triggered (18:00–22:00 window)`);
+// Bulk exit: Window 1 = 6:00 PM–9:40 PM every 10 min; Window 2 = 10:35 PM–11:05 PM every 10 min; then stops
+cron.schedule('0 0,10,20,30,40,50 18-20 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (6–9:40 PM window)`);
   runBulkExitJob();
-}, {
-  timezone: 'Asia/Kolkata',
-});
+}, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 0,10,20,30,40 21 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (6–9:40 PM window)`);
+  runBulkExitJob();
+}, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 35,45,55 22 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (10:35–11:05 PM window)`);
+  runBulkExitJob();
+}, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 5 23 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (10:35–11:05 PM window)`);
+  runBulkExitJob();
+}, { timezone: 'Asia/Kolkata' });
 
 // Lock users that violate roster requirements at 22:00 IST (10:00 PM) daily
 cron.schedule('0 22 * * *', lockUnderLimitJob, {

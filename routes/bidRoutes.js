@@ -1182,6 +1182,7 @@ async function sellPlayer(playerId, io = null) {
     // CRITICAL: Never sell when second bidder is still active (2+ bidders)
     const uniqueBidders = new Set(allBids.map((b) => b.bidder?.toString()).filter(Boolean));
     if (uniqueBidders.size > 1) {
+      console.warn(`🛑 BLOCKED SELL: Player ${playerId} has ${uniqueBidders.size} active bidders – refusing to sell until second exits`);
       return {
         playerID: playerId,
         status: 'error',
