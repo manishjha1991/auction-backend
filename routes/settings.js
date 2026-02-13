@@ -63,14 +63,15 @@ router.post('/', async (req, res) => {
       const valid = ['Gold', 'Silver', 'Sapphire', 'Emerald'];
       doc.auctionAutoModeCategories = auctionAutoModeCategories.filter((c) => valid.includes(String(c).trim()));
       if (doc.auctionAutoModeCategories.length === 0) doc.auctionAutoModeCategories = valid;
-      // Apply immediately: enable selected categories, disable unselected (for unsold players)
-      for (const type of valid) {
-        const enable = doc.auctionAutoModeCategories.includes(type);
-        try {
-          await Player.updateMany({ type, isSold: false }, { $set: { isActive: enable } });
-        } catch (e) {
-          console.error(`Failed to update Player isActive for ${type}:`, e.message);
-          // continue with other types; doc will still be saved
+      // Only apply to Players when Auto Mode is ON – turning Auto Mode OFF must not change Player Availability
+      if (doc.auctionAutoModeEnabled === true) {
+        for (const type of valid) {
+          const enable = doc.auctionAutoModeCategories.includes(type);
+          try {
+            await Player.updateMany({ type, isSold: false }, { $set: { isActive: enable } });
+          } catch (e) {
+            console.error(`Failed to update Player isActive for ${type}:`, e.message);
+          }
         }
       }
     }
