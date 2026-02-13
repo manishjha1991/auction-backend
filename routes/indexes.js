@@ -211,6 +211,7 @@ async function createPlayerIndexes() {
     { isActive: 1, isSold: 1 },
     { isActive: 1, type: 1 },
     { isSold: 1, type: 1 },
+    { type: 1, isSold: 1 }, // Hot path: scheduler/settings Player.updateMany({ type, isSold: false })
     { isActive: 1, isSold: 1, type: 1 },
     
     // Search queries
