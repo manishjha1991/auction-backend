@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const AppSettings = require('../models/AppSettings');
 const User = require('../models/User');
+const Player = require('../models/Player');
 
 async function getSettingsDoc() {
   let doc = await AppSettings.findOne();
@@ -62,6 +63,11 @@ router.post('/', async (req, res) => {
       const valid = ['Gold', 'Silver', 'Sapphire', 'Emerald'];
       doc.auctionAutoModeCategories = auctionAutoModeCategories.filter((c) => valid.includes(String(c).trim()));
       if (doc.auctionAutoModeCategories.length === 0) doc.auctionAutoModeCategories = valid;
+      // Apply immediately: enable selected categories, disable unselected (for unsold players)
+      for (const type of valid) {
+        const enable = doc.auctionAutoModeCategories.includes(type);
+        await Player.updateMany({ type, isSold: false }, { $set: { isActive: enable } });
+      }
     }
     await doc.save();
     res.json({ 
