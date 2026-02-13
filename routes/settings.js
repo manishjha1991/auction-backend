@@ -66,7 +66,12 @@ router.post('/', async (req, res) => {
       // Apply immediately: enable selected categories, disable unselected (for unsold players)
       for (const type of valid) {
         const enable = doc.auctionAutoModeCategories.includes(type);
-        await Player.updateMany({ type, isSold: false }, { $set: { isActive: enable } });
+        try {
+          await Player.updateMany({ type, isSold: false }, { $set: { isActive: enable } });
+        } catch (e) {
+          console.error(`Failed to update Player isActive for ${type}:`, e.message);
+          // continue with other types; doc will still be saved
+        }
       }
     }
     await doc.save();
