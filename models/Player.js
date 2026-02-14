@@ -15,6 +15,7 @@ const PlayerSchema = new mongoose.Schema({
     isActive:{ type: Boolean, default: true },
     tradeLocked: { type: Boolean, default: false },
     tradeLockedUntil: { type: Date, default: null },
+    releasedAt: { type: Date, default: null }, // When released; pick-from-unsold blocked for 48h after this
     lastBidAt: { type: Date, default: null },
     lastExitAt: { type: Date, default: null },
     lastExitBy: { type: String, enum: ['user', 'system'], default: null },

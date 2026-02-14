@@ -186,32 +186,6 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
         return res.status(404).json({ message: 'User or player not found' });
       }
 
-      // Warning-only minimum check (requires confirmation)
-      const typeMinimum = {
-        Gold: 8,
-        Silver: 6,
-        Emerald: 4,
-        Sapphire: 2,
-      };
-
-      const activePlayerIds = await UserPlayer.find({
-        userId: user._id,
-        isActive: true,
-      }).distinct('playerId');
-
-      const currentCount = await Player.countDocuments({
-        _id: { $in: activePlayerIds },
-        type: player.type,
-      });
-
-      const countAfterRelease = currentCount - 1;
-      if (countAfterRelease < typeMinimum[player.type] && !confirmRelease) {
-        return res.status(409).json({
-          message: `Warning: ${user.name || 'User'} will drop to ${countAfterRelease} ${player.type} player(s) (minimum ${typeMinimum[player.type]}). If you still want to approve, click approve again.`,
-          requiresConfirmation: true,
-        });
-      }
-      
       // deactivate ownership
       const up = await UserPlayer.findOne({ userId: item.user, playerId: item.player, isActive: true });
       if (up) { 
@@ -238,7 +212,8 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
               currentBid: null,
               currentBidder: null,
               tradeLocked: false,
-              tradeLockedUntil: null // Reset trade lock window when player is released
+              tradeLockedUntil: null,
+              releasedAt: new Date() // Pick-from-unsold blocked for 48h after release
             }
           });
         } catch (playerUpdateError) {

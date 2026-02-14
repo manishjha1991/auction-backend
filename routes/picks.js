@@ -19,6 +19,12 @@ router.get('/unsold', async (req, res) => {
     const search = req.query.search; // optional: search by player name
 
     const filter = { isSold: false, isActive: false };
+    // Exclude players released in last 48h (pick-from-unsold only; normal bidding unaffected)
+    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    filter.$or = [
+      { releasedAt: null },
+      { releasedAt: { $lt: fortyEightHoursAgo } }
+    ];
     if (type) {
       filter.type = type;
     }
@@ -84,6 +90,11 @@ router.post('/', async (req, res) => {
       User.findById(userId)
     ]);
     if (!player || player.isSold) return res.status(400).json({ message: 'Player is not available' });
+    // Block pick-from-unsold if player was released in last 48h (normal bidding unaffected)
+    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    if (player.releasedAt && new Date(player.releasedAt) > fortyEightHoursAgo) {
+      return res.status(400).json({ message: 'This player was recently released and cannot be picked from unsold for 48 hours' });
+    }
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     // Create an initial bid at base price and lock funds, so that existing sold API can finalize later

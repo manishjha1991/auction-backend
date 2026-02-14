@@ -376,6 +376,7 @@ router.post('/release-all-others', async (req, res) => {
         player.basePrice = originalBasePrice;
         player.currentBid = originalBasePrice;
         player.currentBidder = null;
+        player.releasedAt = new Date(); // Pick-from-unsold blocked for 48h
         await player.save();
 
         // Clean up related data
@@ -783,10 +784,10 @@ router.post('/approve-withdrawal/:retainedPlayerId', async (req, res) => {
       })
     ]);
 
-    // Set all non-retained players as not sold
+    // Set all non-retained players as not sold (releasedAt blocks pick-from-unsold for 48h)
     await Player.updateMany(
       { _id: { $nin: retainedPlayerIds } },
-      { isSold: false }
+      { $set: { isSold: false, releasedAt: new Date() } }
     );
 
     // Update user purses - refund retention costs
@@ -998,6 +999,7 @@ router.post('/release-team-players', async (req, res) => {
         player.basePrice = originalBasePrice;
         player.currentBid = originalBasePrice;
         player.currentBidder = null;
+        player.releasedAt = new Date(); // Pick-from-unsold blocked for 48h
         await player.save();
 
         // Clean up related data for this player

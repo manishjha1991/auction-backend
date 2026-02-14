@@ -953,6 +953,7 @@ router.post("/release-player", async (req, res) => {
     player.isSold = false;
     player.currentBid = player.basePrice; // Reset bidding to start from the base price
     player.currentBidder = null; // Clear the current bidder
+    player.releasedAt = new Date(); // Pick-from-unsold blocked for 48h after release
     await player.save();
 
     // Mark the UserPlayer entry as inactive
