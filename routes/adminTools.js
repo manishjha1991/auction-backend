@@ -6,6 +6,9 @@ const User = require('../models/User');
 const Player = require('../models/Player');
 const UserPlayer = require('../models/UserPlayer');
 const RetainedPlayer = require('../models/RetainedPlayer');
+const ReleaseRequest = require('../models/ReleaseRequest');
+const PickRequest = require('../models/PickRequest');
+const TradeRequest = require('../models/TradeRequest');
 const {
   previewAuctionFixes,
   executeAuctionFixes,
@@ -308,6 +311,209 @@ const runAuctionReset = async () => {
     cleared,
   };
 };
+
+const TRADE_CAP = 6;
+
+// GET: search teams by team name or player name (returns team IDs that match)
+router.get('/team-trade-activity/search', async (req, res) => {
+  try {
+    const { adminUserId, q } = req.query;
+    await requireAdmin(adminUserId);
+
+    const query = (q || '').trim();
+    if (!query || query.length < 2) {
+      return res.json({ teamIds: [] });
+    }
+
+    const regex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
+    // 1. Teams matching by name
+    const teamsByName = await User.find({
+      isActive: true,
+      isAdmin: false,
+      $or: [
+        { teamName: regex },
+        { name: regex }
+      ]
+    }).select('_id').lean();
+
+    const teamIdsByName = new Set(teamsByName.map((t) => t._id.toString()));
+
+    // 2. Players matching by name
+    const matchingPlayers = await Player.find({ name: regex }).select('_id').lean();
+    const playerIds = matchingPlayers.map((p) => p._id);
+
+    if (playerIds.length === 0 && teamIdsByName.size === 0) {
+      return res.json({ teamIds: Array.from(teamIdsByName) });
+    }
+
+    // 3. User IDs from releases, picks, trades involving these players
+    const [releaseUsers, pickUsers, tradeFromUsers, tradeToUsers] = await Promise.all([
+      playerIds.length > 0
+        ? ReleaseRequest.find({ player: { $in: playerIds }, status: 'completed' }).distinct('user')
+        : [],
+      playerIds.length > 0
+        ? PickRequest.find({ player: { $in: playerIds }, status: 'completed' }).distinct('user')
+        : [],
+      playerIds.length > 0
+        ? TradeRequest.find({
+            status: 'completed',
+            $or: [
+              { offeredPlayer: { $in: playerIds } },
+              { requestedPlayer: { $in: playerIds } }
+            ]
+          }).distinct('fromUser')
+        : [],
+      playerIds.length > 0
+        ? TradeRequest.find({
+            status: 'completed',
+            $or: [
+              { offeredPlayer: { $in: playerIds } },
+              { requestedPlayer: { $in: playerIds } }
+            ]
+          }).distinct('toUser')
+        : []
+    ]);
+
+    const allUserIds = [...releaseUsers, ...pickUsers, ...tradeFromUsers, ...tradeToUsers];
+    allUserIds.forEach((id) => teamIdsByName.add(id.toString()));
+
+    res.json({ teamIds: Array.from(teamIdsByName) });
+  } catch (error) {
+    console.error('team-trade-activity search error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to search' });
+  }
+});
+
+// GET: team trade activity (picks, releases, trades by team; used/remaining)
+router.get('/team-trade-activity', async (req, res) => {
+  try {
+    const { adminUserId } = req.query;
+    await requireAdmin(adminUserId);
+
+    const teams = await User.find({ isActive: true, isAdmin: false })
+      .select('_id name teamName tradesUsed')
+      .sort({ teamName: 1 })
+      .lean();
+
+    const teamIds = teams.map((t) => t._id);
+
+    const [releaseCounts, pickCounts, tradeAsFrom, tradeAsTo] = await Promise.all([
+      ReleaseRequest.aggregate([
+        { $match: { user: { $in: teamIds }, status: 'completed' } },
+        { $group: { _id: '$user', count: { $sum: 1 } } }
+      ]),
+      PickRequest.aggregate([
+        { $match: { user: { $in: teamIds }, status: 'completed' } },
+        { $group: { _id: '$user', count: { $sum: 1 } } }
+      ]),
+      TradeRequest.aggregate([
+        { $match: { status: 'completed' } },
+        { $group: { _id: '$fromUser', count: { $sum: 1 } } }
+      ]),
+      TradeRequest.aggregate([
+        { $match: { status: 'completed' } },
+        { $group: { _id: '$toUser', count: { $sum: 1 } } }
+      ])
+    ]);
+
+    const releaseMap = new Map(releaseCounts.map((r) => [r._id.toString(), r.count]));
+    const pickMap = new Map(pickCounts.map((p) => [p._id.toString(), p.count]));
+    const tradeMap = new Map();
+    [...tradeAsFrom, ...tradeAsTo].forEach(({ _id, count }) => {
+      const uid = _id.toString();
+      tradeMap.set(uid, (tradeMap.get(uid) || 0) + count);
+    });
+
+    const result = teams.map((team) => {
+      const uid = team._id.toString();
+      const releases = releaseMap.get(uid) || 0;
+      const picks = pickMap.get(uid) || 0;
+      const trades = tradeMap.get(uid) || 0;
+      const tradesUsed = Number(team.tradesUsed || 0);
+      const remaining = Math.max(0, TRADE_CAP - tradesUsed);
+      return {
+        userId: uid,
+        teamName: team.teamName || team.name || 'Unknown',
+        name: team.name,
+        picks,
+        releases,
+        trades,
+        tradesUsed,
+        remaining,
+        cap: TRADE_CAP
+      };
+    });
+
+    res.json({ teams: result });
+  } catch (error) {
+    console.error('team-trade-activity error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to load team trade activity' });
+  }
+});
+
+// GET: team trade activity details (players involved in picks, releases, trades)
+router.get('/team-trade-activity/:userId/details', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { adminUserId } = req.query;
+    await requireAdmin(adminUserId);
+
+    const uid = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null;
+    if (!uid) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const [releases, picks, tradesAsFrom, tradesAsTo] = await Promise.all([
+      ReleaseRequest.find({ user: uid, status: 'completed' })
+        .populate('player', 'name type role')
+        .sort({ updatedAt: -1 })
+        .lean(),
+      PickRequest.find({ user: uid, status: 'completed' })
+        .populate('player', 'name type role')
+        .sort({ updatedAt: -1 })
+        .lean(),
+      TradeRequest.find({ fromUser: uid, status: 'completed' })
+        .populate('offeredPlayer', 'name type role')
+        .populate('requestedPlayer', 'name type role')
+        .populate('toUser', 'teamName name')
+        .sort({ updatedAt: -1 })
+        .lean(),
+      TradeRequest.find({ toUser: uid, status: 'completed' })
+        .populate('offeredPlayer', 'name type role')
+        .populate('requestedPlayer', 'name type role')
+        .populate('fromUser', 'teamName name')
+        .sort({ updatedAt: -1 })
+        .lean()
+    ]);
+
+    const trades = [
+      ...tradesAsFrom.map((t) => ({ ...t, direction: 'out', otherTeam: t.toUser?.teamName || t.toUser?.name })),
+      ...tradesAsTo.map((t) => ({ ...t, direction: 'in', otherTeam: t.fromUser?.teamName || t.fromUser?.name }))
+    ].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+    res.json({
+      releases: releases.map((r) => ({ player: r.player, date: r.updatedAt })),
+      picks: picks.map((p) => ({ player: p.player, date: p.updatedAt })),
+      trades: trades.map((t) => ({
+        offeredPlayer: t.offeredPlayer,
+        requestedPlayer: t.requestedPlayer,
+        direction: t.direction,
+        otherTeam: t.otherTeam,
+        date: t.updatedAt
+      }))
+    });
+  } catch (error) {
+    console.error('team-trade-activity details error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to load team trade details' });
+  }
+});
 
 router.get('/player-type/status', async (req, res) => {
   try {
