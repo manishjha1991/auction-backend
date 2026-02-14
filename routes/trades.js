@@ -358,8 +358,18 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
         return res.status(400).json({ message: 'Invalid purse or bid values for trade validation.' });
       }
       if (newTeam1Purse < 0 || newTeam2Purse < 0) {
-        return res.status(400).json({ 
-          message: 'Trade would result in negative purse balance for one or both teams.' 
+        const toCr = (n) => (Number(n) / 10000000).toFixed(2);
+        const parts = [];
+        if (newTeam1Purse < 0) {
+          const shortfall = Math.abs(newTeam1Purse);
+          parts.push(`${team1.teamName || 'Team 1'}: current ₹${toCr(team1Purse)} Cr, after trade would be ₹${toCr(newTeam1Purse)} Cr, shortfall ₹${toCr(shortfall)} Cr`);
+        }
+        if (newTeam2Purse < 0) {
+          const shortfall = Math.abs(newTeam2Purse);
+          parts.push(`${team2.teamName || 'Team 2'}: current ₹${toCr(team2Purse)} Cr, after trade would be ₹${toCr(newTeam2Purse)} Cr, shortfall ₹${toCr(shortfall)} Cr`);
+        }
+        return res.status(400).json({
+          message: `Trade would result in negative purse balance. ${parts.join('; ')}.`
         });
       }
 
