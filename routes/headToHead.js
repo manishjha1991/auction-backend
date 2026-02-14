@@ -130,14 +130,19 @@ const syncHeadToHead = async () => {
   for (const p of playoffsWithValidWinner) {
     let uid1 = p.team1UserId;
     let uid2 = p.team2UserId;
-    if (!uid1 && p.team1) {
-      const u = await UserModel.findOne({ teamName: p.team1, isActive: true }).select('_id teamName').lean();
-      uid1 = u?._id;
-    }
-    if (!uid2 && p.team2) {
-      const u = await UserModel.findOne({ teamName: p.team2, isActive: true }).select('_id teamName').lean();
-      uid2 = u?._id;
-    }
+    const findUserByTeamName = async (name) => {
+      if (!name) return null;
+      const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      let u = await UserModel.findOne({ teamName: name, isActive: true }).select('_id teamName').lean();
+      if (!u) u = await UserModel.findOne({ teamName: { $regex: new RegExp(`^${esc(name)}$`), $options: 'i' }, isActive: true }).select('_id teamName').lean();
+      if (!u) {
+        const base = String(name).replace(/\s+(XI|11|CPL)$/i, '').trim();
+        if (base) u = await UserModel.findOne({ teamName: { $regex: new RegExp(`^${esc(base)}(\\s+XI|\\s+11|\\s+CPL)?$`, 'i') }, isActive: true }).select('_id teamName').lean();
+      }
+      return u?._id;
+    };
+    if (!uid1 && p.team1) uid1 = await findUserByTeamName(p.team1);
+    if (!uid2 && p.team2) uid2 = await findUserByTeamName(p.team2);
     const pair = normalizePair(uid1, uid2);
     if (!pair) continue;
 
