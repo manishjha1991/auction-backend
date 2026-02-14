@@ -132,7 +132,8 @@ const matchResultSchema = new mongoose.Schema({
   updatedAt: {
     type: Date,
     default: Date.now
-  }
+  },
+  headToHeadSynced: { type: Boolean, default: false } // True once win/loss has been added to TeamHeadToHead
 });
 
 // Update the updatedAt field before saving

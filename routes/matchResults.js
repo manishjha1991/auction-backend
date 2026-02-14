@@ -3,6 +3,7 @@ const router = express.Router();
 const MatchResult = require('../models/MatchResult');
 const User = require('../models/User');
 const Player = require('../models/Player');
+const headToHeadModule = require('./headToHead');
 
 // Middleware to check if user is authenticated
 const isAuthenticated = (req, res, next) => {
@@ -191,6 +192,10 @@ router.post('/', isAuthenticated, isAdmin, async (req, res) => {
     });
 
     await matchResult.save();
+
+    if (headToHeadModule.syncHeadToHead) {
+      headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
+    }
 
     // Populate the created match result
     const populatedMatchResult = await MatchResult.findById(matchResult._id)

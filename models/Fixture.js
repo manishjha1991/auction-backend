@@ -42,7 +42,8 @@ const FixtureSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   isActive: { type: Boolean, default: true },
   group: { type: String, enum: ['A', 'B', null], default: null }, // Track if this is a group stage match
-  matchType: { type: String, enum: ['group', 'normal'], default: 'normal' } // Track match type
+  matchType: { type: String, enum: ['group', 'normal'], default: 'normal' }, // Track match type
+  headToHeadSynced: { type: Boolean, default: false } // True once win/loss has been added to TeamHeadToHead
 });
 
 // Add indexes for better performance

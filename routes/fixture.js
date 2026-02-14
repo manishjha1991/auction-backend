@@ -1,6 +1,7 @@
 const express = require('express');
 const Fixture = require('../models/Fixture');
 const User = require('../models/User');
+const headToHeadModule = require('./headToHead');
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
@@ -549,6 +550,9 @@ router.post('/save', isAdmin, async (req, res) => {
           await Promise.all([team1User.save(), team2User.save()]);
           
           console.log(`✅ Points updated: ${fixture.team1} (${fixture.winner === fixture.team1 ? 'WIN +2' : 'LOSS +0'}) vs ${fixture.team2} (${fixture.winner === fixture.team2 ? 'WIN +2' : 'LOSS +0'})`);
+        }
+        if (headToHeadModule.syncHeadToHead) {
+          headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
         }
       } catch (pointsError) {
         console.error('Error updating points:', pointsError);

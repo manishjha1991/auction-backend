@@ -8,7 +8,8 @@
     "start": "node server.js",
     "check-purse-diff": "node check-user-purse-difference.js",
     "update-purse": "node update-purse-to-100-minus-players.js",
-    "confirm-update-purse": "node confirm-update-purse.js"
+    "confirm-update-purse": "node confirm-update-purse.js",
+    "sync-fixtures": "node scripts/sync-fixtures-from-historical-dbs.js"
   },
   "keywords": [],
   "author": "",
