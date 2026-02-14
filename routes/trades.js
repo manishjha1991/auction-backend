@@ -13,9 +13,30 @@ const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
 const TRADE_LOCK_HOURS = 48;
 
+// Trade lock: only applies AFTER admin approves a trade. Players locked for 48h after swap.
+// First-time trades: tradeLocked is false (default) → allowed.
 async function isTradeLocked(playerDoc) {
-  if (!playerDoc?.tradeLocked) return false;
-  if (playerDoc.tradeLockedUntil && new Date(playerDoc.tradeLockedUntil) <= new Date()) {
+  if (!playerDoc) return false;
+  // Only treat as locked when explicitly true (first-time trades have false/undefined)
+  if (playerDoc.tradeLocked !== true && playerDoc.tradeLocked !== 'true') return false;
+  // If tradeLockedUntil is missing (legacy/bug), treat as expired - clear and allow
+  const until = playerDoc.tradeLockedUntil;
+  if (!until) {
+    await Player.findByIdAndUpdate(playerDoc._id, {
+      $set: { tradeLocked: false, tradeLockedUntil: null }
+    });
+    return false;
+  }
+  // Robust date parse (handles MongoDB BSON, ISO strings, Date objects)
+  const untilDate = until instanceof Date ? until : new Date(until);
+  if (isNaN(untilDate.getTime())) {
+    await Player.findByIdAndUpdate(playerDoc._id, {
+      $set: { tradeLocked: false, tradeLockedUntil: null }
+    });
+    return false;
+  }
+  // If lock has expired (48h passed), clear and allow
+  if (untilDate <= new Date()) {
     await Player.findByIdAndUpdate(playerDoc._id, {
       $set: { tradeLocked: false, tradeLockedUntil: null }
     });
@@ -466,6 +487,64 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
     res.json(trade);
   } catch (err) {
     console.error('Admin decide error', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// POST /api/trades/admin/unlock-players - Admin only: clear trade lock for specific players
+router.post('/admin/unlock-players', async (req, res) => {
+  try {
+    const { adminUserId, playerIds } = req.body;
+    if (!adminUserId || !Array.isArray(playerIds) || playerIds.length === 0) {
+      return res.status(400).json({ message: 'adminUserId and playerIds (array) required' });
+    }
+    const admin = await User.findById(adminUserId).select('isAdmin').lean();
+    if (!admin?.isAdmin) {
+      return res.status(403).json({ message: 'Only admin can unlock players' });
+    }
+    const result = await Player.updateMany(
+      { _id: { $in: playerIds } },
+      { $set: { tradeLocked: false, tradeLockedUntil: null } }
+    );
+    res.json({
+      message: `Unlocked ${result.modifiedCount} player(s)`,
+      modifiedCount: result.modifiedCount
+    });
+  } catch (err) {
+    console.error('Unlock players error', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// POST /api/trades/admin/unlock-stale - Admin only: clear ALL stale locks (tradeLocked true but expired or missing until)
+router.post('/admin/unlock-stale', async (req, res) => {
+  try {
+    const { adminUserId } = req.body;
+    if (!adminUserId) {
+      return res.status(400).json({ message: 'adminUserId required' });
+    }
+    const admin = await User.findById(adminUserId).select('isAdmin').lean();
+    if (!admin?.isAdmin) {
+      return res.status(403).json({ message: 'Only admin can unlock players' });
+    }
+    const now = new Date();
+    const result = await Player.updateMany(
+      {
+        tradeLocked: true,
+        $or: [
+          { tradeLockedUntil: null },
+          { tradeLockedUntil: { $exists: false } },
+          { tradeLockedUntil: { $lte: now } }
+        ]
+      },
+      { $set: { tradeLocked: false, tradeLockedUntil: null } }
+    );
+    res.json({
+      message: `Cleared ${result.modifiedCount} stale trade lock(s)`,
+      modifiedCount: result.modifiedCount
+    });
+  } catch (err) {
+    console.error('Unlock stale error', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
