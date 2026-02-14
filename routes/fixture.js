@@ -323,6 +323,7 @@ const isAdmin = async (req, res, next) => {
 };
 
 router.post('/save', isAdmin, async (req, res) => {
+  let oldWinnerBeforeSave = null;
   try {
     console.log('📥 Fixture save request received');
     console.log('📥 Request body keys:', Object.keys(req.body));
@@ -465,6 +466,7 @@ router.post('/save', isAdmin, async (req, res) => {
       });
     } else {
       // Otherwise, update existing fixture
+      oldWinnerBeforeSave = fixture.winner;
       if (winner !== undefined) fixture.winner = winner;
       if (margin !== undefined) fixture.margin = margin;
       if (mom !== undefined) {
@@ -551,7 +553,12 @@ router.post('/save', isAdmin, async (req, res) => {
           
           console.log(`✅ Points updated: ${fixture.team1} (${fixture.winner === fixture.team1 ? 'WIN +2' : 'LOSS +0'}) vs ${fixture.team2} (${fixture.winner === fixture.team2 ? 'WIN +2' : 'LOSS +0'})`);
         }
-        if (headToHeadModule.syncHeadToHead) {
+        // Head-to-head: if winner changed on update, mark unsynced, revert old winner, then re-sync
+        if (oldWinnerBeforeSave && oldWinnerBeforeSave !== fixture.winner && headToHeadModule.revertAndResyncForRecord) {
+          Fixture.updateOne({ _id: fixture._id }, { $set: { headToHeadSynced: false } })
+            .then(() => headToHeadModule.revertAndResyncForRecord(fixture.team1, fixture.team2, oldWinnerBeforeSave))
+            .catch((err) => console.error('Head-to-head sync:', err));
+        } else if (headToHeadModule.syncHeadToHead) {
           headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
         }
       } catch (pointsError) {

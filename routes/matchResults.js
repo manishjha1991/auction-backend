@@ -225,6 +225,10 @@ router.put('/:id', isAuthenticated, isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Match result not found' });
     }
 
+    const oldTeam1 = matchResult.team1;
+    const oldTeam2 = matchResult.team2;
+    const oldWinner = matchResult.winner === 'team1' ? matchResult.team1 : matchResult.winner === 'team2' ? matchResult.team2 : null;
+
     // Update fields
     const allowedUpdates = [
       'matchTitle', 'team1', 'team2', 'winner', 'team1Score', 'team2Score',
@@ -250,6 +254,20 @@ router.put('/:id', isAuthenticated, isAdmin, async (req, res) => {
 
     matchResult.updatedAt = new Date();
     await matchResult.save();
+
+    // Head-to-head: if winner/teams changed, mark unsynced and update H2H
+    const newWinner = matchResult.winner === 'team1' ? matchResult.team1 : matchResult.winner === 'team2' ? matchResult.team2 : null;
+    const winnerOrTeamsChanged = (oldWinner !== newWinner) || (oldTeam1 !== matchResult.team1) || (oldTeam2 !== matchResult.team2);
+    if (winnerOrTeamsChanged) {
+      MatchResult.updateOne({ _id: matchResult._id }, { $set: { headToHeadSynced: false } })
+        .then(() => {
+          if (oldWinner && headToHeadModule.revertAndResyncForRecord) {
+            return headToHeadModule.revertAndResyncForRecord(oldTeam1, oldTeam2, oldWinner);
+          }
+          return headToHeadModule.syncHeadToHead ? headToHeadModule.syncHeadToHead() : Promise.resolve(0);
+        })
+        .catch((err) => console.error('Head-to-head sync:', err));
+    }
 
     // Populate the updated match result
     const updatedMatchResult = await MatchResult.findById(matchResult._id)

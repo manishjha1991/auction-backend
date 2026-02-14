@@ -116,6 +116,23 @@ const syncHeadToHead = async () => {
   return synced;
 };
 
+// Revert one fixture/match result from H2H (when winner/teams changed) then re-sync
+const revertAndResyncForRecord = async (team1Name, team2Name, oldWinnerTeamName) => {
+  if (!team1Name || !team2Name || !oldWinnerTeamName || oldWinnerTeamName !== team1Name && oldWinnerTeamName !== team2Name) return 0;
+  const u1 = await User.findOne({ teamName: team1Name, isActive: true }).select('_id').lean();
+  const u2 = await User.findOne({ teamName: team2Name, isActive: true }).select('_id').lean();
+  if (!u1 || !u2) return 0;
+  const [id1, id2] = u1._id.toString() < u2._id.toString() ? [u1._id, u2._id] : [u2._id, u1._id];
+  const winnerIsFirst = (oldWinnerTeamName === team1Name && u1._id.toString() === id1.toString()) || (oldWinnerTeamName === team2Name && u2._id.toString() === id1.toString());
+  const filter = winnerIsFirst
+    ? { team1UserId: id1, team2UserId: id2, team1Wins: { $gt: 0 } }
+    : { team1UserId: id1, team2UserId: id2, team2Wins: { $gt: 0 } };
+  await TeamHeadToHead.updateOne(filter, {
+    $inc: { team1Wins: winnerIsFirst ? -1 : 0, team2Wins: winnerIsFirst ? 0 : -1 },
+  });
+  return syncHeadToHead();
+};
+
 // GET /api/head-to-head - Fetch all head-to-head records (runs sync first)
 router.get('/', async (req, res) => {
   try {
@@ -247,3 +264,4 @@ router.post('/reset', async (req, res) => {
 
 module.exports = router;
 module.exports.syncHeadToHead = syncHeadToHead;
+module.exports.revertAndResyncForRecord = revertAndResyncForRecord;
