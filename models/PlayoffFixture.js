@@ -101,7 +101,8 @@ const playoffFixtureSchema = new mongoose.Schema({
   date: {
     type: Date,
     default: Date.now
-  }
+  },
+  headToHeadSynced: { type: Boolean, default: false }
 }, {
   timestamps: true
 });

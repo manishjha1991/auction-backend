@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Tournament = require('../models/Tournament');
 const AppSettings = require('../models/AppSettings');
 const Fixture = require('../models/Fixture');
+const headToHeadModule = require('./headToHead');
 
 // Helper function to parse score string and extract runs
 const parseRuns = (scoreString) => {
@@ -595,6 +596,7 @@ router.post('/initialize', async (req, res) => {
 router.post('/update/:matchId', async (req, res) => {
   try {
     const { matchId } = req.params;
+    const existing = await PlayoffFixture.findOne({ matchId }).lean();
     const updateData = { ...req.body };
 
     // If winner is being updated, also update winnerUserId
@@ -642,7 +644,28 @@ router.post('/update/:matchId', async (req, res) => {
     if (updateData.winner && updateData.isCompleted) {
       console.log(`✅ Updating dependent matches for ${matchId} with winner: ${updateData.winner}`);
       await updateDependentMatches(matchId, updateData.winner);
-      
+
+      // Head-to-head: update when playoff fixture has winner
+      const t1 = playoffFixture.team1;
+      const t2 = playoffFixture.team2;
+      const newWinner = playoffFixture.winner;
+      const validTeams = t1 && t2 && !String(t1).includes('Winner of') && !String(t1).includes('Loser of') &&
+        !String(t2).includes('Winner of') && !String(t2).includes('Loser of');
+      if (validTeams && newWinner) {
+        const oldWinner = existing?.winner || null;
+        const oldT1 = existing?.team1;
+        const oldT2 = existing?.team2;
+        const oldValid = oldT1 && oldT2 && !String(oldT1).includes('Winner of') && !String(oldT1).includes('Loser of') &&
+          !String(oldT2).includes('Winner of') && !String(oldT2).includes('Loser of');
+        await PlayoffFixture.updateOne({ matchId }, { $set: { headToHeadSynced: false } });
+        if (oldWinner && oldWinner !== newWinner && oldValid && headToHeadModule.revertAndResyncForRecord) {
+          headToHeadModule.revertAndResyncForRecord(oldT1, oldT2, oldWinner)
+            .catch((err) => console.error('Head-to-head sync:', err));
+        } else if (headToHeadModule.syncHeadToHead) {
+          headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
+        }
+      }
+
       // Log the updated dependent matches
       // 🚀 PERFORMANCE: Use .lean() for read-only query
       const updatedFixtures = await PlayoffFixture.find({}).sort({ matchId: 1 }).lean();

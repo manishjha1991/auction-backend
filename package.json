@@ -9,7 +9,8 @@
     "check-purse-diff": "node check-user-purse-difference.js",
     "update-purse": "node update-purse-to-100-minus-players.js",
     "confirm-update-purse": "node confirm-update-purse.js",
-    "sync-fixtures": "node scripts/sync-fixtures-from-historical-dbs.js"
+    "sync-fixtures": "node scripts/sync-fixtures-from-historical-dbs.js",
+    "sync-playoff-h2h": "node scripts/sync-playoff-h2h-from-historical-dbs.js"
   },
   "keywords": [],
   "author": "",

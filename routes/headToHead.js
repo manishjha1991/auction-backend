@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Fixture = require('../models/Fixture');
 const MatchResult = require('../models/MatchResult');
+const PlayoffFixture = require('../models/PlayoffFixture');
 const TeamHeadToHead = require('../models/TeamHeadToHead');
 const User = require('../models/User');
 
@@ -113,6 +114,61 @@ const syncHeadToHead = async () => {
     synced++;
   }
 
+  // 3. Playoff fixtures with winner (team1 or team2), not yet synced
+  const unsyncedPlayoffs = await PlayoffFixture.find({
+    isCompleted: true,
+    winner: { $exists: true, $ne: null, $ne: '' },
+    headToHeadSynced: { $ne: true }
+  }).lean();
+
+  const playoffsWithValidWinner = unsyncedPlayoffs.filter(
+    (p) => p.winner && (p.winner === p.team1 || p.winner === p.team2) &&
+      !String(p.team1 || '').includes('Winner of') && !String(p.team1 || '').includes('Loser of') &&
+      !String(p.team2 || '').includes('Winner of') && !String(p.team2 || '').includes('Loser of')
+  );
+
+  for (const p of playoffsWithValidWinner) {
+    let uid1 = p.team1UserId;
+    let uid2 = p.team2UserId;
+    if (!uid1 && p.team1) {
+      const u = await UserModel.findOne({ teamName: p.team1, isActive: true }).select('_id teamName').lean();
+      uid1 = u?._id;
+    }
+    if (!uid2 && p.team2) {
+      const u = await UserModel.findOne({ teamName: p.team2, isActive: true }).select('_id teamName').lean();
+      uid2 = u?._id;
+    }
+    const pair = normalizePair(uid1, uid2);
+    if (!pair) continue;
+
+    const [teamAId, teamBId] = pair;
+    const teamAName = uid1?.toString() === teamAId.toString() ? p.team1 : p.team2;
+    const teamBName = uid2?.toString() === teamBId.toString() ? p.team2 : p.team1;
+
+    const winnerUserId = p.winner === p.team1 ? uid1 : uid2;
+    const winnerIsFirst = winnerUserId?.toString() === teamAId.toString();
+
+    await TeamHeadToHead.findOneAndUpdate(
+      { team1UserId: teamAId, team2UserId: teamBId },
+      {
+        $inc: {
+          team1Wins: winnerIsFirst ? 1 : 0,
+          team2Wins: winnerIsFirst ? 0 : 1,
+          draws: 0
+        },
+        $set: {
+          team1Name: teamAName,
+          team2Name: teamBName,
+          lastSyncedAt: new Date()
+        }
+      },
+      { upsert: true }
+    );
+
+    await PlayoffFixture.updateOne({ _id: p._id }, { $set: { headToHeadSynced: true } });
+    synced++;
+  }
+
   return synced;
 };
 
@@ -176,7 +232,7 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
     const t1 = u1.teamName;
     const t2 = u2.teamName;
 
-    const [fixtures, matchResults] = await Promise.all([
+    const [fixtures, matchResults, playoffFixtures] = await Promise.all([
       Fixture.find({
         isActive: true,
         winner: { $in: [t1, t2] },
@@ -195,6 +251,16 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
         ],
       })
         .sort({ matchDate: -1 })
+        .lean(),
+      PlayoffFixture.find({
+        isCompleted: true,
+        winner: { $in: [t1, t2] },
+        $or: [
+          { team1: t1, team2: t2 },
+          { team1: t2, team2: t1 },
+        ],
+      })
+        .sort({ date: -1 })
         .lean(),
     ]);
 
@@ -224,6 +290,16 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
           date: m.matchDate || m.createdAt,
         };
       }),
+      ...playoffFixtures.map((p) => ({
+        source: 'playoff',
+        team1: p.team1,
+        team2: p.team2,
+        team1Score: p.team1Score || '-',
+        team2Score: p.team2Score || '-',
+        winner: p.winner,
+        margin: p.margin || null,
+        date: p.date || p.updatedAt,
+      })),
     ].sort((a, b) => new Date(b.date) - new Date(a.date));
 
     res.json({
@@ -254,6 +330,7 @@ router.post('/reset', async (req, res) => {
     await TeamHeadToHead.deleteMany({});
     await Fixture.updateMany({}, { $set: { headToHeadSynced: false } });
     await MatchResult.updateMany({}, { $set: { headToHeadSynced: false } });
+    await PlayoffFixture.updateMany({}, { $set: { headToHeadSynced: false } });
     const synced = await syncHeadToHead();
     res.json({ message: 'Reset and re-synced', syncedCount: synced });
   } catch (error) {
