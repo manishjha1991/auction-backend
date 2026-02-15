@@ -50,14 +50,35 @@ async function syncPlayoffH2HFromHistorical() {
   await mongoose.connect(targetUri, { dbName: TARGET_DATABASE });
   console.log(`✅ Connected to ${TARGET_DATABASE}\n`);
 
+  // Build team name lookup: exact + case-insensitive + common variations (Royals XI -> Royals)
   const teamNameToUserId = {};
   const users = await User.find({ isActive: true }).select('_id teamName').lean();
   users.forEach((u) => {
-    if (u.teamName) teamNameToUserId[u.teamName] = u._id;
+    if (!u.teamName) return;
+    const name = String(u.teamName).trim();
+    teamNameToUserId[name] = u._id;
+    teamNameToUserId[name.toLowerCase()] = u._id;
+    const withoutSuffix = name.replace(/\s+(XI|11|CPL)$/i, '').trim();
+    if (withoutSuffix && withoutSuffix !== name) {
+      teamNameToUserId[withoutSuffix] = u._id;
+      teamNameToUserId[withoutSuffix.toLowerCase()] = u._id;
+    }
   });
-  console.log(`📋 Loaded ${Object.keys(teamNameToUserId).length} teams\n`);
+  const resolveTeam = (name) => {
+    if (!name) return null;
+    const n = String(name).trim();
+    return teamNameToUserId[n] || teamNameToUserId[n.toLowerCase()] || null;
+  };
+  console.log(`📋 Loaded ${users.length} teams (with flexible name matching)\n`);
 
-  const processedKeys = new Set();
+  // Load already-synced keys from cpl_20 (so re-runs don't double-count)
+  const SYNC_COLLECTION = 'playoffh2hsynced';
+  const processedKeys = new Set(
+    (await mongoose.connection.db.collection(SYNC_COLLECTION).find({}).project({ key: 1 }).toArray())
+      .map((d) => d.key)
+  );
+  console.log(`📋 Already synced: ${processedKeys.size} playoff results (re-runs will skip these)\n`);
+
   let totalAdded = 0;
 
   for (const dbName of SOURCE_DATABASES) {
@@ -79,17 +100,22 @@ async function syncPlayoffH2HFromHistorical() {
         if (p.winner !== p.team1 && p.winner !== p.team2) continue;
 
         const ts = p.date ? new Date(p.date).getTime() : (p.updatedAt ? new Date(p.updatedAt).getTime() : String(p._id));
-        const key = `${p.matchId}|${p.team1}|${p.team2}|${ts}`;
+        const uid1 = resolveTeam(p.team1);
+        const uid2 = resolveTeam(p.team2);
+        const pair = normalizePair(uid1, uid2);
+        if (!pair) {
+          if (dryRun) console.log(`   ⚠️  Skip (no match in cpl_20): ${p.team1} vs ${p.team2}`);
+          continue;
+        }
+        const pairStr = [pair[0].toString(), pair[1].toString()].sort().join('|');
+        const key = `${dbName}|${p.matchId}|${pairStr}|${ts}`;
         if (processedKeys.has(key)) continue;
 
-        const uid1 = teamNameToUserId[p.team1] || null;
-        const uid2 = teamNameToUserId[p.team2] || null;
-        const pair = normalizePair(uid1, uid2);
-        if (!pair) continue;
-
         const [teamAId, teamBId] = pair;
-        const teamAName = uid1?.toString() === teamAId.toString() ? p.team1 : p.team2;
-        const teamBName = uid2?.toString() === teamBId.toString() ? p.team2 : p.team1;
+        const u1Name = users.find((u) => u._id.toString() === uid1.toString())?.teamName || p.team1;
+        const u2Name = users.find((u) => u._id.toString() === uid2.toString())?.teamName || p.team2;
+        const teamAName = uid1?.toString() === teamAId.toString() ? u1Name : u2Name;
+        const teamBName = uid2?.toString() === teamBId.toString() ? u2Name : u1Name;
         const winnerUserId = p.winner === p.team1 ? uid1 : uid2;
         const winnerIsFirst = winnerUserId?.toString() === teamAId.toString();
 
@@ -108,6 +134,11 @@ async function syncPlayoffH2HFromHistorical() {
                 lastSyncedAt: new Date()
               }
             },
+            { upsert: true }
+          );
+          await mongoose.connection.db.collection(SYNC_COLLECTION).updateOne(
+            { key },
+            { $set: { syncedAt: new Date() } },
             { upsert: true }
           );
         }

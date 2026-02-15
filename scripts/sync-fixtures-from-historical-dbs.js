@@ -64,12 +64,28 @@ async function syncFixturesAndMatchResults() {
   await mongoose.connect(targetUri, { dbName: TARGET_DATABASE });
   console.log(`✅ Connected to target: ${TARGET_DATABASE}\n`);
 
+  // Build team name lookup: exact + case-insensitive + variations (Royals XI -> Royals)
   const teamNameToUserId = {};
   const users = await User.find({ isActive: true }).select('_id teamName').lean();
   users.forEach((u) => {
-    if (u.teamName) teamNameToUserId[u.teamName] = u._id;
+    if (!u.teamName) return;
+    const name = String(u.teamName).trim();
+    teamNameToUserId[name] = u._id;
+    teamNameToUserId[name.toLowerCase()] = u._id;
+    const withoutSuffix = name.replace(/\s+(XI|11|CPL)$/i, '').trim();
+    if (withoutSuffix && withoutSuffix !== name) {
+      teamNameToUserId[withoutSuffix] = u._id;
+      teamNameToUserId[withoutSuffix.toLowerCase()] = u._id;
+    }
   });
-  console.log(`📋 Loaded ${Object.keys(teamNameToUserId).length} teams for User ID mapping\n`);
+  const resolveTeam = (name) => {
+    if (!name) return { userId: null, canonicalName: null };
+    const n = String(name).trim();
+    const uid = teamNameToUserId[n] || teamNameToUserId[n.toLowerCase()] || null;
+    const canonical = uid ? (users.find((u) => u._id.toString() === uid.toString())?.teamName || n) : n;
+    return { userId: uid, canonicalName: canonical };
+  };
+  console.log(`📋 Loaded ${users.length} teams (with flexible name matching)\n`);
 
   let adminUserId = null;
   const admin = await User.findOne({ isAdmin: true, isActive: true }).select('_id').lean();
@@ -92,10 +108,17 @@ async function syncFixturesAndMatchResults() {
       `${f.team1}|${f.team2}|${f.createdAt?.getTime?.() || f.createdAt}`
     )
   );
+  const normalizePair = (id1, id2) => {
+    if (!id1 || !id2) return null;
+    const [a, b] = [id1.toString(), id2.toString()].sort();
+    return `${a}|${b}`;
+  };
   const existingPlayoffKeys = new Set(
-    (await PlayoffFixture.find({}).select('matchId team1 team2 date').lean()).map((p) =>
-      `${p.matchId}|${p.team1}|${p.team2}|${p.date?.getTime?.() || p.date || p._id}`
-    )
+    (await PlayoffFixture.find({}).select('matchId team1UserId team2UserId date').lean()).map((p) => {
+      const pair = normalizePair(p.team1UserId, p.team2UserId) || `${p.team1}|${p.team2}`;
+      const ts = p.date?.getTime?.() || p.date || p._id;
+      return `${p.matchId}|${pair}|${ts}`;
+    })
   );
 
   let totalFixturesAdded = 0;
@@ -123,8 +146,10 @@ async function syncFixturesAndMatchResults() {
         const key = `${f.team1}|${f.team2}|${ts}`;
         if (existingFixtureKeys.has(key)) continue;
 
-        const team1UserId = teamNameToUserId[f.team1] || null;
-        const team2UserId = teamNameToUserId[f.team2] || null;
+        const r1 = resolveTeam(f.team1);
+        const r2 = resolveTeam(f.team2);
+        const team1UserId = r1.userId;
+        const team2UserId = r2.userId;
         const winnerUserId = f.winner === f.team1 ? team1UserId : f.winner === f.team2 ? team2UserId : null;
 
         const doc = {
@@ -214,27 +239,34 @@ async function syncFixturesAndMatchResults() {
         if (String(p.team1).includes('Winner of') || String(p.team1).includes('Loser of') ||
             String(p.team2).includes('Winner of') || String(p.team2).includes('Loser of')) continue;
         if (p.winner !== p.team1 && p.winner !== p.team2) continue;
-        const ts = p.date ? new Date(p.date).getTime() : (p.updatedAt ? new Date(p.updatedAt).getTime() : String(p._id));
-        const key = `${p.matchId}|${p.team1}|${p.team2}|${ts}`;
-        if (existingPlayoffKeys.has(key)) continue;
 
-        const team1UserId = teamNameToUserId[p.team1] || null;
-        const team2UserId = teamNameToUserId[p.team2] || null;
+        const r1 = resolveTeam(p.team1);
+        const r2 = resolveTeam(p.team2);
+        if (!r1.userId || !r2.userId) continue; // Skip if teams not in cpl_20
+        const ts = p.date ? new Date(p.date).getTime() : (p.updatedAt ? new Date(p.updatedAt).getTime() : String(p._id));
+        const pair = normalizePair(r1.userId, r2.userId);
+        const key = `${p.matchId}|${pair}|${ts}`;
+        if (existingPlayoffKeys.has(key)) continue;
+        const team1UserId = r1.userId;
+        const team2UserId = r2.userId;
         const winnerUserId = p.winner === p.team1 ? team1UserId : p.winner === p.team2 ? team2UserId : null;
+        // Use cpl_20 canonical names so matches API finds them when user selects teams
+        const team1Name = r1.canonicalName;
+        const team2Name = r2.canonicalName;
 
         const validStages = ['ELIMINATOR ROUND', 'QUALIFIER 1', 'ELIMINATOR 2', 'QUALIFIER 2', 'FINALS', 'SEMI-FINAL 1', 'SEMI-FINAL 2', 'FINAL', 'WORLD CUP ROUND-ROBIN', 'WORLD CUP SEMI-FINAL 1', 'WORLD CUP SEMI-FINAL 2', 'WORLD CUP FINAL'];
         const stage = validStages.includes(p.stage) ? p.stage : 'FINALS';
         const doc = {
           matchId: p.matchId,
           stage,
-          team1: p.team1,
-          team2: p.team2,
+          team1: team1Name,
+          team2: team2Name,
           team1UserId: team1UserId || undefined,
           team2UserId: team2UserId || undefined,
           description: p.description || null,
           team1Score: p.team1Score || 'TBD',
           team2Score: p.team2Score || 'TBD',
-          winner: p.winner,
+          winner: p.winner === p.team1 ? team1Name : p.winner === p.team2 ? team2Name : p.winner,
           winnerUserId: winnerUserId || undefined,
           margin: p.margin || null,
           mom: p.mom || { name: null, score: 0, wickets: 0 },
