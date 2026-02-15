@@ -81,6 +81,7 @@ const computeBreakdown = (rosterDocs = []) => {
       name: player.name,
       role: player.role,
       type: player.type,
+      bidValue: doc.bidValue ?? 0,
     });
 
     const role = player.role;
@@ -93,6 +94,7 @@ const computeBreakdown = (rosterDocs = []) => {
         name: player.name,
         role: player.role,
         type: player.type,
+        bidValue: doc.bidValue ?? 0,
       });
     }
 
@@ -294,20 +296,34 @@ const generateTradeRecommendations = async (userId, options = {}) => {
   const roles = analysis.roles || {};
   const categories = analysis.categories || {};
 
+  const formatPrice = (v) => {
+    const n = Number(v) || 0;
+    if (n <= 0) return '—';
+    if (n >= 1e7) return `${(n / 1e7).toFixed(1)} Cr`;
+    if (n >= 1e5) return `${(n / 1e5).toFixed(1)} L`;
+    return `${n} L`;
+  };
+
   const surplusRoles = surpluses
-    .map((item) => ({
-      role: item.role,
-      available: item.available,
-      players: [...(playersByRole[item.role] || [])],
-    }))
+    .map((item) => {
+      const players = [...(playersByRole[item.role] || [])].sort((a, b) => (a.bidValue ?? 0) - (b.bidValue ?? 0));
+      return {
+        role: item.role,
+        available: item.available,
+        players,
+      };
+    })
     .filter((entry) => entry.available > 0 && entry.players.length);
 
   // Add category surplus when 2+ Sapphire (only 1 can play) - for optimization swaps
   if (categories.Sapphire > 1 && (playersByCategory.Sapphire || []).length > 0) {
+    const sapphirePlayers = [...(playersByCategory.Sapphire || [])]
+      .sort((a, b) => (a.bidValue ?? 0) - (b.bidValue ?? 0))
+      .slice(0, categories.Sapphire - 1);
     surplusRoles.push({
       role: 'Sapphire',
       available: categories.Sapphire - 1,
-      players: [...(playersByCategory.Sapphire || [])].slice(0, categories.Sapphire - 1),
+      players: sapphirePlayers,
     });
   }
 
@@ -350,7 +366,8 @@ const generateTradeRecommendations = async (userId, options = {}) => {
         categoryCounts: {},
       };
     }
-    rosterByTeam[userKey].players.push(doc.playerId);
+    const p = doc.playerId?.toObject ? doc.playerId.toObject() : { ...doc.playerId };
+    rosterByTeam[userKey].players.push({ ...p, bidValue: doc.bidValue ?? 0 });
     const role = doc.playerId.role;
     if (role) {
       rosterByTeam[userKey].roleCounts[role] =
@@ -417,9 +434,10 @@ const generateTradeRecommendations = async (userId, options = {}) => {
     }
 
     const [candidateTeamId, teamData] = candidateTeamEntry;
-    const candidatePlayer = teamData.players.find((p) =>
+    const matchingPlayers = teamData.players.filter((p) =>
       deficit.type === 'role' ? p.role === deficit.role : p.type === deficit.key
     );
+    const candidatePlayer = matchingPlayers.sort((a, b) => (b.bidValue ?? 0) - (a.bidValue ?? 0))[0];
     if (!candidatePlayer) {
       continue;
     }
@@ -427,6 +445,13 @@ const generateTradeRecommendations = async (userId, options = {}) => {
     const offerPlayer = surplus.players.shift();
     if (!offerPlayer) continue;
     surplus.available -= 1;
+
+    const offerPrice = offerPlayer.bidValue ?? 0;
+    const acquirePrice = candidatePlayer.bidValue ?? 0;
+    const priceNote =
+      offerPrice > 0 || acquirePrice > 0
+        ? ` (${formatPrice(offerPrice)} ↔ ${formatPrice(acquirePrice)})`
+        : '';
 
     recommended.push({
       focus: deficit.message || (deficit.type === 'role' ? `Need ${deficit.role}` : `Need ${deficit.key} presence`),
@@ -436,22 +461,24 @@ const generateTradeRecommendations = async (userId, options = {}) => {
         role: candidatePlayer.role,
         type: candidatePlayer.type,
         fromTeam: teamData.teamName,
+        bidValue: acquirePrice,
       },
-      offer: offerPlayer
-        ? {
-            playerId: offerPlayer.playerId,
-            name: offerPlayer.name,
-            role: offerPlayer.role,
-            type: offerPlayer.type,
-          }
-        : null,
+      offer: {
+        playerId: offerPlayer.playerId,
+        name: offerPlayer.name,
+        role: offerPlayer.role,
+        type: offerPlayer.type,
+        bidValue: offerPrice,
+      },
       rationale:
-        deficit.type === 'role'
+        (deficit.type === 'role'
           ? `Adds ${deficit.role} depth from ${teamData.teamName} while moving surplus ${surplus.role}.`
           : surplus.role === 'Sapphire'
             ? `Trade surplus Sapphire for extra Silver flexibility from ${teamData.teamName}.`
-            : `Secures a ${deficit.key} pick from ${teamData.teamName} to meet XI requirements.`,
+            : `Secures a ${deficit.key} pick from ${teamData.teamName} to meet XI requirements.`) + priceNote,
     });
+
+    teamData.players = teamData.players.filter((p) => String(p._id) !== String(candidatePlayer._id));
 
     // Ensure we don't reuse same team repeatedly by reducing their surplus count
     if (deficit.type === 'role') {
