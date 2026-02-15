@@ -834,6 +834,7 @@ router.post('/store', async (req, res) => {
 
 // POST /api/player-stats/clear-cache - Call after clearing PlayerStats collection to avoid stale UI
 // Optional: ?resetPlayerTotals=1 also resets totalRuns, totalWickets, matchesPlayed on Player collection
+// Optional: ?clearStatsOverview=1 also deletes all PlayerStats and clears Fixture scores (highest/lowest team total)
 router.post('/clear-cache', async (req, res) => {
   try {
     cache.del('stats-overview');
@@ -841,18 +842,35 @@ router.post('/clear-cache', async (req, res) => {
     invalidateCache('players:data');
 
     const resetTotals = req.query.resetPlayerTotals === '1' || req.body?.resetPlayerTotals === true;
+    const clearStatsOverview = req.query.clearStatsOverview === '1' || req.body?.clearStatsOverview === true;
+
+    if (clearStatsOverview) {
+      const [playerStatsResult, fixtureResult] = await Promise.all([
+        PlayerStats.deleteMany({}),
+        Fixture.updateMany(
+          {},
+          { $set: { team1Score: null, team2Score: null, team1Overs: null, team2Overs: null } }
+        ),
+      ]);
+      return res.json({
+        message: 'Stats overview fully cleared (PlayerStats + Fixture scores + cache). Hard refresh the UI.',
+        playerStatsDeleted: playerStatsResult.deletedCount,
+        fixturesCleared: fixtureResult.modifiedCount,
+      });
+    }
+
     if (resetTotals) {
       const r = await Player.updateMany(
         {},
         { $set: { totalRuns: 0, totalWickets: 0, matchesPlayed: 0, totalRunsGiven: 0, totalBalls: 0, totalBallsBowled: 0, momCount: 0 } }
       );
-      res.json({
+      return res.json({
         message: 'Stats cache cleared and Player totals reset. Hard refresh the UI (Ctrl+Shift+R).',
         playersReset: r.modifiedCount,
       });
-    } else {
-      res.json({ message: 'Stats cache cleared. Hard refresh the UI (Ctrl+Shift+R).' });
     }
+
+    res.json({ message: 'Stats cache cleared. Hard refresh the UI (Ctrl+Shift+R).' });
   } catch (err) {
     console.error('Clear cache error:', err);
     res.status(500).json({ message: err.message || 'Failed to clear cache' });
@@ -1151,12 +1169,14 @@ router.get('/stats/:playerId', async (req, res) => {
 // GET /stats-overview
 router.get('/stats-overview', async (req, res) => {
   try {
-    // 🚀 PERFORMANCE: Check cache first
+    const skipCache = req.query.nocache === '1' || req.query.nocache === 'true';
     const cacheKey = 'stats-overview';
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      console.log('✅ Stats overview served from cache');
-      return res.status(200).json(cached);
+    if (!skipCache) {
+      const cached = cache.get(cacheKey);
+      if (cached) {
+        console.log('✅ Stats overview served from cache');
+        return res.status(200).json(cached);
+      }
     }
 
     // 1) Fetch all PlayerStats docs, populating references
@@ -1737,9 +1757,13 @@ router.get('/stats-overview', async (req, res) => {
       top5BestBattingAverage,
     };
 
-    // 🚀 PERFORMANCE: Cache the response for 5 minutes
-    cache.set(cacheKey, response, 300);
-    console.log('✅ Stats overview calculated and cached');
+    // 🚀 PERFORMANCE: Cache the response for 5 minutes (skip when nocache=1)
+    if (!skipCache) {
+      cache.set(cacheKey, response, 300);
+      console.log('✅ Stats overview calculated and cached');
+    } else {
+      console.log('✅ Stats overview calculated (nocache bypass)');
+    }
 
     return res.status(200).json(response);
   } catch (err) {
