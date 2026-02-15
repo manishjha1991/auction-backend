@@ -269,7 +269,14 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
         .lean(),
     ]);
 
-    const matches = [
+    const normalizeForKey = (name) => String(name || '').replace(/\p{Emoji}/gu, '').trim();
+    const matchKey = (m) => {
+      const t1 = normalizeForKey(m.team1);
+      const t2 = normalizeForKey(m.team2);
+      const pair = [t1, t2].sort().join('|');
+      return `${pair}|${m.team1Score}|${m.team2Score}`;
+    };
+    const rawMatches = [
       ...fixtures.map((f) => ({
         source: 'fixture',
         team1: f.team1,
@@ -305,7 +312,17 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
         margin: p.margin || null,
         date: p.date || p.updatedAt,
       })),
-    ].sort((a, b) => new Date(b.date) - new Date(a.date));
+    ];
+    // Deduplicate: same teams + scores = same match (e.g. 8th Match vs 9th Match from different DBs)
+    const seen = new Set();
+    const matches = rawMatches
+      .filter((m) => {
+        const k = matchKey(m);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
 
     res.json({
       team1: t1,

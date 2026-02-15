@@ -3,19 +3,18 @@ const PlayerStats = require('../models/PlayerStats');
 const Player = require('../models/Player');
 
 const MONGODB_BASE_URI = 'mongodb+srv://sudha1793:eLyeXqVAC1kdCfUn@auction-app.z20al.mongodb.net/';
-const SOURCE_DATABASES = ['cpl_14', 'cpl_15', 'cpl_16'];
-const TARGET_DATABASE = 'cpl_17';
+const SOURCE_DATABASES = ['cpl_14', 'cpl_15', 'cpl_16','cpl_17','cpl_18','cpl_19'];
+const TARGET_DATABASE = 'cpl_20';
 
 /**
  * Migrate Player Totals from Historical Databases
  * 
  * This script:
- * 1. Connects to cpl_14, cpl_15, cpl_16
- * 2. Calculates totalRuns, totalWickets, matchesPlayed from PlayerStats in each database
- * 3. Aggregates these totals and updates Player collection in cpl_17
+ * 1. Resets totalRuns, totalWickets, matchesPlayed to 0 for all active players in target
+ * 2. Connects to cpl_14..cpl_19, calculates totals from PlayerStats in each database
+ * 3. Aggregates totals and updates Player collection in cpl_20
  * 
- * Note: This only updates the Player collection totals. It does NOT migrate PlayerStats.
- * Stats Overview and Player Stats pages will continue to use only cpl_17 PlayerStats.
+ * Re-run safe: First deletes (resets) totals, then inserts fresh values. No duplicates.
  * 
  * Options:
  * --dry-run: Show what would be updated without actually updating
@@ -143,6 +142,18 @@ async function migratePlayerTotals() {
     // Get current player totals in target database
     const currentPlayers = await Player.find({ isActive: true }).lean();
     console.log(`📊 Found ${currentPlayers.length} active players in ${TARGET_DATABASE}\n`);
+
+    // Step 1: Reset all player totals to 0 to avoid duplicates on re-run
+    if (!dryRun) {
+      console.log('🗑️  Resetting player totals to 0...');
+      await Player.updateMany(
+        { isActive: true },
+        { $set: { totalRuns: 0, totalWickets: 0, matchesPlayed: 0 } }
+      );
+      console.log('   ✅ Reset complete\n');
+    } else {
+      console.log('🔍 DRY RUN: Would reset all active player totals to 0\n');
+    }
     
     // Aggregate totals from all source databases
     const aggregatedTotals = {};
@@ -200,21 +211,14 @@ async function migratePlayerTotals() {
       
       matched++;
       
-      // Get current totals in target database
-      const currentTotalRuns = targetPlayer.totalRuns || 0;
-      const currentTotalWickets = targetPlayer.totalWickets || 0;
-      const currentMatchesPlayed = targetPlayer.matchesPlayed || 0;
-      
-      // Calculate new totals (add historical to current)
-      const newTotalRuns = currentTotalRuns + totals.totalRuns;
-      const newTotalWickets = currentTotalWickets + totals.totalWickets;
-      const newMatchesPlayed = currentMatchesPlayed + totals.matchesPlayed;
+      // Set totals from aggregated historical data (totals were reset to 0 earlier)
+      const newTotalRuns = totals.totalRuns;
+      const newTotalWickets = totals.totalWickets;
+      const newMatchesPlayed = totals.matchesPlayed;
       
       if (dryRun) {
         console.log(`🔍 Would update: ${playerName}`);
-        console.log(`   Current: Runs=${currentTotalRuns}, Wickets=${currentTotalWickets}, Matches=${currentMatchesPlayed}`);
-        console.log(`   Adding: Runs=${totals.totalRuns}, Wickets=${totals.totalWickets}, Matches=${totals.matchesPlayed}`);
-        console.log(`   New: Runs=${newTotalRuns}, Wickets=${newTotalWickets}, Matches=${newMatchesPlayed}\n`);
+        console.log(`   Runs=${newTotalRuns}, Wickets=${newTotalWickets}, Matches=${newMatchesPlayed}\n`);
       } else {
         // Update player totals
         await Player.findByIdAndUpdate(targetPlayer._id, {
@@ -253,9 +257,8 @@ async function migratePlayerTotals() {
     console.log('='.repeat(80) + '\n');
     
     console.log('📝 IMPORTANT NOTES:');
-    console.log('   - This script only updates Player collection totals (totalRuns, totalWickets, matchesPlayed)');
+    console.log('   - Resets all player totals first, then inserts fresh values (re-run safe, no duplicates)');
     console.log('   - It does NOT migrate PlayerStats from historical databases');
-    console.log('   - Stats Overview and Player Stats pages will continue to use only cpl_17 PlayerStats');
     console.log('   - Top Rankings will show cumulative totals from all tournaments via Player collection\n');
     
     await mongoose.connection.close();

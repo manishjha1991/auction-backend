@@ -103,6 +103,19 @@ async function syncFixturesAndMatchResults() {
   const existingMatchNumbers = new Set(
     (await MatchResult.find({}).select('matchNumber').lean()).map((m) => m.matchNumber)
   );
+  // Content-based dedup: same teams + scores = same match (avoids "8th Match" vs "9th Match" duplicates from different DBs)
+  const normalizeTeamForKey = (name) =>
+    String(name || '').replace(/\p{Emoji}/gu, '').trim().toLowerCase();
+  const buildMatchContentKey = (m) => {
+    const t1 = normalizeTeamForKey(m.team1);
+    const t2 = normalizeTeamForKey(m.team2);
+    const pair = [t1, t2].sort().join('|');
+    return `${pair}|${m.team1Score ?? 0}|${m.team2Score ?? 0}|${m.team1Wickets ?? 0}|${m.team2Wickets ?? 0}`;
+  };
+  const existingMatchContentKeys = new Set(
+    (await MatchResult.find({}).select('team1 team2 team1Score team2Score team1Wickets team2Wickets').lean())
+      .map(buildMatchContentKey)
+  );
   const existingFixtureKeys = new Set(
     (await Fixture.find({}).select('team1 team2 createdAt').lean()).map((f) =>
       `${f.team1}|${f.team2}|${f.createdAt?.getTime?.() || f.createdAt}`
@@ -190,6 +203,8 @@ async function syncFixturesAndMatchResults() {
       for (const m of matchResults) {
         if (!m.matchNumber || !m.team1 || !m.team2) continue;
         if (existingMatchNumbers.has(m.matchNumber)) continue;
+        const contentKey = buildMatchContentKey(m);
+        if (existingMatchContentKeys.has(contentKey)) continue; // Same match from another DB (e.g. 8th vs 9th)
 
         const validMatchStatus = ['completed', 'abandoned', 'cancelled'].includes(m.matchStatus) ? m.matchStatus : 'completed';
         const validTrophyType = ['league', 'playoff', 'final', 'semi_final', 'quarter_final'].includes(m.trophyType) ? m.trophyType : 'league';
@@ -232,6 +247,7 @@ async function syncFixturesAndMatchResults() {
           matchResultsAdded++;
         }
         existingMatchNumbers.add(m.matchNumber);
+        existingMatchContentKeys.add(contentKey);
       }
 
       for (const p of playoffFixtures) {
