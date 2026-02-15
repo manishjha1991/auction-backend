@@ -832,6 +832,33 @@ router.post('/store', async (req, res) => {
   }
 });
 
+// POST /api/player-stats/clear-cache - Call after clearing PlayerStats collection to avoid stale UI
+// Optional: ?resetPlayerTotals=1 also resets totalRuns, totalWickets, matchesPlayed on Player collection
+router.post('/clear-cache', async (req, res) => {
+  try {
+    cache.del('stats-overview');
+    invalidateCache('player-stats-list');
+    invalidateCache('players:data');
+
+    const resetTotals = req.query.resetPlayerTotals === '1' || req.body?.resetPlayerTotals === true;
+    if (resetTotals) {
+      const r = await Player.updateMany(
+        {},
+        { $set: { totalRuns: 0, totalWickets: 0, matchesPlayed: 0, totalRunsGiven: 0, totalBalls: 0, totalBallsBowled: 0, momCount: 0 } }
+      );
+      res.json({
+        message: 'Stats cache cleared and Player totals reset. Hard refresh the UI (Ctrl+Shift+R).',
+        playersReset: r.modifiedCount,
+      });
+    } else {
+      res.json({ message: 'Stats cache cleared. Hard refresh the UI (Ctrl+Shift+R).' });
+    }
+  } catch (err) {
+    console.error('Clear cache error:', err);
+    res.status(500).json({ message: err.message || 'Failed to clear cache' });
+  }
+});
+
 router.post('/bulk-store', async (req, res) => {
   try {
     const { entries } = req.body || {};
