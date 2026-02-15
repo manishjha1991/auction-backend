@@ -291,10 +291,8 @@ const generateTradeRecommendations = async (userId, options = {}) => {
   const surpluses = analysis.surpluses || [];
   const playersByRole = analysis.__playersByRole || {};
   const playersByCategory = analysis.__playersByCategory || {};
-
-  if (!deficits.length || !surpluses.length) {
-    return [];
-  }
+  const roles = analysis.roles || {};
+  const categories = analysis.categories || {};
 
   const surplusRoles = surpluses
     .map((item) => ({
@@ -303,6 +301,15 @@ const generateTradeRecommendations = async (userId, options = {}) => {
       players: [...(playersByRole[item.role] || [])],
     }))
     .filter((entry) => entry.available > 0 && entry.players.length);
+
+  // Add category surplus when 2+ Sapphire (only 1 can play) - for optimization swaps
+  if (categories.Sapphire > 1 && (playersByCategory.Sapphire || []).length > 0) {
+    surplusRoles.push({
+      role: 'Sapphire',
+      available: categories.Sapphire - 1,
+      players: [...(playersByCategory.Sapphire || [])].slice(0, categories.Sapphire - 1),
+    });
+  }
 
   if (!surplusRoles.length) {
     return [];
@@ -358,7 +365,37 @@ const generateTradeRecommendations = async (userId, options = {}) => {
 
   const recommended = [];
 
-  for (const deficit of deficits) {
+  // When balanced (no deficits), suggest depth swaps: offer surplus role, acquire depth in another
+  const optimizationDeficits = [];
+  if (!deficits.length && surplusRoles.length > 0) {
+    const ROLE_ORDER = ['Batsman', 'Bowler', 'WicketKeeper', 'Allrounder'];
+    for (const role of ROLE_ORDER) {
+      const count = roles[role] || 0;
+      const target = ROLE_TARGETS[role] || 0;
+      if (count === target && target > 0) {
+        optimizationDeficits.push({
+          type: 'role',
+          key: role,
+          role,
+          needed: 1,
+          message: `Add ${role} depth`,
+        });
+      }
+    }
+    if (categories.Sapphire > 1 && (categories.Silver || 0) >= MIN_SILVER_IN_XI) {
+      optimizationDeficits.push({
+        type: 'category',
+        key: 'Silver',
+        role: null,
+        needed: 1,
+        message: 'Trade surplus Sapphire for extra Silver flexibility',
+      });
+    }
+  }
+
+  const deficitsToUse = deficits.length > 0 ? deficits : optimizationDeficits;
+
+  for (const deficit of deficitsToUse) {
     if (recommended.length >= limit) break;
 
     const surplus = surplusRoles.find((entry) => entry.available > 0);
@@ -388,13 +425,11 @@ const generateTradeRecommendations = async (userId, options = {}) => {
     }
 
     const offerPlayer = surplus.players.shift();
+    if (!offerPlayer) continue;
     surplus.available -= 1;
 
     recommended.push({
-      focus:
-        deficit.type === 'role'
-          ? `Need ${deficit.role}`
-          : `Need ${deficit.key} presence`,
+      focus: deficit.message || (deficit.type === 'role' ? `Need ${deficit.role}` : `Need ${deficit.key} presence`),
       acquire: {
         playerId: candidatePlayer._id,
         name: candidatePlayer.name,
@@ -413,7 +448,9 @@ const generateTradeRecommendations = async (userId, options = {}) => {
       rationale:
         deficit.type === 'role'
           ? `Adds ${deficit.role} depth from ${teamData.teamName} while moving surplus ${surplus.role}.`
-          : `Secures a ${deficit.key} pick from ${teamData.teamName} to meet XI requirements.`,
+          : surplus.role === 'Sapphire'
+            ? `Trade surplus Sapphire for extra Silver flexibility from ${teamData.teamName}.`
+            : `Secures a ${deficit.key} pick from ${teamData.teamName} to meet XI requirements.`,
     });
 
     // Ensure we don't reuse same team repeatedly by reducing their surplus count
