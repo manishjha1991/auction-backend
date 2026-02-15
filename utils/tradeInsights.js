@@ -286,6 +286,8 @@ const analyzeTeamBalance = async (userId, options = {}) => {
 
 const MAX_VALUE_DIFF_CR = 5;
 const MAX_VALUE_DIFF = MAX_VALUE_DIFF_CR * 1e7;
+const SAME_VALUE_MAX_DIFF_CR = 3;
+const SAME_VALUE_MAX_DIFF = SAME_VALUE_MAX_DIFF_CR * 1e7;
 
 const generateTradeRecommendations = async (userId, options = {}) => {
   const limit = options.limit || 3;
@@ -397,7 +399,8 @@ const generateTradeRecommendations = async (userId, options = {}) => {
 
   // When balanced (no deficits), suggest depth swaps: offer surplus role, acquire depth in another
   const optimizationDeficits = [];
-  if (!deficits.length && surplusRoles.length > 0) {
+  const isBalanced = !deficits.length;
+  if (isBalanced && surplusRoles.length > 0) {
     const ROLE_ORDER = ['Batsman', 'Bowler', 'WicketKeeper', 'Allrounder'];
     for (const role of ROLE_ORDER) {
       const count = roles[role] || 0;
@@ -420,6 +423,31 @@ const generateTradeRecommendations = async (userId, options = {}) => {
         needed: 1,
         message: 'Trade surplus Sapphire for extra Silver flexibility',
       });
+    }
+  }
+
+  // When balanced but no surplus: add "swappable" roles (2+ in role = can spare one for same-value swap)
+  if (isBalanced && surplusRoles.length === 0) {
+    const ROLE_ORDER = ['Batsman', 'Bowler', 'WicketKeeper', 'Allrounder'];
+    for (const role of ROLE_ORDER) {
+      const count = roles[role] || 0;
+      const target = ROLE_TARGETS[role] || 0;
+      if (count >= 2 && (playersByRole[role] || []).length >= 2) {
+        surplusRoles.push({
+          role,
+          available: 1,
+          players: [...(playersByRole[role] || [])].sort((a, b) => (a.bidValue ?? 0) - (b.bidValue ?? 0)).slice(0, 1),
+        });
+      }
+      if (count === target && target > 0) {
+        optimizationDeficits.push({
+          type: 'role',
+          key: role,
+          role,
+          needed: 1,
+          message: `Add ${role} depth (same-value swap)`,
+        });
+      }
     }
   }
 
@@ -447,7 +475,13 @@ const generateTradeRecommendations = async (userId, options = {}) => {
       const matchingPlayers = teamData.players.filter((p) =>
         deficit.type === 'role' ? p.role === deficit.role : p.type === deficit.key
       );
-      const candidatePlayer = matchingPlayers.sort((a, b) => (b.bidValue ?? 0) - (a.bidValue ?? 0))[0];
+      const offerPriceForSort = Number(surplus.players[0]?.bidValue ?? 0);
+      const candidatePlayer = matchingPlayers
+        .sort((a, b) => {
+          const aDiff = Math.abs(Number(a.bidValue ?? 0) - offerPriceForSort);
+          const bDiff = Math.abs(Number(b.bidValue ?? 0) - offerPriceForSort);
+          return aDiff - bDiff;
+        })[0];
       if (!candidatePlayer) continue;
 
       const offerPlayer = surplus.players.shift();
@@ -457,8 +491,9 @@ const generateTradeRecommendations = async (userId, options = {}) => {
       const offerPrice = Number(offerPlayer.bidValue ?? 0);
       const acquirePrice = Number(candidatePlayer.bidValue ?? 0);
       const valueDiff = Math.abs(acquirePrice - offerPrice);
+      const maxDiff = isBalanced ? SAME_VALUE_MAX_DIFF : MAX_VALUE_DIFF;
 
-      if (valueDiff > MAX_VALUE_DIFF) {
+      if (valueDiff > maxDiff) {
         surplus.players.unshift(offerPlayer);
         surplus.available += 1;
         continue;
