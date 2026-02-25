@@ -365,11 +365,13 @@ router.post('/save', isAdmin, async (req, res) => {
       });
     }
 
-    // Validate required fields - overs are mandatory
-    if (!team1Overs || team1Overs.toString().trim() === '') {
+    // Validate required fields - overs are mandatory (coerce to string in case client sends number)
+    const team1OversStr = String(team1Overs || '').trim();
+    const team2OversStr = String(team2Overs || '').trim();
+    if (!team1OversStr) {
       return res.status(400).json({ error: 'Team 1 overs is required' });
     }
-    if (!team2Overs || team2Overs.toString().trim() === '') {
+    if (!team2OversStr) {
       return res.status(400).json({ error: 'Team 2 overs is required' });
     }
 
@@ -457,8 +459,8 @@ router.post('/save', isAdmin, async (req, res) => {
         } : null,
         team1Score,
         team2Score,
-        team1Overs: team1Overs.trim(), // Mandatory
-        team2Overs: team2Overs.trim(), // Mandatory
+        team1Overs: team1OversStr, // Mandatory
+        team2Overs: team2OversStr, // Mandatory
         team1Fairness,
         team2Fairness,
         group: group || null,
@@ -480,8 +482,8 @@ router.post('/save', isAdmin, async (req, res) => {
       if (team1Score !== undefined) fixture.team1Score = team1Score;
       if (team2Score !== undefined) fixture.team2Score = team2Score;
       // Overs are mandatory - always update
-      fixture.team1Overs = team1Overs.trim();
-      fixture.team2Overs = team2Overs.trim();
+      fixture.team1Overs = team1OversStr;
+      fixture.team2Overs = team2OversStr;
       if (team1Fairness !== undefined) fixture.team1Fairness = team1Fairness;
       if (team2Fairness !== undefined) fixture.team2Fairness = team2Fairness;
       // Update group and matchType if provided
