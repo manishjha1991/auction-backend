@@ -596,7 +596,6 @@ router.get('/list', async (req, res) => {
   const cacheKey = `player-stats-list:${userId}`;
   const cached = cacheConfig.medium.get(cacheKey);
   if (cached) {
-    console.log(`✅ Player stats list cache HIT for user: ${userId}`);
     return res.status(200).json(cached);
   }
 
@@ -791,7 +790,6 @@ router.get('/list', async (req, res) => {
     
     // 🚀 PERFORMANCE: Cache the response (2 minute cache)
     cacheConfig.medium.set(cacheKey, response);
-    console.log(`💾 Player stats list cached for user: ${userId}`);
     
     res.json(response);
   } catch (error) {
@@ -1174,7 +1172,6 @@ router.get('/stats-overview', async (req, res) => {
     if (!skipCache) {
       const cached = cache.get(cacheKey);
       if (cached) {
-        console.log('✅ Stats overview served from cache');
         return res.status(200).json(cached);
       }
     }
@@ -1760,9 +1757,6 @@ router.get('/stats-overview', async (req, res) => {
     // 🚀 PERFORMANCE: Cache the response for 5 minutes (skip when nocache=1)
     if (!skipCache) {
       cache.set(cacheKey, response, 300);
-      console.log('✅ Stats overview calculated and cached');
-    } else {
-      console.log('✅ Stats overview calculated (nocache bypass)');
     }
 
     return res.status(200).json(response);

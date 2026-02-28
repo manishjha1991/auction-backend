@@ -98,10 +98,7 @@ router.get('/feed', async (_req, res) => {
   // 🚀 PERFORMANCE: Check cache first (30 second cache for news feed - frequently changing)
   const cacheKey = 'news:feed';
   const cached = cacheConfig.short.get(cacheKey);
-  if (cached) {
-    console.log(`✅ News feed cache HIT`);
-    return res.status(200).json(cached);
-  }
+  if (cached) return res.status(200).json(cached);
 
   try {
     const [trades, releases, picks, recentStats, fixtures, schedules] = await Promise.all([
@@ -151,28 +148,6 @@ router.get('/feed', async (_req, res) => {
       Fixture.find({ isActive: true }).sort({ createdAt: -1 }).limit(20).lean(),
       Schedule.find({}).sort({ createdAt: -1 }).limit(30).lean()
     ]);
-
-    // Test query to see raw data
-    try {
-      const rawReleases = await ReleaseRequest.find({ status: 'withdrawn' }).limit(5);
-      console.log('🔍 Raw withdrawn releases (no population):', rawReleases.map(r => ({
-        id: r._id,
-        status: r.status,
-        userId: r.user,
-        playerId: r.player,
-        updatedAt: r.updatedAt
-      })));
-    } catch (error) {
-      console.error('❌ Raw query failed:', error);
-    }
-
-    // Debug logging
-    console.log('🔍 News Feed - Trades found:', trades.length);
-    console.log('🔍 News Feed - Releases found:', releases.length);
-    console.log('🔍 News Feed - Picks found:', picks.length);
-    console.log('🔍 News Feed - Sample trade:', trades[0]);
-    console.log('🔍 News Feed - Sample release:', releases[0]);
-    console.log('🔍 News Feed - Sample pick:', picks[0]);
 
     const news = [];
 
@@ -232,22 +207,10 @@ router.get('/feed', async (_req, res) => {
         continue;
       }
       
-      // Debug individual trade
-      console.log('🔍 Processing trade:', {
-        id: t._id,
-        status: t.status,
-        fromUser: t.fromUser,
-        toUser: t.toUser,
-        offeredPlayer: t.offeredPlayer,
-        requestedPlayer: t.requestedPlayer
-      });
-
       const offeredName = t.offeredPlayer?.name || 'Unknown Player';
       const requestedName = t.requestedPlayer?.name || 'Unknown Player';
       const fromTeam = t.fromUser?.teamName || 'Unknown Team';
       const toTeam = t.toUser?.teamName || 'Unknown Team';
-      
-      console.log('🔍 Extracted names:', { offeredName, requestedName, fromTeam, toTeam });
       
       // Try to infer trade value from user-player bid values (using pre-fetched map)
       let approxValue = 0;
@@ -358,15 +321,6 @@ router.get('/feed', async (_req, res) => {
         continue;
       }
       
-      // Debug individual release with full object
-      console.log('🔍 Processing release - FULL OBJECT:', JSON.stringify(r, null, 2));
-      console.log('🔍 Processing release - ID:', r._id);
-      console.log('🔍 Processing release - Status:', r.status);
-      console.log('🔍 Processing release - User object:', r.user);
-      console.log('🔍 Processing release - Player object:', r.player);
-      console.log('🔍 Processing release - User ID:', r.user?._id);
-      console.log('🔍 Processing release - Player ID:', r.player?._id);
-
       let title = '';
       let body = '';
       
@@ -375,22 +329,16 @@ router.get('/feed', async (_req, res) => {
       let playerData = r.player;
       
       if (!userData || !playerData) {
-        console.log('⚠️ Population failed for release:', r._id);
-        console.log('⚠️ User populated:', !!userData);
-        console.log('⚠️ Player populated:', !!playerData);
-        
         // Use pre-fetched data from batch query (no additional database calls)
         try {
           if (!userData && r.user) {
             const userId = typeof r.user === 'object' ? r.user._id : r.user;
             userData = releaseUserMap[String(userId)];
-            console.log('🔄 Using batch-fetched user data:', userData);
           }
           
           if (!playerData && r.player) {
             const playerId = typeof r.player === 'object' ? r.player._id : r.player;
             playerData = releasePlayerMap[String(playerId)];
-            console.log('🔄 Using batch-fetched player data:', playerData);
           }
         } catch (error) {
           console.error('❌ Error accessing batch-fetched data:', error);
@@ -459,8 +407,6 @@ router.get('/feed', async (_req, res) => {
         body = pickVariant(`${userData?.teamName}-withdrawn`, withdrawnBodyVariants);
       }
       
-      console.log('🔍 Release title/body:', { title, body });
-      
       // Only add to news if we have a valid title and body
       if (title && body) {
         news.push({ 
@@ -472,8 +418,6 @@ router.get('/feed', async (_req, res) => {
           isBreaking: false, 
           timestamp: r.updatedAt 
         });
-      } else {
-        console.log('❌ Skipping release due to empty title/body:', { id: r._id, status: r.status, title, body });
       }
     }
 
@@ -484,14 +428,6 @@ router.get('/feed', async (_req, res) => {
         continue;
       }
       
-      // Debug individual pick
-      console.log('🔍 Processing pick:', {
-        id: p._id,
-        status: p.status,
-        user: p.user,
-        player: p.player
-      });
-
       let title = '';
       let body = '';
       if (p.status === 'completed') {
@@ -541,7 +477,6 @@ router.get('/feed', async (_req, res) => {
         body = pickVariant(`${p.user?.teamName}-rejected`, rejectedBodyVariants);
       }
       
-      console.log('🔍 Pick title/body:', { title, body });
       
       news.push({ 
         id: p._id, // Add the original pick document ID
@@ -1263,7 +1198,7 @@ router.get('/feed', async (_req, res) => {
     const fixtureCount = news.filter(n => n.kind === 'fixture').length;
     const scheduleCount = news.filter(n => n.kind === 'schedule').length;
     
-    console.log('📰 News Feed Summary:', {
+    if (process.env.NODE_ENV !== 'production') console.log('📰 News Feed Summary:', {
       total: news.length,
       trades: tradeCount,
       releases: releaseCount,
@@ -1277,8 +1212,6 @@ router.get('/feed', async (_req, res) => {
     
     // 🚀 PERFORMANCE: Cache the response (30 second cache - frequently changing)
     cacheConfig.short.set(cacheKey, response);
-    console.log(`💾 News feed cached`);
-    
     res.json(response);
   } catch (e) {
     console.error('Error building news feed', e);

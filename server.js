@@ -67,14 +67,13 @@ const mongooseOptions = {
   // 📊 PERFORMANCE OPTIMIZATIONS
   compressors: ['zlib'],
   zlibCompressionLevel: 6,
-  directConnection: false,          // Use replica set for better performance
+  directConnection: process.env.MONGO_DIRECT_CONNECTION === 'true', // Use true for single-node Atlas
   
-  // 🛡️ CONNECTION MONITORING
-  monitorCommands: true,            // Enable command monitoring for debugging
-  maxStalenessSeconds: 90,         // Read from secondary if primary is stale
+  // 🛡️ CONNECTION MONITORING - disabled in prod (no overhead)
+  monitorCommands: process.env.NODE_ENV !== 'production',
   
   // ⚙️ ADVANCED SETTINGS
-  readPreference: 'primaryPreferred', // Read from primary, fallback to secondary
+  readPreference: process.env.MONGO_DIRECT_CONNECTION === 'true' ? 'primary' : 'primaryPreferred',
   readConcern: { level: 'local' },    // Fastest read concern
   writeConcern: { w: 1, j: true },    // Acknowledge writes, journaled
 };
@@ -105,17 +104,16 @@ app.use(cors({
   credentials: false
 }));
 
-// Add request logging middleware
+// Add request logging middleware - only in development (avoids blocking I/O in prod)
 const { getClientIp } = require('./utils/network');
 
 app.use((req, res, next) => {
-  const clientIP = getClientIp(req);
-  const userAgent = req.get('User-Agent') || 'Unknown';
-  const country = req.get('CF-IPCountry') || req.get('X-Country-Code') || 'Unknown';
-  
-  console.log(`🌍 Request from ${country} (IP: ${clientIP}): ${req.method} ${req.path}`);
-  console.log(`📱 User-Agent: ${userAgent}`);
-  
+  if (process.env.NODE_ENV !== 'production') {
+    const clientIP = getClientIp(req);
+    const userAgent = req.get('User-Agent') || 'Unknown';
+    const country = req.get('CF-IPCountry') || req.get('X-Country-Code') || 'Unknown';
+    console.log(`🌍 ${req.method} ${req.path} | ${country} | ${clientIP}`);
+  }
   next();
 });
 
@@ -178,27 +176,21 @@ app.use('/api/monitoring', monitoringRoutes);
 const { registerUserSocket, unregisterSocket } = require('./utils/socketUserMap');
 
 io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
+  if (process.env.NODE_ENV !== 'production') console.log('Socket connected:', socket.id);
 
-  // When user identifies themselves (sends userId)
   socket.on('user_identify', (data) => {
     const userId = data?.userId || data?.user_id || data?.id;
     if (userId) {
       registerUserSocket(userId, socket.id);
-      // Store userId in socket session for later use
       socket.userId = userId;
-      console.log(`✅ User ${userId} identified with socket ${socket.id}`);
     }
   });
 
   socket.on('place_bid', (data) => {
-    // Handle real-time bid logic here
     io.emit('bid_updated', data);
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-    // Clean up socket mapping
     unregisterSocket(socket.id);
   });
 });

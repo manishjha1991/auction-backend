@@ -6,10 +6,9 @@ const router = express.Router();
 const { getClientIp } = require('../utils/network');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 
-// Add middleware to log ALL requests to user routes
+// Request logging only in development (avoids logging sensitive body in prod)
 router.use((req, res, next) => {
-  console.log(`👤 USER ROUTE: ${req.method} ${req.path}`);
-  console.log(`📝 Body:`, req.body);
+  if (process.env.NODE_ENV !== 'production') console.log(`👤 ${req.method} ${req.path}`);
   next();
 });
 const User = require('../models/User'); // Adjust the path based on your project structure
@@ -62,12 +61,9 @@ router.post('/login', async (req, res) => {
   const clientIP = getClientIp(req);
   const country = req.get('CF-IPCountry') || req.get('X-Country-Code') || 'Unknown';
   
-  console.log(`🔐 LOGIN ATTEMPT from ${country} (IP: ${clientIP})`);
-  console.log(`📧 Email: ${req.body.email}`);
-  console.log(`🔑 Password length: ${req.body.password ? req.body.password.length : 0}`);
+  if (process.env.NODE_ENV !== 'production') console.log(`🔐 Login from ${country}`);
   
   const { email, password } = req.body;
-  console.log(email, password,"@@@@@@@@@@@@@@");
   try {
     const user = await User.findOne({ email }).includeInactive();
     if (!user) {
@@ -196,44 +192,32 @@ router.get("/:userId/details", async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (2 minute cache for user details)
   const cacheKey = `user-details:${userId}`;
   const cached = cacheConfig.medium.get(cacheKey);
-  if (cached) {
-    console.log(`✅ User details cache HIT for user: ${userId}`);
-    return res.status(200).json(cached);
-  }
+  if (cached) return res.status(200).json(cached);
 
   try {
-    console.log(`🚀 Starting user details API for user: ${userId}`);
     
     // 1) Fetch user data
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const userStart = Date.now();
     const user = await User.findById(userId).includeInactive().lean();
-    console.log(`⏱️ User fetch took: ${Date.now() - userStart}ms`);
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
     
-    console.log('Fetched user timezone from database:', user.timezone);
-
     // 2) Fetch sold players for the user
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const soldPlayersStart = Date.now();
     const soldPlayers = await UserPlayer.find({ userId, isActive: true })
       .populate("playerId", "name type role basePrice over overallScore totalRuns totalWickets")
       .lean()
       .exec();
-    console.log(`⏱️ Sold players fetch took: ${Date.now() - soldPlayersStart}ms`);
 
     // 3) Fetch all bids for the user
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const bidsStart = Date.now();
     const userBids = await Bid.find({ bidder: userId })
       .select('playerId bidAmount isBidOn isActive timestamp bidder')
       .populate("playerId", "name type role basePrice")
       .sort({ timestamp: -1 })
       .lean()
       .exec();
-    console.log(`⏱️ User bids fetch took: ${Date.now() - bidsStart}ms`);
 
     // Separate active and past bids
     const activeBids = [];
@@ -245,7 +229,6 @@ router.get("/:userId/details", async (req, res) => {
       .map(bid => bid.playerId._id);
 
     // OPTIMIZATION: Get all highest bids in ONE query instead of N queries
-    const highestBidsStart = Date.now();
     const highestBids = await Bid.aggregate([
       { $match: { playerId: { $in: pastBidPlayerIds } } },
       { $sort: { playerId: 1, bidAmount: -1 } },
@@ -254,7 +237,6 @@ router.get("/:userId/details", async (req, res) => {
         highestBid: { $first: "$$ROOT" }
       }}
     ]);
-    console.log(`⏱️ Highest bids aggregation took: ${Date.now() - highestBidsStart}ms`);
 
     // Create a map for O(1) lookup
     const highestBidMap = new Map();
@@ -291,7 +273,6 @@ router.get("/:userId/details", async (req, res) => {
     // 4) Fetch last 5 fixtures (matches) for this user's team
     //    We assume user.teamName matches fixture.team1 or fixture.team2
     // In your route or controller:
-    const fixturesStart = Date.now();
     let fixtures = await Fixture.find({
       $or: [
         { team1: user.teamName },
@@ -302,7 +283,6 @@ router.get("/:userId/details", async (req, res) => {
       .sort({ createdAt: 1 })
       .limit(5)
       .exec();
-    console.log(`⏱️ Fixtures fetch took: ${Date.now() - fixturesStart}ms`);
 
     // OPTIMIZATION: Get all opponent team names first
     const opponentTeamNames = fixtures.map(fx => 
@@ -311,12 +291,10 @@ router.get("/:userId/details", async (req, res) => {
 
     // OPTIMIZATION: Get all opponent users in ONE query instead of N queries
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const opponentUsersStart = Date.now();
     const opponentUsers = await User.find({ 
       teamName: { $in: opponentTeamNames },
       isTournamentReady: true 
     }).select('teamName').lean();
-    console.log(`⏱️ Opponent users fetch took: ${Date.now() - opponentUsersStart}ms`);
 
     // Create a set for O(1) lookup
     const tournamentReadyTeams = new Set(opponentUsers.map(u => u.teamName));
@@ -355,7 +333,6 @@ router.get("/:userId/details", async (req, res) => {
 
     // 5) Return everything, including the new lastFiveMatches and allPlayersReleased from user document
     const totalTime = Date.now() - startTime;
-    console.log(`✅ User details API completed in ${totalTime}ms for user: ${userId}`);
     
     const response = {
       user: {
@@ -382,7 +359,6 @@ router.get("/:userId/details", async (req, res) => {
     
     // 🚀 PERFORMANCE: Cache the response (2 minute cache)
     cacheConfig.medium.set(cacheKey, response);
-    console.log(`💾 User details cached for user: ${userId}`);
     
     res.status(200).json(response);
   } catch (error) {
@@ -464,13 +440,9 @@ router.get("/purses", async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (2 minute cache for purses)
   const cacheKey = 'user-purses';
   const cached = cacheConfig.medium.get(cacheKey);
-  if (cached) {
-    console.log(`✅ User purses cache HIT`);
-    return res.status(200).json(cached);
-  }
+  if (cached) return res.status(200).json(cached);
   
   try {
-    console.log('🚀 Starting purses API optimization...');
     
     // OPTIMIZATION: Fetch all data in parallel with single queries (excluding admin users)
     // 🚀 PERFORMANCE: All queries already use .lean() - optimized!
@@ -493,8 +465,6 @@ router.get("/purses", async (req, res) => {
       }).select('name winner endDate tournamentFixtures').lean()
     ]);
     
-    console.log(`⏱️ Data fetch took: ${Date.now() - startTime}ms`);
-    console.log(`📊 Fetched ${users.length} users, ${allUserPlayers.length} user players, ${allActiveBids.length} active bids`);
 
     // OPTIMIZATION: Create lookup maps for O(1) access
     const userPlayersMap = new Map();
@@ -790,8 +760,6 @@ router.get("/purses", async (req, res) => {
       };
     });
 
-    const totalTime = Date.now() - startTime;
-    console.log(`✅ Purses API completed in ${totalTime}ms - Processed ${enhancedUserData.length} users`);
 
     res.status(200).json(enhancedUserData);
   } catch (error) {

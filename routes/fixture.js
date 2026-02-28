@@ -16,12 +16,10 @@ router.get('/', async (req, res) => {
   const cacheKey = `fixtures:${mode}`;
   const cached = cacheConfig.medium.get(cacheKey);
   if (cached) {
-    console.log(`✅ Fixtures cache HIT for mode: ${mode}`);
     return res.status(200).json(cached);
   }
 
   try {
-    console.log(`🏏 Fixture generation mode: ${mode}`);
     
     // 1) Fetch teams (users) that have a valid teamName, are active, tournament ready, and are not admin.
     // 🚀 PERFORMANCE: Use .lean() for faster queries
@@ -40,27 +38,24 @@ router.get('/', async (req, res) => {
     // 🚀 PERFORMANCE: Use .lean() for faster queries
     const existingFixtures = await Fixture.find({ isActive: true }).lean();
 
-    // Deduplicate existing fixtures - check by userId if available, otherwise by teamName
+    // Deduplicate existing fixtures - batch delete duplicates (no winner) in one call
     const uniqueFixtureMap = new Set();
+    const duplicateIdsToDelete = [];
     for (const fixture of existingFixtures) {
-      // Prefer userId for duplicate detection, fall back to teamName
       let sortedKey;
       if (fixture.team1UserId && fixture.team2UserId) {
         sortedKey = [fixture.team1UserId.toString(), fixture.team2UserId.toString()].sort().join('-');
       } else {
         sortedKey = [fixture.team1, fixture.team2].sort().join('-');
       }
-
-      if (uniqueFixtureMap.has(sortedKey)) {
-        // If we already have this pair, 
-        // and there's no winner => remove the duplicate
-        if (!fixture.winner) {
-          await Fixture.deleteOne({ _id: fixture._id });
-        }
+      if (uniqueFixtureMap.has(sortedKey) && !fixture.winner) {
+        duplicateIdsToDelete.push(fixture._id);
       } else {
         uniqueFixtureMap.add(sortedKey);
       }
-
+    }
+    if (duplicateIdsToDelete.length > 0) {
+      await Fixture.deleteMany({ _id: { $in: duplicateIdsToDelete } });
     }
 
     // 3) Re-fetch cleaned active fixtures
@@ -92,8 +87,6 @@ router.get('/', async (req, res) => {
 
     if (mode === 'groups') {
       // GROUP STAGE: Generate fixtures within each group
-      console.log('🏆 Generating GROUP STAGE fixtures...');
-      
       // Group A fixtures
       if (groupA.length > 1) {
         for (let i = 0; i < groupA.length; i++) {
@@ -179,12 +172,11 @@ router.get('/', async (req, res) => {
       }
     } else {
       // NORMAL MODE: Generate fixtures for all teams (everyone plays everyone)
-      console.log('🏏 Generating NORMAL fixtures...');
-      console.log(`📊 Found ${teams.length} teams for normal mode fixture generation`);
+      if (process.env.NODE_ENV !== 'production') console.log(`🏏 Normal fixtures: ${teams.length} teams`);
       
       // Calculate expected number of fixtures (n choose 2)
       const expectedFixtures = (teams.length * (teams.length - 1)) / 2;
-      console.log(`📊 Expected fixtures for ${teams.length} teams: ${expectedFixtures} (every team plays each other once)`);
+      if (process.env.NODE_ENV !== 'production') console.log(`📊 Expected: ${expectedFixtures} fixtures`);
       
       // Generate fixtures for ALL teams regardless of group assignment
       for (let i = 0; i < teams.length; i++) {
@@ -216,12 +208,12 @@ router.get('/', async (req, res) => {
     // 7) Insert any new fixtures
     if (newFixtures.length > 0) {
       await Fixture.insertMany(newFixtures);
-      console.log(`✅ Created ${newFixtures.length} new fixtures:`, newFixtures.map(f => `${f.team1} vs ${f.team2} (${f.matchType}${f.group ? ` - Group ${f.group}` : ''})`));
+      if (process.env.NODE_ENV !== 'production' && newFixtures.length) console.log(`✅ Created ${newFixtures.length} fixtures`);
     }
     
     // 7.5) Log total fixture count
     const totalActiveFixtures = await Fixture.countDocuments({ isActive: true });
-    console.log(`📊 Total active fixtures in database: ${totalActiveFixtures}`);
+    if (process.env.NODE_ENV !== 'production') console.log(`📊 Total active fixtures: ${totalActiveFixtures}`);
 
     // 8) Fetch *all* active fixtures sorted by createdAt
     // 🚀 PERFORMANCE: Use .lean() for faster queries
@@ -275,7 +267,7 @@ router.get('/', async (req, res) => {
 
     // 🚀 PERFORMANCE: Cache the response (2 minute cache)
     cacheConfig.medium.set(cacheKey, enhancedFixtures);
-    console.log(`💾 Fixtures cached for mode: ${mode}`);
+    if (process.env.NODE_ENV !== 'production') console.log(`💾 Fixtures cached: ${mode}`);
 
     // Return final list
     res.status(200).json(enhancedFixtures);
@@ -325,11 +317,7 @@ const isAdmin = async (req, res, next) => {
 router.post('/save', isAdmin, async (req, res) => {
   let oldWinnerBeforeSave = null;
   try {
-    console.log('📥 Fixture save request received');
-    console.log('📥 Request body keys:', Object.keys(req.body));
-    console.log('📥 _id:', req.body._id);
-    console.log('📥 team1:', req.body.team1);
-    console.log('📥 team2:', req.body.team2);
+    if (process.env.NODE_ENV !== 'production') console.log('📥 Fixture save:', req.body._id);
     
     const {
       _id,
@@ -381,11 +369,7 @@ router.post('/save', isAdmin, async (req, res) => {
       try {
         // Note: Don't use .lean() here because we need to modify and save this fixture
         fixture = await Fixture.findById(_id);
-        if (!fixture) {
-          console.log(`⚠️ Fixture not found by _id: ${_id}, will try other methods`);
-        } else {
-          console.log(`✅ Found fixture by _id: ${_id}`);
-        }
+        if (!fixture && process.env.NODE_ENV !== 'production') console.log(`⚠️ Fixture not found: ${_id}`);
       } catch (idError) {
         console.error(`❌ Error finding fixture by _id ${_id}:`, idError.message);
         // Continue to try other methods
@@ -553,7 +537,7 @@ router.post('/save', isAdmin, async (req, res) => {
           // Save both users
           await Promise.all([team1User.save(), team2User.save()]);
           
-          console.log(`✅ Points updated: ${fixture.team1} (${fixture.winner === fixture.team1 ? 'WIN +2' : 'LOSS +0'}) vs ${fixture.team2} (${fixture.winner === fixture.team2 ? 'WIN +2' : 'LOSS +0'})`);
+          if (process.env.NODE_ENV !== 'production') console.log(`✅ Points updated: ${fixture.team1} vs ${fixture.team2}`);
         }
         // Head-to-head: if winner changed on update, mark unsynced, revert old winner, then re-sync
         if (oldWinnerBeforeSave && oldWinnerBeforeSave !== fixture.winner && headToHeadModule.revertAndResyncForRecord) {
