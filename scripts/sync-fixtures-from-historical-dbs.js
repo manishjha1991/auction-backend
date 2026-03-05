@@ -2,11 +2,13 @@
 /**
  * Sync Match Results and Playoff Fixtures from Historical CPL Databases into cpl_20
  *
- * Copies match results and playoff fixtures from cpl_12, cpl_14, cpl_15, cpl_16, cpl_17, cpl_18, cpl_19
- * into cpl_20 for head-to-head. After sync, runs head-to-head update.
+ * READS from: cpl_12, cpl_14, cpl_15, cpl_16, cpl_17, cpl_18, cpl_19 (source - read only)
+ * WRITES to: cpl_20 ONLY (target - all head-to-head data lives here)
  *
- * IMPORTANT: Does NOT insert or update Fixture collection. Fixtures are never touched.
- * Only MatchResult and PlayoffFixture are synced. This prevents duplicate fixtures.
+ * NO separate DB. Everything stored in cpl_20. Head-to-head API reads from cpl_20 only.
+ *
+ * IMPORTANT: Does NOT insert into Fixture. Only MatchResult and PlayoffFixture.
+ * Deduplication: matchNumber + contentKey (MatchResult), matchId+pair+date + contentKey (PlayoffFixture).
  *
  * Usage:
  *   node scripts/sync-fixtures-from-historical-dbs.js
@@ -15,23 +17,24 @@
  *   --dry-run    Show what would be synced without inserting (safe, no writes)
  *   --skip-h2h   Skip head-to-head sync at the end
  */
-
+require('dotenv').config();
 const mongoose = require('mongoose');
 const MatchResult = require('../models/MatchResult');
 const PlayoffFixture = require('../models/PlayoffFixture');
 const User = require('../models/User');
 const { syncHeadToHead } = require('../routes/headToHead');
 
-const MONGODB_BASE_URI = 'mongodb+srv://sudha1793:eLyeXqVAC1kdCfUn@auction-app.z20al.mongodb.net/';
+const BASE_URI = (process.env.MONGO_URI || '').replace(/\?.*$/, '').replace(/\/$/, '') || 'mongodb+srv://sudha1793:eLyeXqVAC1kdCfUn@auction-app.z20al.mongodb.net';
 const SOURCE_DATABASES = ['cpl_12', 'cpl_14', 'cpl_15', 'cpl_16', 'cpl_17', 'cpl_18', 'cpl_19'];
-const TARGET_DATABASE = 'cpl_20';
+const TARGET_DATABASE = process.env.MONGO_DB || 'cpl_20';
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const skipH2H = args.includes('--skip-h2h');
 
 function getConnectionUri(dbName) {
-  return `${MONGODB_BASE_URI}${dbName}?retryWrites=true&w=majority&appName=auction-app`;
+  const base = BASE_URI.replace(/\?.*$/, '').replace(/\/$/, '');
+  return `${base}/${dbName}?retryWrites=true&w=majority&appName=auction-app`;
 }
 
 async function fetchMatchResultsFromSource(conn) {
@@ -116,13 +119,18 @@ async function syncFixturesAndMatchResults() {
     const [a, b] = [id1.toString(), id2.toString()].sort();
     return `${a}|${b}`;
   };
-  const existingPlayoffKeys = new Set(
-    (await PlayoffFixture.find({}).select('matchId team1UserId team2UserId date').lean()).map((p) => {
-      const pair = normalizePair(p.team1UserId, p.team2UserId) || `${p.team1}|${p.team2}`;
-      const ts = p.date?.getTime?.() || p.date || p._id;
-      return `${p.matchId}|${pair}|${ts}`;
-    })
-  );
+  const existingPlayoffKeys = new Set();
+  const existingPlayoffContentKeys = new Set();
+  const playoffDocs = await PlayoffFixture.find({}).select('matchId team1UserId team2UserId team1 team2 team1Score team2Score date').lean();
+  playoffDocs.forEach((p) => {
+    const pair = normalizePair(p.team1UserId, p.team2UserId) || `${p.team1}|${p.team2}`;
+    const ts = p.date?.getTime?.() || p.date || p._id;
+    existingPlayoffKeys.add(`${p.matchId}|${pair}|${ts}`);
+    const t1 = normalizeTeamForKey(p.team1);
+    const t2 = normalizeTeamForKey(p.team2);
+    const contentPair = [t1, t2].sort().join('|');
+    existingPlayoffContentKeys.add(`${contentPair}|${p.team1Score ?? ''}|${p.team2Score ?? ''}|${ts}`);
+  });
 
   let totalMatchResultsAdded = 0;
   let totalPlayoffsAdded = 0;
@@ -203,6 +211,11 @@ async function syncFixturesAndMatchResults() {
         const pair = normalizePair(r1.userId, r2.userId);
         const key = `${p.matchId}|${pair}|${ts}`;
         if (existingPlayoffKeys.has(key)) continue;
+        const t1n = normalizeTeamForKey(p.team1);
+        const t2n = normalizeTeamForKey(p.team2);
+        const contentPair = [t1n, t2n].sort().join('|');
+        const contentKey = `${contentPair}|${p.team1Score ?? ''}|${p.team2Score ?? ''}|${ts}`;
+        if (existingPlayoffContentKeys.has(contentKey)) continue;
         const team1UserId = r1.userId;
         const team2UserId = r2.userId;
         const winnerUserId = p.winner === p.team1 ? team1UserId : p.winner === p.team2 ? team2UserId : null;
@@ -244,6 +257,7 @@ async function syncFixturesAndMatchResults() {
           playoffsAdded++;
         }
         existingPlayoffKeys.add(key);
+        existingPlayoffContentKeys.add(contentKey);
       }
 
       await conn.close();

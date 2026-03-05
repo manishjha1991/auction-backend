@@ -1,3 +1,7 @@
+/**
+ * Head-to-head routes. Uses dedicated TeamHeadToHead collection.
+ * Synced from Fixture, MatchResult, PlayoffFixture. Keeps updating when fixture/match/playoff is saved.
+ */
 const express = require('express');
 const router = express.Router();
 const Fixture = require('../models/Fixture');
@@ -14,190 +18,119 @@ const normalizePair = (id1, id2) => {
   return s1 < s2 ? [id1, id2] : [id2, id1];
 };
 
-// Sync head-to-head from fixtures and match results (incremental - only unsynced)
-const syncHeadToHead = async () => {
-  const UserModel = User;
-  let synced = 0;
+// Normalize team name for matching
+const normalizeTeamName = (name) =>
+  String(name || '').replace(/\p{Emoji}/gu, '').trim().toLowerCase().replace(/\s+(xi|11|cpl)$/i, '').trim();
 
-  // 1. Fixtures with winner, not yet synced
-  // Only sync when winner is explicitly team1 or team2 (avoid blank/placeholder fixtures)
-  const unsyncedFixtures = await Fixture.find({
-    winner: { $exists: true, $ne: null, $ne: '' },
-    headToHeadSynced: { $ne: true }
-  }).lean();
-
-  const fixturesWithValidWinner = unsyncedFixtures.filter(
-    (f) => f.winner && (f.winner === f.team1 || f.winner === f.team2)
-  );
-
-  for (const f of fixturesWithValidWinner) {
-    let uid1 = f.team1UserId;
-    let uid2 = f.team2UserId;
-    if (!uid1 && f.team1) {
-      const u = await UserModel.findOne({ teamName: f.team1, isActive: true }).select('_id teamName').lean();
-      uid1 = u?._id;
-    }
-    if (!uid2 && f.team2) {
-      const u = await UserModel.findOne({ teamName: f.team2, isActive: true }).select('_id teamName').lean();
-      uid2 = u?._id;
-    }
-    const pair = normalizePair(uid1, uid2);
-    if (!pair) continue;
-
-    const [teamAId, teamBId] = pair;
-    const teamAName = uid1?.toString() === teamAId.toString() ? f.team1 : f.team2;
-    const teamBName = uid2?.toString() === teamBId.toString() ? f.team2 : f.team1;
-
-    const winnerUserId = f.winner === f.team1 ? uid1 : uid2;
-    const winnerIsFirst = winnerUserId?.toString() === teamAId.toString();
-
-    await TeamHeadToHead.findOneAndUpdate(
-      { team1UserId: teamAId, team2UserId: teamBId },
-      {
-        $inc: {
-          team1Wins: winnerIsFirst ? 1 : 0,
-          team2Wins: winnerIsFirst ? 0 : 1,
-          draws: 0
-        },
-        $set: {
-          team1Name: teamAName,
-          team2Name: teamBName,
-          lastSyncedAt: new Date()
-        }
-      },
-      { upsert: true }
-    );
-
-    await Fixture.updateOne({ _id: f._id }, { $set: { headToHeadSynced: true } });
-    synced++;
-  }
-
-  // 2. Match results with winner (team1 or team2), not tie/no_result, not yet synced
-  const unsyncedMatches = await MatchResult.find({
-    winner: { $in: ['team1', 'team2'] },
-    headToHeadSynced: { $ne: true }
-  }).lean();
-
-  for (const m of unsyncedMatches) {
-    const u1 = await UserModel.findOne({ teamName: m.team1, isActive: true }).select('_id teamName').lean();
-    const u2 = await UserModel.findOne({ teamName: m.team2, isActive: true }).select('_id teamName').lean();
-    if (!u1 || !u2) continue;
-
-    const pair = normalizePair(u1._id, u2._id);
-    if (!pair) continue;
-
-    const [teamAId, teamBId] = pair;
-    const teamAName = u1._id.toString() === teamAId.toString() ? u1.teamName : u2.teamName;
-    const teamBName = u2._id.toString() === teamBId.toString() ? u2.teamName : u1.teamName;
-
-    const winnerUserId = m.winner === 'team1' ? u1._id : u2._id;
-    const winnerIsFirst = winnerUserId.toString() === teamAId.toString();
-
-    await TeamHeadToHead.findOneAndUpdate(
-      { team1UserId: teamAId, team2UserId: teamBId },
-      {
-        $inc: {
-          team1Wins: winnerIsFirst ? 1 : 0,
-          team2Wins: winnerIsFirst ? 0 : 1,
-          draws: 0
-        },
-        $set: {
-          team1Name: teamAName,
-          team2Name: teamBName,
-          lastSyncedAt: new Date()
-        }
-      },
-      { upsert: true }
-    );
-
-    await MatchResult.updateOne({ _id: m._id }, { $set: { headToHeadSynced: true } });
-    synced++;
-  }
-
-  // 3. Playoff fixtures with winner (team1 or team2), not yet synced
-  const unsyncedPlayoffs = await PlayoffFixture.find({
-    isCompleted: true,
-    winner: { $exists: true, $ne: null, $ne: '' },
-    headToHeadSynced: { $ne: true }
-  }).lean();
-
-  const playoffsWithValidWinner = unsyncedPlayoffs.filter(
-    (p) => p.winner && (p.winner === p.team1 || p.winner === p.team2) &&
-      !String(p.team1 || '').includes('Winner of') && !String(p.team1 || '').includes('Loser of') &&
-      !String(p.team2 || '').includes('Winner of') && !String(p.team2 || '').includes('Loser of')
-  );
-
-  for (const p of playoffsWithValidWinner) {
-    let uid1 = p.team1UserId;
-    let uid2 = p.team2UserId;
-    const findUserByTeamName = async (name) => {
-      if (!name) return null;
-      const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      let u = await UserModel.findOne({ teamName: name, isActive: true }).select('_id teamName').lean();
-      if (!u) u = await UserModel.findOne({ teamName: { $regex: new RegExp(`^${esc(name)}$`), $options: 'i' }, isActive: true }).select('_id teamName').lean();
-      if (!u) {
-        const base = String(name).replace(/\s+(XI|11|CPL)$/i, '').trim();
-        if (base) u = await UserModel.findOne({ teamName: { $regex: new RegExp(`^${esc(base)}(\\s+XI|\\s+11|\\s+CPL)?$`, 'i') }, isActive: true }).select('_id teamName').lean();
-      }
-      return u?._id;
-    };
-    if (!uid1 && p.team1) uid1 = await findUserByTeamName(p.team1);
-    if (!uid2 && p.team2) uid2 = await findUserByTeamName(p.team2);
-    const pair = normalizePair(uid1, uid2);
-    if (!pair) continue;
-
-    const [teamAId, teamBId] = pair;
-    const teamAName = uid1?.toString() === teamAId.toString() ? p.team1 : p.team2;
-    const teamBName = uid2?.toString() === teamBId.toString() ? p.team2 : p.team1;
-
-    const winnerUserId = p.winner === p.team1 ? uid1 : uid2;
-    const winnerIsFirst = winnerUserId?.toString() === teamAId.toString();
-
-    await TeamHeadToHead.findOneAndUpdate(
-      { team1UserId: teamAId, team2UserId: teamBId },
-      {
-        $inc: {
-          team1Wins: winnerIsFirst ? 1 : 0,
-          team2Wins: winnerIsFirst ? 0 : 1,
-          draws: 0
-        },
-        $set: {
-          team1Name: teamAName,
-          team2Name: teamBName,
-          lastSyncedAt: new Date()
-        }
-      },
-      { upsert: true }
-    );
-
-    await PlayoffFixture.updateOne({ _id: p._id }, { $set: { headToHeadSynced: true } });
-    synced++;
-  }
-
-  return synced;
-};
-
-// Revert one fixture/match result from H2H (when winner/teams changed) then re-sync
-const revertAndResyncForRecord = async (team1Name, team2Name, oldWinnerTeamName) => {
-  if (!team1Name || !team2Name || !oldWinnerTeamName || oldWinnerTeamName !== team1Name && oldWinnerTeamName !== team2Name) return 0;
-  const u1 = await User.findOne({ teamName: team1Name, isActive: true }).select('_id').lean();
-  const u2 = await User.findOne({ teamName: team2Name, isActive: true }).select('_id').lean();
-  if (!u1 || !u2) return 0;
-  const [id1, id2] = u1._id.toString() < u2._id.toString() ? [u1._id, u2._id] : [u2._id, u1._id];
-  const winnerIsFirst = (oldWinnerTeamName === team1Name && u1._id.toString() === id1.toString()) || (oldWinnerTeamName === team2Name && u2._id.toString() === id1.toString());
-  const filter = winnerIsFirst
-    ? { team1UserId: id1, team2UserId: id2, team1Wins: { $gt: 0 } }
-    : { team1UserId: id1, team2UserId: id2, team2Wins: { $gt: 0 } };
-  await TeamHeadToHead.updateOne(filter, {
-    $inc: { team1Wins: winnerIsFirst ? -1 : 0, team2Wins: winnerIsFirst ? 0 : -1 },
+// Compute head-to-head from Fixture, MatchResult, PlayoffFixture
+const computeHeadToHeadFromSource = async () => {
+  const users = await User.find({ isActive: true, teamName: { $exists: true, $ne: null } }).select('_id teamName').lean();
+  const teamNameToUser = new Map();
+  users.forEach((u) => {
+    if (!u.teamName) return;
+    const n = normalizeTeamName(u.teamName);
+    teamNameToUser.set(n, u);
+    teamNameToUser.set(String(u.teamName).trim(), u);
+    teamNameToUser.set(String(u.teamName).trim().toLowerCase(), u);
   });
-  return syncHeadToHead();
+
+  const resolveToUser = (name) => {
+    if (!name) return null;
+    return teamNameToUser.get(normalizeTeamName(name)) || teamNameToUser.get(String(name).trim()) || teamNameToUser.get(String(name).trim().toLowerCase()) || null;
+  };
+
+  const h2hMap = new Map();
+
+  const addWin = (uid1, uid2, winnerUid, team1Name, team2Name) => {
+    const pair = normalizePair(uid1, uid2);
+    if (!pair) return;
+    const [id1, id2] = pair;
+    const key = `${id1}|${id2}`;
+    if (!h2hMap.has(key)) {
+      const n1 = id1.toString();
+      const n2 = id2.toString();
+      const u1 = users.find((u) => u._id.toString() === n1);
+      const u2 = users.find((u) => u._id.toString() === n2);
+      h2hMap.set(key, {
+        team1UserId: id1,
+        team2UserId: id2,
+        team1Name: u1?.teamName || team1Name,
+        team2Name: u2?.teamName || team2Name,
+        team1Wins: 0,
+        team2Wins: 0,
+        draws: 0,
+      });
+    }
+    const r = h2hMap.get(key);
+    if (winnerUid && winnerUid.toString() === id1.toString()) r.team1Wins++;
+    else if (winnerUid && winnerUid.toString() === id2.toString()) r.team2Wins++;
+    else r.draws++;
+  };
+
+  const [fixtures, matchResults, playoffs] = await Promise.all([
+    Fixture.find({ isActive: true, winner: { $exists: true, $ne: null, $ne: '' } }).select('team1 team2 team1UserId team2UserId winner').lean(),
+    MatchResult.find({ winner: { $in: ['team1', 'team2'] } }).select('team1 team2 winner').lean(),
+    PlayoffFixture.find({ isCompleted: true, winner: { $exists: true, $ne: null, $ne: '' } })
+      .select('team1 team2 team1UserId team2UserId winner')
+      .lean(),
+  ]);
+
+  for (const f of fixtures) {
+    if (f.winner !== f.team1 && f.winner !== f.team2) continue;
+    let u1 = f.team1UserId ? { _id: f.team1UserId, teamName: f.team1 } : resolveToUser(f.team1);
+    let u2 = f.team2UserId ? { _id: f.team2UserId, teamName: f.team2 } : resolveToUser(f.team2);
+    if (!u1 || !u2) continue;
+    const winnerUid = f.winner === f.team1 ? u1._id : u2._id;
+    addWin(u1._id, u2._id, winnerUid, f.team1, f.team2);
+  }
+
+  for (const m of matchResults) {
+    const u1 = resolveToUser(m.team1);
+    const u2 = resolveToUser(m.team2);
+    if (!u1 || !u2) continue;
+    const winnerUid = m.winner === 'team1' ? u1._id : u2._id;
+    addWin(u1._id, u2._id, winnerUid, m.team1, m.team2);
+  }
+
+  for (const p of playoffs) {
+    if (String(p.team1 || '').includes('Winner of') || String(p.team2 || '').includes('Winner of')) continue;
+    if (p.winner !== p.team1 && p.winner !== p.team2) continue;
+    let u1 = p.team1UserId ? { _id: p.team1UserId, teamName: p.team1 } : resolveToUser(p.team1);
+    let u2 = p.team2UserId ? { _id: p.team2UserId, teamName: p.team2 } : resolveToUser(p.team2);
+    if (!u1 || !u2) continue;
+    const winnerUid = p.winner === p.team1 ? u1._id : u2._id;
+    addWin(u1._id, u2._id, winnerUid, p.team1, p.team2);
+  }
+
+  return [...h2hMap.values()].filter((r) => (r.team1Wins || 0) + (r.team2Wins || 0) > 0);
 };
 
-// GET /api/head-to-head - Fetch all head-to-head records (runs sync first)
+// Sync head-to-head: rebuild TeamHeadToHead from Fixture, MatchResult, PlayoffFixture. No duplicates.
+const syncHeadToHead = async () => {
+  const records = await computeHeadToHeadFromSource();
+  await TeamHeadToHead.deleteMany({});
+  if (records.length > 0) {
+    await TeamHeadToHead.insertMany(records.map((r) => ({
+      team1UserId: r.team1UserId,
+      team2UserId: r.team2UserId,
+      team1Name: r.team1Name,
+      team2Name: r.team2Name,
+      team1Wins: r.team1Wins || 0,
+      team2Wins: r.team2Wins || 0,
+      draws: r.draws || 0,
+    })));
+  }
+  return records.length;
+};
+
+// No-op: full rebuild on sync handles winner changes
+const revertAndResyncForRecord = async () => syncHeadToHead();
+
+// GET /api/head-to-head - Read from TeamHeadToHead (sync runs when fixture/match/playoff saved)
 router.get('/', async (req, res) => {
   try {
-    const synced = await syncHeadToHead();
+    const count = await TeamHeadToHead.countDocuments();
+    const synced = count === 0 ? await syncHeadToHead() : 0;
     const records = await TeamHeadToHead.find()
       .populate('team1UserId', 'teamName')
       .populate('team2UserId', 'teamName')
@@ -222,10 +155,6 @@ router.get('/', async (req, res) => {
     res.status(500).json({ message: error.message || 'Failed to fetch head-to-head' });
   }
 });
-
-// Normalize team name for matching: lowercase, trim, strip XI/11/CPL (so "Royals XI" === "Royals")
-const normalizeTeamName = (name) =>
-  String(name || '').replace(/\p{Emoji}/gu, '').trim().toLowerCase().replace(/\s+(xi|11|cpl)$/i, '').trim();
 
 // GET /api/head-to-head/matches/:team1Id/:team2Id - All matches between two teams (scorecard)
 router.get('/matches/:team1Id/:team2Id', async (req, res) => {
@@ -375,15 +304,12 @@ router.post('/sync', async (req, res) => {
   }
 });
 
-// POST /api/head-to-head/reset - Clear all H2H data and re-sync from scratch (fixes bad data from blank fixtures)
+// POST /api/head-to-head/reset - Clear TeamHeadToHead and re-sync from Fixture, MatchResult, PlayoffFixture
 router.post('/reset', async (req, res) => {
   try {
     await TeamHeadToHead.deleteMany({});
-    await Fixture.updateMany({}, { $set: { headToHeadSynced: false } });
-    await MatchResult.updateMany({}, { $set: { headToHeadSynced: false } });
-    await PlayoffFixture.updateMany({}, { $set: { headToHeadSynced: false } });
     const synced = await syncHeadToHead();
-    res.json({ message: 'Reset and re-synced', syncedCount: synced });
+    res.json({ message: 'Reset and re-synced TeamHeadToHead', syncedCount: synced });
   } catch (error) {
     console.error('Head-to-head reset error:', error);
     res.status(500).json({ message: error.message || 'Reset failed' });
