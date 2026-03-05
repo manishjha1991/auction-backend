@@ -223,6 +223,13 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Build regex for flexible team name match (case-insensitive, optional XI/11/CPL suffix)
+const teamNameRegex = (name) => {
+  if (!name || typeof name !== 'string') return null;
+  const esc = String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${esc}(\\s+XI|\\s+11|\\s+CPL)?$`, 'i');
+};
+
 // GET /api/head-to-head/matches/:team1Id/:team2Id - All matches between two teams (scorecard)
 router.get('/matches/:team1Id/:team2Id', async (req, res) => {
   try {
@@ -236,14 +243,20 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
     }
     const t1 = u1.teamName;
     const t2 = u2.teamName;
+    const r1 = teamNameRegex(t1);
+    const r2 = teamNameRegex(t2);
+    if (!r1 || !r2) {
+      return res.status(400).json({ message: 'Invalid team names' });
+    }
 
+    // Use flexible matching so historical MatchResult (e.g. "Pun Atl Kings") matches cpl_20 User ("PUN ATL KINGS")
     const [fixtures, matchResults, playoffFixtures] = await Promise.all([
       Fixture.find({
         isActive: true,
         winner: { $in: [t1, t2] },
         $or: [
-          { team1: t1, team2: t2 },
-          { team1: t2, team2: t1 },
+          { team1: r1, team2: r2 },
+          { team1: r2, team2: r1 },
         ],
       })
         .sort({ createdAt: -1 })
@@ -251,18 +264,17 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
       MatchResult.find({
         winner: { $in: ['team1', 'team2'] },
         $or: [
-          { team1: t1, team2: t2 },
-          { team1: t2, team2: t1 },
+          { team1: r1, team2: r2 },
+          { team1: r2, team2: r1 },
         ],
       })
         .sort({ matchDate: -1 })
         .lean(),
       PlayoffFixture.find({
         isCompleted: true,
-        winner: { $in: [t1, t2] },
-        $or: [
-          { team1: t1, team2: t2 },
-          { team1: t2, team2: t1 },
+        $and: [
+          { $or: [{ team1: r1, team2: r2 }, { team1: r2, team2: r1 }] },
+          { $or: [{ winner: r1 }, { winner: r2 }] },
         ],
       })
         .sort({ date: -1 })

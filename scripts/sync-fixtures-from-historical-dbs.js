@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /**
- * Sync Fixtures, Match Results and Playoff Fixtures from Historical CPL Databases into cpl_20
+ * Sync Match Results and Playoff Fixtures from Historical CPL Databases into cpl_20
  *
- * Copies fixtures, match results and playoff fixtures from cpl_12, cpl_14, cpl_15, cpl_16, cpl_17, cpl_18, cpl_19
- * into cpl_20 so you have older data for head-to-head. After sync, runs head-to-head update.
+ * Copies match results and playoff fixtures from cpl_12, cpl_14, cpl_15, cpl_16, cpl_17, cpl_18, cpl_19
+ * into cpl_20 for head-to-head. After sync, runs head-to-head update.
+ *
+ * IMPORTANT: Does NOT insert or update Fixture collection. Fixtures are never touched.
+ * Only MatchResult and PlayoffFixture are synced. This prevents duplicate fixtures.
  *
  * Usage:
  *   node scripts/sync-fixtures-from-historical-dbs.js
@@ -11,13 +14,9 @@
  * Options:
  *   --dry-run    Show what would be synced without inserting (safe, no writes)
  *   --skip-h2h   Skip head-to-head sync at the end
- *
- * SAFETY: Only INSERTS new records. Never updates or deletes existing data.
- * Deduplicates by fixture (team1+team2+createdAt) and match (matchNumber).
  */
 
 const mongoose = require('mongoose');
-const Fixture = require('../models/Fixture');
 const MatchResult = require('../models/MatchResult');
 const PlayoffFixture = require('../models/PlayoffFixture');
 const User = require('../models/User');
@@ -35,11 +34,6 @@ function getConnectionUri(dbName) {
   return `${MONGODB_BASE_URI}${dbName}?retryWrites=true&w=majority&appName=auction-app`;
 }
 
-async function fetchFixturesFromSource(conn) {
-  const FixtureModel = conn.model('Fixture', Fixture.schema);
-  return FixtureModel.find({ isActive: true }).lean();
-}
-
 async function fetchMatchResultsFromSource(conn) {
   const MatchResultModel = conn.model('MatchResult', MatchResult.schema);
   return MatchResultModel.find({ winner: { $in: ['team1', 'team2'] } }).lean();
@@ -52,7 +46,8 @@ async function fetchPlayoffFixturesFromSource(conn) {
 
 async function syncFixturesAndMatchResults() {
   console.log('\n' + '='.repeat(70));
-  console.log('🔄 SYNC FIXTURES & MATCH RESULTS FROM HISTORICAL DBs → cpl_20');
+  console.log('🔄 SYNC MATCH RESULTS & PLAYOFF FIXTURES FROM HISTORICAL DBs → cpl_20');
+  console.log('   (Fixture collection is NOT touched - no inserts)');
   console.log('='.repeat(70));
   console.log('📦 Source:', SOURCE_DATABASES.join(', '));
   console.log('🎯 Target:', TARGET_DATABASE);
@@ -116,11 +111,6 @@ async function syncFixturesAndMatchResults() {
     (await MatchResult.find({}).select('team1 team2 team1Score team2Score team1Wickets team2Wickets').lean())
       .map(buildMatchContentKey)
   );
-  const existingFixtureKeys = new Set(
-    (await Fixture.find({}).select('team1 team2 createdAt').lean()).map((f) =>
-      `${f.team1}|${f.team2}|${f.createdAt?.getTime?.() || f.createdAt}`
-    )
-  );
   const normalizePair = (id1, id2) => {
     if (!id1 || !id2) return null;
     const [a, b] = [id1.toString(), id2.toString()].sort();
@@ -134,7 +124,6 @@ async function syncFixturesAndMatchResults() {
     })
   );
 
-  let totalFixturesAdded = 0;
   let totalMatchResultsAdded = 0;
   let totalPlayoffsAdded = 0;
 
@@ -144,61 +133,12 @@ async function syncFixturesAndMatchResults() {
       const conn = await mongoose.createConnection(sourceUri).asPromise();
       console.log(`\n📂 ${dbName}`);
 
-      const fixtures = await fetchFixturesFromSource(conn);
       const matchResults = await fetchMatchResultsFromSource(conn);
       const playoffFixtures = await fetchPlayoffFixturesFromSource(conn);
-      console.log(`   Fixtures: ${fixtures.length}, Match results: ${matchResults.length}, Playoff fixtures: ${playoffFixtures.length}`);
+      console.log(`   Match results: ${matchResults.length}, Playoff fixtures: ${playoffFixtures.length}`);
 
-      let fixturesAdded = 0;
       let matchResultsAdded = 0;
       let playoffsAdded = 0;
-
-      for (const f of fixtures) {
-        if (!f.team1 || !f.team2) continue;
-        const ts = f.createdAt ? new Date(f.createdAt).getTime() : String(f._id);
-        const key = `${f.team1}|${f.team2}|${ts}`;
-        if (existingFixtureKeys.has(key)) continue;
-
-        const r1 = resolveTeam(f.team1);
-        const r2 = resolveTeam(f.team2);
-        const team1UserId = r1.userId;
-        const team2UserId = r2.userId;
-        const winnerUserId = f.winner === f.team1 ? team1UserId : f.winner === f.team2 ? team2UserId : null;
-
-        const doc = {
-          team1: f.team1,
-          team2: f.team2,
-          team1UserId: team1UserId || undefined,
-          team2UserId: team2UserId || undefined,
-          winner: f.winner || null,
-          winnerUserId: winnerUserId || undefined,
-          margin: f.margin || null,
-          team1Score: f.team1Score || null,
-          team2Score: f.team2Score || null,
-          team1Overs: f.team1Overs || null,
-          team2Overs: f.team2Overs || null,
-          team1Fairness: f.team1Fairness ?? 0,
-          team2Fairness: f.team2Fairness ?? 0,
-          mom: f.mom || { name: null, score: null, wickets: null },
-          createdAt: f.createdAt,
-          isActive: true,
-          group: ['A', 'B'].includes(f.group) ? f.group : null,
-          matchType: ['group', 'normal'].includes(f.matchType) ? f.matchType : 'normal',
-          headToHeadSynced: false,
-        };
-
-        if (!dryRun) {
-          try {
-            await Fixture.create(doc);
-            fixturesAdded++;
-          } catch (err) {
-            console.error(`   ⚠️  Skip fixture ${f.team1} vs ${f.team2}: ${err.message}`);
-          }
-        } else {
-          fixturesAdded++;
-        }
-        existingFixtureKeys.add(key);
-      }
 
       for (const m of matchResults) {
         if (!m.matchNumber || !m.team1 || !m.team2) continue;
@@ -308,26 +248,25 @@ async function syncFixturesAndMatchResults() {
 
       await conn.close();
 
-      totalFixturesAdded += fixturesAdded;
       totalMatchResultsAdded += matchResultsAdded;
       totalPlayoffsAdded += playoffsAdded;
-      console.log(`   → Added: ${fixturesAdded} fixtures, ${matchResultsAdded} match results, ${playoffsAdded} playoff fixtures`);
+      console.log(`   → Added: ${matchResultsAdded} match results, ${playoffsAdded} playoff fixtures`);
     } catch (err) {
       console.error(`   ❌ ${dbName}:`, err.message);
     }
   }
 
   console.log('\n' + '-'.repeat(70));
-  console.log(`📊 Total: ${totalFixturesAdded} fixtures, ${totalMatchResultsAdded} match results, ${totalPlayoffsAdded} playoff fixtures`);
+  console.log(`📊 Total: ${totalMatchResultsAdded} match results, ${totalPlayoffsAdded} playoff fixtures (fixtures not touched)`);
   if (dryRun) {
     console.log('   (Dry run - no data inserted)');
   }
 
-  if (!dryRun && !skipH2H && (totalFixturesAdded > 0 || totalMatchResultsAdded > 0 || totalPlayoffsAdded > 0)) {
+  if (!dryRun && !skipH2H && (totalMatchResultsAdded > 0 || totalPlayoffsAdded > 0)) {
     console.log('\n🔄 Running head-to-head sync...');
     const synced = await syncHeadToHead();
     console.log(`   Synced ${synced} new results to TeamHeadToHead`);
-  } else if (!skipH2H && totalFixturesAdded === 0 && totalMatchResultsAdded === 0 && totalPlayoffsAdded === 0) {
+  } else if (!skipH2H && totalMatchResultsAdded === 0 && totalPlayoffsAdded === 0) {
     console.log('\n🔄 No new data - running head-to-head sync anyway (catches any unsynced)...');
     const synced = await syncHeadToHead();
     console.log(`   Synced ${synced} new results to TeamHeadToHead`);
