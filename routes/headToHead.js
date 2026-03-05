@@ -248,9 +248,25 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
 
     // Fetch from all sources - use broad queries then filter in memory for reliable matching
     const [allFixtures, allMatchResults, allPlayoffFixtures] = await Promise.all([
-      Fixture.find({ isActive: true, winner: { $exists: true, $ne: null, $ne: '' } }).sort({ createdAt: -1 }).lean(),
+      Fixture.find({
+        isActive: true,
+        $or: [
+          { winner: { $exists: true, $ne: null, $ne: '' } },
+          { team1Score: { $exists: true, $ne: null, $ne: '' }, team2Score: { $exists: true, $ne: null, $ne: '' } },
+        ],
+      })
+        .sort({ createdAt: -1 })
+        .lean(),
       MatchResult.find({ winner: { $in: ['team1', 'team2'] } }).sort({ matchDate: -1 }).lean(),
-      PlayoffFixture.find({ isCompleted: true, winner: { $exists: true, $ne: null, $ne: '' } }).sort({ date: -1 }).lean(),
+      PlayoffFixture.find({
+        isCompleted: true,
+        $or: [
+          { winner: { $exists: true, $ne: null, $ne: '' } },
+          { team1Score: { $exists: true, $ne: null, $ne: '' }, team2Score: { $exists: true, $ne: null, $ne: '' } },
+        ],
+      })
+        .sort({ date: -1 })
+        .lean(),
     ]);
 
     const isMatch = (mTeam1, mTeam2) => {
@@ -259,9 +275,21 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
       return (mn1 === n1 && mn2 === n2) || (mn1 === n2 && mn2 === n1);
     };
 
-    const fixtures = allFixtures.filter((f) => isMatch(f.team1, f.team2) && (normalizeTeamName(f.winner) === n1 || normalizeTeamName(f.winner) === n2));
+    const fixtures = allFixtures.filter((f) => {
+      if (!isMatch(f.team1, f.team2)) return false;
+      const w = normalizeTeamName(f.winner);
+      if (w === n1 || w === n2) return true;
+      if (f.team1Score && f.team2Score) return true;
+      return false;
+    });
     const matchResults = allMatchResults.filter((m) => isMatch(m.team1, m.team2));
-    const playoffFixtures = allPlayoffFixtures.filter((p) => isMatch(p.team1, p.team2) && (normalizeTeamName(p.winner) === n1 || normalizeTeamName(p.winner) === n2));
+    const playoffFixtures = allPlayoffFixtures.filter((p) => {
+      if (!isMatch(p.team1, p.team2)) return false;
+      const w = normalizeTeamName(p.winner);
+      if (w === n1 || w === n2) return true;
+      if (p.team1Score && p.team2Score && p.team1Score !== 'TBD' && p.team2Score !== 'TBD') return true;
+      return false;
+    });
 
     const normalizeForKey = (name) => String(name || '').replace(/\p{Emoji}/gu, '').trim();
     const matchKey = (m) => {
@@ -270,6 +298,13 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
       const pair = [t1, t2].sort().join('|');
       return `${pair}|${m.team1Score}|${m.team2Score}`;
     };
+    const getWinner = (f) => {
+      if (f.winner) return f.winner;
+      const s1 = parseInt(f.team1Score, 10);
+      const s2 = parseInt(f.team2Score, 10);
+      if (!isNaN(s1) && !isNaN(s2)) return s1 > s2 ? f.team1 : s2 > s1 ? f.team2 : null;
+      return null;
+    };
     const rawMatches = [
       ...fixtures.map((f) => ({
         source: 'fixture',
@@ -277,7 +312,7 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
         team2: f.team2,
         team1Score: f.team1Score || '-',
         team2Score: f.team2Score || '-',
-        winner: f.winner,
+        winner: getWinner(f) || f.winner,
         margin: f.margin || null,
         date: f.createdAt,
       })),
