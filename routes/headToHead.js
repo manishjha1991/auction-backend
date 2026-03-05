@@ -223,12 +223,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Build regex for flexible team name match (case-insensitive, optional XI/11/CPL suffix)
-const teamNameRegex = (name) => {
-  if (!name || typeof name !== 'string') return null;
-  const esc = String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${esc}(\\s+XI|\\s+11|\\s+CPL)?$`, 'i');
-};
+// Normalize team name for matching: lowercase, trim, strip XI/11/CPL (so "Royals XI" === "Royals")
+const normalizeTeamName = (name) =>
+  String(name || '').replace(/\p{Emoji}/gu, '').trim().toLowerCase().replace(/\s+(xi|11|cpl)$/i, '').trim();
 
 // GET /api/head-to-head/matches/:team1Id/:team2Id - All matches between two teams (scorecard)
 router.get('/matches/:team1Id/:team2Id', async (req, res) => {
@@ -243,43 +240,28 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
     }
     const t1 = u1.teamName;
     const t2 = u2.teamName;
-    const r1 = teamNameRegex(t1);
-    const r2 = teamNameRegex(t2);
-    if (!r1 || !r2) {
+    const n1 = normalizeTeamName(t1);
+    const n2 = normalizeTeamName(t2);
+    if (!n1 || !n2) {
       return res.status(400).json({ message: 'Invalid team names' });
     }
 
-    // Use flexible matching so historical MatchResult (e.g. "Pun Atl Kings") matches cpl_20 User ("PUN ATL KINGS")
-    const [fixtures, matchResults, playoffFixtures] = await Promise.all([
-      Fixture.find({
-        isActive: true,
-        winner: { $in: [t1, t2] },
-        $or: [
-          { team1: r1, team2: r2 },
-          { team1: r2, team2: r1 },
-        ],
-      })
-        .sort({ createdAt: -1 })
-        .lean(),
-      MatchResult.find({
-        winner: { $in: ['team1', 'team2'] },
-        $or: [
-          { team1: r1, team2: r2 },
-          { team1: r2, team2: r1 },
-        ],
-      })
-        .sort({ matchDate: -1 })
-        .lean(),
-      PlayoffFixture.find({
-        isCompleted: true,
-        $and: [
-          { $or: [{ team1: r1, team2: r2 }, { team1: r2, team2: r1 }] },
-          { $or: [{ winner: r1 }, { winner: r2 }] },
-        ],
-      })
-        .sort({ date: -1 })
-        .lean(),
+    // Fetch from all sources - use broad queries then filter in memory for reliable matching
+    const [allFixtures, allMatchResults, allPlayoffFixtures] = await Promise.all([
+      Fixture.find({ isActive: true, winner: { $exists: true, $ne: null, $ne: '' } }).sort({ createdAt: -1 }).lean(),
+      MatchResult.find({ winner: { $in: ['team1', 'team2'] } }).sort({ matchDate: -1 }).lean(),
+      PlayoffFixture.find({ isCompleted: true, winner: { $exists: true, $ne: null, $ne: '' } }).sort({ date: -1 }).lean(),
     ]);
+
+    const isMatch = (mTeam1, mTeam2) => {
+      const mn1 = normalizeTeamName(mTeam1);
+      const mn2 = normalizeTeamName(mTeam2);
+      return (mn1 === n1 && mn2 === n2) || (mn1 === n2 && mn2 === n1);
+    };
+
+    const fixtures = allFixtures.filter((f) => isMatch(f.team1, f.team2) && (normalizeTeamName(f.winner) === n1 || normalizeTeamName(f.winner) === n2));
+    const matchResults = allMatchResults.filter((m) => isMatch(m.team1, m.team2));
+    const playoffFixtures = allPlayoffFixtures.filter((p) => isMatch(p.team1, p.team2) && (normalizeTeamName(p.winner) === n1 || normalizeTeamName(p.winner) === n2));
 
     const normalizeForKey = (name) => String(name || '').replace(/\p{Emoji}/gu, '').trim();
     const matchKey = (m) => {
