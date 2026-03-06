@@ -1284,6 +1284,7 @@ router.get('/stats-overview', async (req, res) => {
     // 3) Variables to track total runs/wickets (leading scorers)
     const totalRunsMap = {};
     const totalWicketsMap = {};
+    const totalRunsGivenMap = {};
     const matchCountMap = {};
     const totalBallsBowledMap = {};
     const momCountMap = {};
@@ -1417,6 +1418,10 @@ router.get('/stats-overview', async (req, res) => {
       // B2) Track total balls bowled per player
       if (!totalBallsBowledMap[pId]) totalBallsBowledMap[pId] = 0;
       totalBallsBowledMap[pId] += ballsBowled;
+
+      // B2b) Track total runs given per player (for economy)
+      if (!totalRunsGivenMap[pId]) totalRunsGivenMap[pId] = 0;
+      totalRunsGivenMap[pId] += runsGiven;
 
       // B3) Check if this stats doc is MoM (CHANGED to `isMom`)
       if (statDoc.isMom) {
@@ -1653,6 +1658,29 @@ router.get('/stats-overview', async (req, res) => {
     validBowlingStrikeArray.sort((a, b) => a.strikeRate - b.strikeRate);
     const top5BowlingStrikeRate = validBowlingStrikeArray.slice(0, 5);
 
+    // Top 5 Economical Bowlers (lowest economy = best) - min 15 overs (90 balls) bowled
+    const economicalBowlersArray = Object.keys(totalBallsBowledMap).map((pid) => {
+      const balls = totalBallsBowledMap[pid] || 0;
+      const runsGiven = totalRunsGivenMap[pid] || 0;
+      let economy = Number.POSITIVE_INFINITY;
+      if (balls >= 90) {
+        economy = (runsGiven / (balls / 6));
+      }
+      return {
+        playerId: pid,
+        playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
+        playerType: playerInfoMap[pid]?.playerType || null,
+        teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
+        economy: parseFloat(economy.toFixed(2)),
+        runsGiven,
+        ballsBowled: balls,
+        wickets: totalWicketsMap[pid] || 0,
+      };
+    });
+    const validEconomicalBowlersArray = economicalBowlersArray.filter(item => item.economy !== Infinity);
+    validEconomicalBowlersArray.sort((a, b) => a.economy - b.economy);
+    const top5EconomicalBowlers = validEconomicalBowlersArray.slice(0, 5);
+
     // Top 5 Best Batting Average
     const averageArray = Object.entries(matchCountMap).map(([pid, matchCount]) => {
       const runs = totalRunsMap[pid] || 0;
@@ -1751,6 +1779,7 @@ router.get('/stats-overview', async (req, res) => {
       // New fields
       top5MOM,
       top5BowlingStrikeRate,
+      top5EconomicalBowlers,
       top5BestBattingAverage,
     };
 
@@ -1862,6 +1891,8 @@ router.get('/player-details/:playerId', async (req, res) => {
         fourWicketHaulCount++;
       }
 
+      const economy = ballsBowled > 0 ? (runsGiven / (ballsBowled / 6)) : null;
+      const hasValidEconomy = ballsBowled > 0;
       return {
         matchNumber: index + 1,
         date: stat.createdAt,
@@ -1871,6 +1902,8 @@ router.get('/player-details/:playerId', async (req, res) => {
         balls: balls,
         wickets: wickets,
         runsGiven: runsGiven,
+        ballsBowled: ballsBowled,
+        economy: hasValidEconomy ? parseFloat(economy.toFixed(2)) : null,
         isMom: stat.isMom || false
       };
     });

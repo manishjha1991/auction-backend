@@ -67,15 +67,21 @@ const mongooseOptions = {
   // 📊 PERFORMANCE OPTIMIZATIONS
   compressors: ['zlib'],
   zlibCompressionLevel: 6,
-  directConnection: process.env.MONGO_DIRECT_CONNECTION === 'true', // Use true for single-node Atlas
+  // SRV URIs (mongodb+srv://) do NOT support directConnection - must be false for Atlas
+  directConnection: (process.env.MONGO_URI || '').startsWith('mongodb+srv://') ? false : (process.env.MONGO_DIRECT_CONNECTION === 'true'),
   
   // 🛡️ CONNECTION MONITORING - disabled in prod (no overhead)
   monitorCommands: process.env.NODE_ENV !== 'production',
   
   // ⚙️ ADVANCED SETTINGS
-  readPreference: process.env.MONGO_DIRECT_CONNECTION === 'true' ? 'primary' : 'primaryPreferred',
+  readPreference: (process.env.MONGO_URI || '').startsWith('mongodb+srv://') ? 'primaryPreferred' : (process.env.MONGO_DIRECT_CONNECTION === 'true' ? 'primary' : 'primaryPreferred'),
   readConcern: { level: 'local' },    // Fastest read concern
   writeConcern: { w: 1, j: true },    // Acknowledge writes, journaled
+};
+
+const startServer = () => {
+  const PORT = process.env.PORT || 3000;
+  server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 };
 
 mongoose.connect(process.env.MONGO_URI, mongooseOptions)
@@ -85,10 +91,12 @@ mongoose.connect(process.env.MONGO_URI, mongooseOptions)
     console.log('🏠 Host:', mongoose.connection.host);
     console.log('🗄️ Database:', mongoose.connection.name);
     console.log('⚡ Pool Size:', mongoose.connection.db?.s?.topology?.s?.pool?.totalConnectionCount || 'N/A');
+    startServer();
   })
   .catch(err => {
     console.error('❌ MongoDB Connection Error:', err.message);
     console.error('🔧 Connection Options:', mongooseOptions);
+    process.exit(1);
   });
 
 app.use('/uploads', express.static('uploads'));
@@ -195,6 +203,3 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
