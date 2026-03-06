@@ -1787,7 +1787,11 @@ router.get('/stats-overview', async (req, res) => {
     if (!skipCache) {
       cache.set(cacheKey, response, 300);
     }
-
+    // Prevent CDN/proxy caching when nocache - ensures cloud returns fresh data
+    if (skipCache) {
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+      res.set('Pragma', 'no-cache');
+    }
     return res.status(200).json(response);
   } catch (err) {
     console.error('Error generating StatsOverview:', err);
