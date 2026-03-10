@@ -497,12 +497,12 @@ router.post('/initialize', async (req, res) => {
       }
 
       // Check if all top 6 teams have completed required games
-      const allTeamsCompletedGames = teams.every(team => (team.matchesPlayed || 0) >= 12);
-      
+      const allTeamsCompletedGames = teams.every(team => (team.matchesPlayed || 0) >= 13);
+
       if (!allTeamsCompletedGames) {
-        const incompleteTeams = teams.filter(team => (team.matchesPlayed || 0) < 12);
-        return res.status(400).json({ 
-          message: 'All top 6 teams must complete 12 matches before initializing playoffs',
+        const incompleteTeams = teams.filter(team => (team.matchesPlayed || 0) < 13);
+        return res.status(400).json({
+          message: 'All top 6 teams must complete 13 matches before initializing playoffs',
           incompleteTeams: incompleteTeams.map(team => ({
             teamName: team.teamName,
             matchesPlayed: team.matchesPlayed || 0

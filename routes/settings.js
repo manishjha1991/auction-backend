@@ -28,13 +28,14 @@ router.get('/', async (_req, res) => {
       auctionStartAt: doc.auctionStartAt,
       auctionAutoModeEnabled: doc.auctionAutoModeEnabled === true,
       auctionAutoModeCategories: doc.auctionAutoModeCategories || ['Gold', 'Silver', 'Sapphire', 'Emerald'],
+      requiredGames: doc.requiredGames ?? 13,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });
 
 router.post('/', async (req, res) => {
   try {
-    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories } = req.body;
+    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories, requiredGames } = req.body;
     const admin = await User.findById(adminUserId);
     if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update settings' });
     const doc = await getSettingsDoc();
@@ -59,6 +60,7 @@ router.post('/', async (req, res) => {
       if (!isNaN(parsed.getTime())) doc.auctionStartAt = parsed;
     }
     if (typeof auctionAutoModeEnabled === 'boolean') doc.auctionAutoModeEnabled = auctionAutoModeEnabled;
+    if (typeof requiredGames === 'number' && requiredGames >= 1 && requiredGames <= 20) doc.requiredGames = requiredGames;
     if (Array.isArray(auctionAutoModeCategories)) {
       const valid = ['Gold', 'Silver', 'Sapphire', 'Emerald'];
       doc.auctionAutoModeCategories = auctionAutoModeCategories.filter((c) => valid.includes(String(c).trim()));
@@ -91,6 +93,7 @@ router.post('/', async (req, res) => {
       auctionStartAt: doc.auctionStartAt,
       auctionAutoModeEnabled: doc.auctionAutoModeEnabled === true,
       auctionAutoModeCategories: doc.auctionAutoModeCategories || ['Gold', 'Silver', 'Sapphire', 'Emerald'],
+      requiredGames: doc.requiredGames ?? 13,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });

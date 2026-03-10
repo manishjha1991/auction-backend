@@ -9,7 +9,7 @@ const AppSettingsSchema = new mongoose.Schema(
     // overall: default single table; groups: split standings by groups
     pointsMode: { type: String, enum: ['overall', 'groups'], default: 'overall' },
     // Number of games required before playoffs can be initialized
-    requiredGames: { type: Number, default: 12 },
+    requiredGames: { type: Number, default: 13 },
     // Track when admin has released players to disable undo option
     adminReleasedPlayers: { type: Boolean, default: false },
     adminReleasedPlayersAt: { type: Date },

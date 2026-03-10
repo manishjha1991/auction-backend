@@ -1447,12 +1447,12 @@ router.post('/world-cup/initialize', isAdmin, async (req, res) => {
     }
 
     // Check if all top 8 teams have completed required games
-    const allTeamsCompletedGames = sortedTeams.every(team => (team.matchesPlayed || 0) >= 12);
-    
-    if (!allTeamsCompletedGames) {
-      const incompleteTeams = sortedTeams.filter(team => (team.matchesPlayed || 0) < 12);
-      return res.status(400).json({ 
-        error: 'All top 8 teams must complete 12 matches before initializing World Cup tournament',
+    const allTeamsCompletedGames = sortedTeams.every(team => (team.matchesPlayed || 0) >= 13);
+
+      if (!allTeamsCompletedGames) {
+        const incompleteTeams = sortedTeams.filter(team => (team.matchesPlayed || 0) < 13);
+        return res.status(400).json({
+          error: 'All top 8 teams must complete 13 matches before initializing World Cup tournament',
         incompleteTeams: incompleteTeams.map(team => ({
           teamName: team.teamName,
           matchesPlayed: team.matchesPlayed || 0

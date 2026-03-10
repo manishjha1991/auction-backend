@@ -284,7 +284,7 @@ router.get('/all', async (req, res) => {
         enablePickButton: true,
         enablePlayerRetention: true,
         pointsMode: 'overall',
-        requiredGames: 12,
+        requiredGames: 13,
         adminReleasedPlayers: false,
         adminReleasedPlayersAt: null
       });
@@ -1250,7 +1250,7 @@ router.get('/debug-settings', async (req, res) => {
         enablePickButton: true,
         enablePlayerRetention: true,
         pointsMode: 'overall',
-        requiredGames: 12,
+        requiredGames: 13,
         adminReleasedPlayers: false,
         adminReleasedPlayersAt: null
       });
