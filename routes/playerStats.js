@@ -7,7 +7,7 @@ const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
 const MatchResult = require('../models/MatchResult');
 const Fixture = require('../models/Fixture');
-const { cacheConfig, invalidateCache, registerExtraCache } = require('../utils/cache');
+const { cacheConfig, invalidateCache, registerExtraCache, clearAllCaches } = require('../utils/cache');
 
 // 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats) - keeping for backward compatibility
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
@@ -828,6 +828,22 @@ router.post('/store', async (req, res) => {
     // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when stats are saved/updated
     cache.del('stats-overview');
     invalidateCache('players:data'); // Invalidate top rankings cache
+  }
+});
+
+// POST /api/player-stats/clear-all-cache - Clear ALL backend caches (stats, fixtures, players, users, news). Use after direct DB edits.
+// Body: { adminUserId: "..." } or ?adminUserId=...
+router.post('/clear-all-cache', async (req, res) => {
+  try {
+    const adminUserId = req.body?.adminUserId || req.query?.adminUserId;
+    if (!adminUserId) return res.status(400).json({ message: 'adminUserId is required' });
+    const admin = await User.findById(adminUserId).select('isAdmin').lean();
+    if (!admin?.isAdmin) return res.status(403).json({ message: 'Only admin can clear all caches' });
+    clearAllCaches();
+    res.json({ message: 'All caches cleared. Hard refresh the UI (Ctrl+Shift+R) to see fresh data.' });
+  } catch (err) {
+    console.error('Clear all cache error:', err);
+    res.status(500).json({ message: err.message || 'Failed to clear cache' });
   }
 });
 
