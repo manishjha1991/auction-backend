@@ -76,12 +76,32 @@ const invalidateCache = (pattern) => {
   });
 };
 
+// Extra caches (e.g. playerStats stats-overview) registered by route modules
+const extraCaches = [];
+
 /**
- * Clear all caches
+ * Register an extra cache to be cleared when clearAllCaches is called
+ * @param {NodeCache} cache - NodeCache instance
+ */
+const registerExtraCache = (cache) => {
+  if (cache && typeof cache.flushAll === 'function') {
+    extraCaches.push(cache);
+  }
+};
+
+/**
+ * Clear all caches (cacheConfig + any registered extra caches)
  */
 const clearAllCaches = () => {
   Object.values(cacheConfig).forEach(cache => {
     cache.flushAll();
+  });
+  extraCaches.forEach(cache => {
+    try {
+      cache.flushAll();
+    } catch (e) {
+      console.warn('Failed to flush extra cache:', e.message);
+    }
   });
   console.log('🗑️ All caches cleared');
 };
@@ -90,6 +110,7 @@ module.exports = {
   cacheConfig,
   cacheMiddleware,
   invalidateCache,
-  clearAllCaches
+  clearAllCaches,
+  registerExtraCache
 };
 

@@ -18,7 +18,7 @@ const {
   executePursePlan,
   runPurseAutoFix,
 } = require('../utils/purseAuditHelpers');
-const { invalidateCache } = require('../utils/cache');
+const { invalidateCache, clearAllCaches } = require('../utils/cache');
 
 const AUCTION_RESET_COLLECTIONS = [
   'bidhistories',
@@ -313,6 +313,22 @@ const runAuctionReset = async () => {
 };
 
 const TRADE_CAP = 6;
+
+// POST: clear all backend caches (use after direct DB edits to see fresh data)
+router.post('/clear-all-cache', async (req, res) => {
+  try {
+    const adminUserId = req.body.adminUserId || req.query.adminUserId;
+    await requireAdmin(adminUserId);
+    clearAllCaches();
+    res.json({
+      message: 'All caches cleared. Hard refresh the UI (Ctrl+Shift+R) to see fresh data.',
+    });
+  } catch (error) {
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to clear cache' });
+  }
+});
 
 // GET: search teams by team name or player name (returns team IDs that match)
 router.get('/team-trade-activity/search', async (req, res) => {
