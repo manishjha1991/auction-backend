@@ -23,6 +23,11 @@ For every player/user document, set:
 - `points: 0`
 - `matchesPlayed: 0`
 
+db.users.updateMany(
+  {},
+  { $set: { fairnessPoint: 0, points: 0, matchesPlayed: 0 } }
+)
+
 ## Before starting a fresh auction
 
 ### 1) Clear auction activity collections

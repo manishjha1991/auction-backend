@@ -10,7 +10,8 @@
     "update-purse": "node update-purse-to-100-minus-players.js",
     "confirm-update-purse": "node confirm-update-purse.js",
     "sync-fixtures": "node scripts/sync-fixtures-from-historical-dbs.js",
-    "sync-playoff-h2h": "node scripts/sync-playoff-h2h-from-historical-dbs.js"
+    "sync-playoff-h2h": "node scripts/sync-playoff-h2h-from-historical-dbs.js",
+    "cpl-points-pdf": "node scripts/cpl-points-table-pdf.js"
   },
   "keywords": [],
   "author": "",
@@ -27,6 +28,7 @@
     "multer": "^1.4.5-lts.1",
     "node-cache": "^5.1.2",
     "node-cron": "^3.0.3",
+    "pdfkit": "^0.15.2",
     "socket.io": "^4.8.1",
     "uuid": "^11.0.3"
   }
