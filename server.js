@@ -37,6 +37,7 @@ const headToHeadRoutes = require('./routes/headToHead');
 const adminToolsRoutes = require('./routes/adminTools');
 const monitoringRoutes = require('./routes/monitoring');
 const cplHistoryRoutes = require('./routes/cplHistory');
+const adminRosterOpsRoutes = require('./routes/adminRosterOps');
 // require('./scheduler');
 
 // Allow Express to trust proxy headers (needed to read real client IPs)
@@ -180,6 +181,7 @@ app.use('/api/head-to-head', headToHeadRoutes);
 app.use('/api/admin-tools', adminToolsRoutes);
 app.use('/api/monitoring', monitoringRoutes);
 app.use('/api/cpl-history', cplHistoryRoutes);
+app.use('/api/admin/roster', adminRosterOpsRoutes);
 
 
 // 🚀 NOTIFICATION: Socket user mapping for targeted notifications

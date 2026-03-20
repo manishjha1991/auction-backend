@@ -8,42 +8,14 @@ const {
   analyzeTeamBalance,
   generateTradeRecommendations,
 } = require('../utils/tradeInsights');
+const {
+  isTradeLocked,
+  setTradeLockOnPlayers,
+  autoRejectTradesInvolvingPlayers,
+} = require('../utils/tradeApprovalShared');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
-const TRADE_LOCK_HOURS = 48;
-
-// Trade lock: only applies AFTER admin approves a trade. Players locked for 48h after swap.
-// First-time trades: tradeLocked is false (default) → allowed.
-async function isTradeLocked(playerDoc) {
-  if (!playerDoc) return false;
-  // Only treat as locked when explicitly true (first-time trades have false/undefined)
-  if (playerDoc.tradeLocked !== true && playerDoc.tradeLocked !== 'true') return false;
-  // If tradeLockedUntil is missing (legacy/bug), treat as expired - clear and allow
-  const until = playerDoc.tradeLockedUntil;
-  if (!until) {
-    await Player.findByIdAndUpdate(playerDoc._id, {
-      $set: { tradeLocked: false, tradeLockedUntil: null }
-    });
-    return false;
-  }
-  // Robust date parse (handles MongoDB BSON, ISO strings, Date objects)
-  const untilDate = until instanceof Date ? until : new Date(until);
-  if (isNaN(untilDate.getTime())) {
-    await Player.findByIdAndUpdate(playerDoc._id, {
-      $set: { tradeLocked: false, tradeLockedUntil: null }
-    });
-    return false;
-  }
-  // If lock has expired (48h passed), clear and allow
-  if (untilDate <= new Date()) {
-    await Player.findByIdAndUpdate(playerDoc._id, {
-      $set: { tradeLocked: false, tradeLockedUntil: null }
-    });
-    return false;
-  }
-  return true;
-}
 
 async function getUserTypeCounts(userId) {
   // 🚀 PERFORMANCE: Use .lean() for read-only query
@@ -450,12 +422,7 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
         team2.save()
       ]);
 
-      // Lock both players from further trading
-      const tradeLockedUntil = new Date(Date.now() + TRADE_LOCK_HOURS * 60 * 60 * 1000);
-      await Promise.all([
-        Player.findByIdAndUpdate(trade.offeredPlayer, { $set: { tradeLocked: true, tradeLockedUntil } }),
-        Player.findByIdAndUpdate(trade.requestedPlayer, { $set: { tradeLocked: true, tradeLockedUntil } })
-      ]);
+      await setTradeLockOnPlayers([trade.offeredPlayer, trade.requestedPlayer]);
 
       trade.status = 'completed';
       trade.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
@@ -468,21 +435,11 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
         ]);
       } catch {}
 
-      // Auto-reject any other active trades involving either of these players
-      const activeStatuses = ['pending', 'counter', 'admin_pending'];
-      const others = await TradeRequest.find({
-        _id: { $ne: trade._id },
-        status: { $in: activeStatuses },
-        $or: [
-          { offeredPlayer: { $in: [trade.offeredPlayer, trade.requestedPlayer] } },
-          { requestedPlayer: { $in: [trade.offeredPlayer, trade.requestedPlayer] } }
-        ]
-      });
-      for (const o of others) {
-        o.status = 'rejected';
-        o.history.push({ byUser: adminUserId, action: 'reject', message: 'Auto-rejected: player traded to another team' });
-        await o.save();
-      }
+      await autoRejectTradesInvolvingPlayers(
+        adminUserId,
+        [trade.offeredPlayer, trade.requestedPlayer],
+        trade._id,
+      );
     } else if (decision === 'reject') {
       trade.status = 'rejected';
       trade.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
