@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const router = express.Router();
 const { getClientIp } = require('../utils/network');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
+const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
 
 // Request logging only in development (avoids logging sensitive body in prod)
 router.use((req, res, next) => {
@@ -983,6 +984,7 @@ router.put('/update-points/:userId', async (req, res) => {
 
     await user.save();
 
+    emitPointsTableUpdated(req, { reason: 'user_update_points' });
     res.json({ message: 'Points, matches, and fairness updated successfully', user });
   } catch (error) {
     console.error('Error updating points:', error);
@@ -1016,6 +1018,7 @@ router.put('/update-fairness/:userId', async (req, res) => {
 
     console.log(`Updated team ${user.teamName}: Points=${user.points}, Matches=${user.matchesPlayed}, Fairness=${user.fairnessPoint}`);
 
+    emitPointsTableUpdated(req, { reason: 'admin_update_fairness' });
     res.json({ 
       message: 'Team stats updated successfully', 
       user: {

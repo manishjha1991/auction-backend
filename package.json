@@ -11,7 +11,8 @@
     "confirm-update-purse": "node confirm-update-purse.js",
     "sync-fixtures": "node scripts/sync-fixtures-from-historical-dbs.js",
     "sync-playoff-h2h": "node scripts/sync-playoff-h2h-from-historical-dbs.js",
-    "cpl-points-pdf": "node scripts/cpl-points-table-pdf.js"
+    "cpl-points-pdf": "node scripts/cpl-points-table-pdf.js",
+    "cpl-report-db-pdf": "node scripts/cpl-points-report-db-pdf.js"
   },
   "keywords": [],
   "author": "",
@@ -31,5 +32,8 @@
     "pdfkit": "^0.15.2",
     "socket.io": "^4.8.1",
     "uuid": "^11.0.3"
+  },
+  "devDependencies": {
+    "xlsx": "^0.18.5"
   }
 }

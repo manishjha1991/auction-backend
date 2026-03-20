@@ -7,6 +7,7 @@ const {
   buildSeasonInsights,
   fetchSeasonPlayerHighlights,
 } = require('../utils/cplHistoryHelpers');
+const { getCachedHistorySummary, setCachedHistorySummary } = require('../utils/cplReadCaches');
 
 const router = express.Router();
 
@@ -128,6 +129,13 @@ router.get('/summary', async (req, res) => {
     }
 
     const dbNames = resolveHistoryDbNames();
+    const cached = getCachedHistorySummary(dbNames);
+    if (cached && cached.ok) {
+      res.set('X-CPL-History-Cache', 'HIT');
+      res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=300');
+      return res.json(cached);
+    }
+
     const results = await mapWithConcurrency(dbNames, HISTORY_PARALLEL, (dbName) =>
       loadOneHistorySeason(base, dbName),
     );
@@ -140,14 +148,18 @@ router.get('/summary', async (req, res) => {
     }
     seasons.sort((a, b) => seasonNumFromDbName(b.dbName) - seasonNumFromDbName(a.dbName));
 
-    res.set('Cache-Control', 'public, max-age=300');
-    res.json({
+    const payload = {
       ok: true,
       generatedAt: new Date().toISOString(),
       currentSeasonDb: mongoose.connection?.name || null,
       seasons,
       errors: errors.length ? errors : undefined,
-    });
+    };
+    setCachedHistorySummary(dbNames, payload);
+
+    res.set('X-CPL-History-Cache', 'MISS');
+    res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=300');
+    res.json(payload);
   } catch (err) {
     console.error('cpl-history summary error', err);
     res.status(500).json({ message: err.message || 'Failed to load CPL history' });

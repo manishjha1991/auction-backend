@@ -5,6 +5,7 @@ const headToHeadModule = require('./headToHead');
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
+const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
 
 const router = express.Router();
 
@@ -555,6 +556,8 @@ router.post('/save', isAdmin, async (req, res) => {
     
     // Convert fixture to plain object for response (handle both Mongoose doc and plain object)
     const fixtureResponse = fixture.toObject ? fixture.toObject() : fixture;
+
+    emitPointsTableUpdated(req, { reason: 'fixture_saved' });
     
     res.status(200).json({
       message: 'Fixture result saved successfully! Points updated automatically.',

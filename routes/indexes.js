@@ -150,6 +150,8 @@ async function createUserIndexes() {
     { points: -1, matchesPlayed: 1 },
     { group: 1, points: -1 },
     { group: 1, points: -1, fairnessPoint: -1 },
+    // CPL report / history: active teams with teamName, sort by points (multi-DB point tables)
+    { isActive: 1, isAdmin: 1, teamName: 1, points: -1 },
     
     // Search and filtering
     { teamName: 1, isActive: 1 },
@@ -367,6 +369,7 @@ async function createFixtureIndexes() {
     
     // Winner queries
     { winner: 1, isActive: 1 },
+    { isActive: 1, winner: 1 },
     { winner: 1, group: 1 },
     
     // Sorting queries
