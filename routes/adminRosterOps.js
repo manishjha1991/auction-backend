@@ -1,8 +1,8 @@
 /**
  * Commissioner / admin: direct player-for-player trade, pick from unsold, release — with preview + execute.
  *
- * Player trade (swap): same purse math, type limits, 48h trade lock, auto-reject of conflicting TradeRequests.
- * Does NOT enforce or increment tradesUsed (commissioner bypass). Skips TradeRequest + opponent acceptance.
+ * Player trade (swap): same purse math, 48h trade lock, auto-reject of conflicting TradeRequests.
+ * No tradesUsed, no Sapphire/Gold/Emerald/Silver roster caps (commissioner bypass). Skips TradeRequest flow.
  */
 const express = require('express');
 const mongoose = require('mongoose');
@@ -19,8 +19,6 @@ const {
 } = require('../utils/tradeApprovalShared');
 
 const CRORE = 10_000_000;
-const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
-const COMBINED_ES_LIMIT = 5;
 
 async function requireAdmin(adminUserId) {
   if (!adminUserId) {
@@ -43,25 +41,6 @@ function purseNum(doc) {
 
 function toCr(n) {
   return Number((Number(n) / CRORE).toFixed(2));
-}
-
-async function getUserTypeCounts(userId) {
-  const ups = await UserPlayer.find({ userId, isActive: true }).populate('playerId', 'type').lean();
-  const counts = { Sapphire: 0, Gold: 0, Emerald: 0, Silver: 0 };
-  for (const up of ups) {
-    const t = up.playerId?.type;
-    if (counts.hasOwnProperty(t)) counts[t] += 1;
-  }
-  return counts;
-}
-
-function wouldExceedTypeLimits(counts) {
-  for (const [k, v] of Object.entries(TYPE_LIMITS)) {
-    if ((counts[k] || 0) > v) return true;
-  }
-  const es = (counts.Emerald || 0) + (counts.Sapphire || 0);
-  if (es > COMBINED_ES_LIMIT) return true;
-  return false;
 }
 
 // ---------- Teams & rosters ----------
@@ -134,8 +113,7 @@ router.get('/unsold', async (req, res) => {
 });
 
 // ---------- Trade (commissioner only) ----------
-// Intentionally NO tradesUsed cap or increment here. Normal trade quota stays in routes/trades.js
-// (create request, admin approve) and routes/releases.js — do not duplicate those checks in this file.
+// Intentionally NO tradesUsed, NO roster type caps here. Normal rules stay in routes/trades.js & routes/picks.js.
 router.post('/trade/preview', async (req, res) => {
   try {
     const { adminUserId, player1Id, player2Id } = req.body;
@@ -171,19 +149,12 @@ router.post('/trade/preview', async (req, res) => {
     const newP1 = p1 + v1 - v2;
     const newP2 = p2 + v2 - v1;
 
-    const [c1, c2] = await Promise.all([getUserTypeCounts(team1._id), getUserTypeCounts(team2._id)]);
     const pl1 = up1.playerId;
     const pl2 = up2.playerId;
-    if (pl1?.type) c1[pl1.type] = Math.max(0, (c1[pl1.type] || 0) - 1);
-    if (pl2?.type) c1[pl2.type] = (c1[pl2.type] || 0) + 1;
-    if (pl2?.type) c2[pl2.type] = Math.max(0, (c2[pl2.type] || 0) - 1);
-    if (pl1?.type) c2[pl1.type] = (c2[pl1.type] || 0) + 1;
 
     const errors = [];
     if (newP1 < 0) errors.push(`${team1.teamName || 'Team A'} purse would be negative (₹${toCr(newP1)} Cr)`);
     if (newP2 < 0) errors.push(`${team2.teamName || 'Team B'} purse would be negative (₹${toCr(newP2)} Cr)`);
-    if (wouldExceedTypeLimits(c1)) errors.push(`${team1.teamName || 'Team A'} would exceed type limits after trade`);
-    if (wouldExceedTypeLimits(c2)) errors.push(`${team2.teamName || 'Team B'} would exceed type limits after trade`);
 
     if ((await isTradeLocked(playerDoc1)) || (await isTradeLocked(playerDoc2))) {
       errors.push('One or both players are trade-locked (same rule as Admin Trades approval)');
@@ -249,17 +220,6 @@ router.post('/trade/execute', async (req, res) => {
       return res.status(400).json({ message: 'Trade would leave a negative purse — use preview first' });
     }
 
-    const [c1, c2] = await Promise.all([getUserTypeCounts(team1._id), getUserTypeCounts(team2._id)]);
-    const pl1 = await Player.findById(player1Id);
-    const pl2 = await Player.findById(player2Id);
-    if (pl1?.type) c1[pl1.type] = Math.max(0, (c1[pl1.type] || 0) - 1);
-    if (pl2?.type) c1[pl2.type] = (c1[pl2.type] || 0) + 1;
-    if (pl2?.type) c2[pl2.type] = Math.max(0, (c2[pl2.type] || 0) - 1);
-    if (pl1?.type) c2[pl1.type] = (c2[pl1.type] || 0) + 1;
-    if (wouldExceedTypeLimits(c1) || wouldExceedTypeLimits(c2)) {
-      return res.status(400).json({ message: 'Trade would violate type limits' });
-    }
-
     const [lockP1, lockP2] = await Promise.all([Player.findById(player1Id), Player.findById(player2Id)]);
     if ((await isTradeLocked(lockP1)) || (await isTradeLocked(lockP2))) {
       return res.status(400).json({
@@ -293,7 +253,7 @@ router.post('/trade/execute', async (req, res) => {
 
     res.json({
       ok: true,
-      message: 'Trade completed (roster tools: no tradesUsed cap or increment)',
+      message: 'Trade completed (roster: no tradesUsed / no type caps)',
       team1: { name: team1.teamName, purseAfterCr: toCr(newP1) },
       team2: { name: team2.teamName, purseAfterCr: toCr(newP2) },
       otherTradeRequestsRejected: otherRequestsRejected,
@@ -325,17 +285,8 @@ router.post('/pick/preview', async (req, res) => {
     const purse = purseNum(user);
     const after = purse - basePrice;
 
-    const counts = await getUserTypeCounts(user._id);
-    const atTypeLimit = (counts[player.type] || 0) >= (TYPE_LIMITS[player.type] ?? 99);
-    const sim = { ...counts };
-    sim[player.type] = (sim[player.type] || 0) + 1;
-
     const errors = [];
     if (after < 0) errors.push(`Insufficient purse: need ₹${toCr(basePrice)} Cr, have ₹${toCr(purse)} Cr`);
-    if (atTypeLimit) errors.push(`Team already at max ${player.type} players (${TYPE_LIMITS[player.type]})`);
-    if (wouldExceedTypeLimits(sim)) {
-      errors.push('Would exceed Emerald/Sapphire combined or per-type cap');
-    }
 
     res.json({
       ok: errors.length === 0,
@@ -377,16 +328,6 @@ router.post('/pick/execute', async (req, res) => {
     const basePrice = Number(player.basePrice || 0);
     const purse = purseNum(user);
     if (purse < basePrice) return res.status(400).json({ message: 'Insufficient purse' });
-
-    const counts = await getUserTypeCounts(user._id);
-    if ((counts[player.type] || 0) >= TYPE_LIMITS[player.type]) {
-      return res.status(400).json({ message: `Max ${player.type} players reached` });
-    }
-    const sim = { ...counts };
-    sim[player.type] = (sim[player.type] || 0) + 1;
-    if (wouldExceedTypeLimits(sim)) {
-      return res.status(400).json({ message: 'Would exceed roster type limits' });
-    }
 
     const newPurse = purse - basePrice;
     user.purse = mongoose.Types.Decimal128.fromString(String(newPurse));
