@@ -28,7 +28,7 @@ const HARD_CODED_URI =
   'mongodb+srv://sudha1793:eLyeXqVAC1kdCfUn@auction-app.z20al.mongodb.net/?retryWrites=true&w=majority&appName=auction-app';
 
 const uri = process.env.MONGODB_URI || process.env.DB_URI || HARD_CODED_URI;
-const dbName = 'cpl_17';
+const dbName = 'cpl_15';
 
 // Load models
 const Player = require('../models/Player');

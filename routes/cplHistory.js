@@ -16,8 +16,8 @@ function getBaseMongoUri() {
 }
 
 /**
- * Databases to include: CPL_HISTORY_DBS=cpl_17,cpl_18,cpl_19,cpl_20
- * Or auto: all cpl_N from 17 up to (currentSeason - 1) e.g. cpl_21 → cpl_17..cpl_20
+ * Databases to include: CPL_HISTORY_DBS=cpl_15,cpl_16,cpl_17,cpl_18
+ * Or auto: all cpl_N from 15 up to (currentSeason - 1) e.g. cpl_19 → cpl_15..cpl_18
  */
 function seasonNumFromDbName(name) {
   const m = String(name).match(/^cpl_(\d+)$/i);
@@ -32,15 +32,15 @@ function resolveHistoryDbNames() {
     return arr;
   }
 
-  const currentName = mongoose.connection?.name || process.env.MONGO_DB_NAME || 'cpl_21';
+  const currentName = mongoose.connection?.name || process.env.MONGO_DB_NAME || 'cpl_19';
   const m = String(currentName).match(/^cpl_(\d+)$/i);
-  const num = m ? parseInt(m[1], 10) : 21;
+  const num = m ? parseInt(m[1], 10) : 19;
   const out = [];
-  for (let i = 17; i < num; i++) {
+  for (let i = 15; i < num; i++) {
     out.push(`cpl_${i}`);
   }
   if (out.length === 0) {
-    return ['cpl_20', 'cpl_19', 'cpl_18', 'cpl_17'];
+    return ['cpl_18', 'cpl_17', 'cpl_16', 'cpl_15'];
   }
   return out.reverse();
 }

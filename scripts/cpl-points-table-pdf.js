@@ -2,7 +2,7 @@
 /**
  * CPL Points Table PDF Generator
  *
- * Pulls point table data from cpl_17, cpl_18, cpl_19, cpl_20 and generates a PDF
+ * Pulls point table data from cpl_15..cpl_18 and generates a PDF
  * showing standings (Points, Fairness, NRR, Matches Played) for each season.
  *
  * Usage:
@@ -30,8 +30,8 @@ const HARD_CODED_URI =
 const BASE_URI = (HARD_CODED_URI || '')
   .replace(/\?.*$/, '')
   .replace(/\/$/, '');
-// Most recent first (cpl_20 at top)
-const DATABASES = ['cpl_20', 'cpl_19', 'cpl_18', 'cpl_17'];
+// Most recent first (cpl_18 at top)
+const DATABASES = ['cpl_18', 'cpl_17', 'cpl_16', 'cpl_15'];
 
 // --- NRR calculation helpers (same logic as user.js) ---
 const parseRuns = (scoreString) => {

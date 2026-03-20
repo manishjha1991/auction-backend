@@ -49,7 +49,7 @@ const connectDB = async () => {
   await mongoose.connect(uri, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
-    dbName: 'cpl_17',
+    dbName: 'cpl_15',
   });
   console.log('✅ Connected to MongoDB');
 };

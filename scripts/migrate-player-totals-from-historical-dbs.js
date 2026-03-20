@@ -3,16 +3,17 @@ const PlayerStats = require('../models/PlayerStats');
 const Player = require('../models/Player');
 
 const MONGODB_BASE_URI = 'mongodb+srv://sudha1793:eLyeXqVAC1kdCfUn@auction-app.z20al.mongodb.net/';
-const SOURCE_DATABASES = ['cpl_14', 'cpl_15', 'cpl_16','cpl_17','cpl_18','cpl_19'];
-const TARGET_DATABASE = 'cpl_20';
+/** Historical CPL DBs to aggregate (adjust if you still use older cpl_12..cpl_14 archives). */
+const SOURCE_DATABASES = ['cpl_15', 'cpl_16', 'cpl_17', 'cpl_18'];
+const TARGET_DATABASE = 'cpl_19';
 
 /**
  * Migrate Player Totals from Historical Databases
  * 
  * This script:
  * 1. Resets totalRuns, totalWickets, matchesPlayed to 0 for all active players in target
- * 2. Connects to cpl_14..cpl_19, calculates totals from PlayerStats in each database
- * 3. Aggregates totals and updates Player collection in cpl_20
+ * 2. Connects to SOURCE_DATABASES, calculates totals from PlayerStats in each database
+ * 3. Aggregates totals and updates Player collection in TARGET_DATABASE (live season)
  * 
  * Re-run safe: First deletes (resets) totals, then inserts fresh values. No duplicates.
  * 
