@@ -1,9 +1,8 @@
 /**
  * Commissioner / admin: direct player-for-player trade, pick from unsold, release — with preview + execute.
  *
- * Player trade (swap): after confirmation, matches /api/trades admin approve — same purse math, type limits,
- * 48h trade lock, tradesUsed +1 for BOTH teams, auto-reject of other active TradeRequests involving those players.
- * Skips only: creating a TradeRequest and counter-user acceptance (admin acts for both sides).
+ * Player trade (swap): same purse math, type limits, 48h trade lock, auto-reject of conflicting TradeRequests.
+ * Does NOT enforce or increment tradesUsed (commissioner bypass). Skips TradeRequest + opponent acceptance.
  */
 const express = require('express');
 const mongoose = require('mongoose');
@@ -18,8 +17,6 @@ const {
   setTradeLockOnPlayers,
   autoRejectTradesInvolvingPlayers,
 } = require('../utils/tradeApprovalShared');
-
-const TRADES_USED_CAP = 6; // same as routes/trades.js (comment says "4 trades" but code checks 6)
 
 const CRORE = 10_000_000;
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
@@ -136,7 +133,9 @@ router.get('/unsold', async (req, res) => {
   }
 });
 
-// ---------- Trade ----------
+// ---------- Trade (commissioner only) ----------
+// Intentionally NO tradesUsed cap or increment here. Normal trade quota stays in routes/trades.js
+// (create request, admin approve) and routes/releases.js — do not duplicate those checks in this file.
 router.post('/trade/preview', async (req, res) => {
   try {
     const { adminUserId, player1Id, player2Id } = req.body;
@@ -159,8 +158,8 @@ router.post('/trade/preview', async (req, res) => {
     }
 
     const [fullTeam1, fullTeam2, playerDoc1, playerDoc2] = await Promise.all([
-      User.findById(team1._id).select('teamName abbreviation purse tradesUsed'),
-      User.findById(team2._id).select('teamName abbreviation purse tradesUsed'),
+      User.findById(team1._id).select('teamName abbreviation purse'),
+      User.findById(team2._id).select('teamName abbreviation purse'),
       Player.findById(player1Id),
       Player.findById(player2Id),
     ]);
@@ -188,12 +187,6 @@ router.post('/trade/preview', async (req, res) => {
 
     if ((await isTradeLocked(playerDoc1)) || (await isTradeLocked(playerDoc2))) {
       errors.push('One or both players are trade-locked (same rule as Admin Trades approval)');
-    }
-    if (Number(fullTeam1?.tradesUsed || 0) >= TRADES_USED_CAP) {
-      errors.push(`${fullTeam1.teamName || 'Team A'} has reached the trade-usage cap (${TRADES_USED_CAP})`);
-    }
-    if (Number(fullTeam2?.tradesUsed || 0) >= TRADES_USED_CAP) {
-      errors.push(`${fullTeam2.teamName || 'Team B'} has reached the trade-usage cap (${TRADES_USED_CAP})`);
     }
 
     res.json({
@@ -273,11 +266,6 @@ router.post('/trade/execute', async (req, res) => {
         message: 'Trade blocked: one or both players are already trade-locked (same as Admin Trades).',
       });
     }
-    if (Number(team1.tradesUsed || 0) >= TRADES_USED_CAP || Number(team2.tradesUsed || 0) >= TRADES_USED_CAP) {
-      return res.status(400).json({
-        message: `One or both teams have reached the trade-usage cap (${TRADES_USED_CAP}).`,
-      });
-    }
 
     up1.userId = team2._id;
     up2.userId = team1._id;
@@ -297,13 +285,6 @@ router.post('/trade/execute', async (req, res) => {
 
     await setTradeLockOnPlayers([player1Id, player2Id]);
 
-    try {
-      await Promise.all([
-        User.findByIdAndUpdate(team1._id, { $inc: { tradesUsed: 1 } }),
-        User.findByIdAndUpdate(team2._id, { $inc: { tradesUsed: 1 } }),
-      ]);
-    } catch (_) {}
-
     const otherRequestsRejected = await autoRejectTradesInvolvingPlayers(
       adminUserId,
       [player1Id, player2Id],
@@ -312,7 +293,7 @@ router.post('/trade/execute', async (req, res) => {
 
     res.json({
       ok: true,
-      message: 'Trade completed (same post-steps as Admin Trades approval)',
+      message: 'Trade completed (roster tools: no tradesUsed cap or increment)',
       team1: { name: team1.teamName, purseAfterCr: toCr(newP1) },
       team2: { name: team2.teamName, purseAfterCr: toCr(newP2) },
       otherTradeRequestsRejected: otherRequestsRejected,
