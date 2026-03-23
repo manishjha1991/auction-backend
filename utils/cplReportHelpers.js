@@ -133,10 +133,10 @@ async function loadOneReportSeason(base, dbName) {
       conn.once('connected', resolve);
       conn.once('error', reject);
     });
-    const { table, fixtureCount } = await fetchPointTableFromConnection(conn);
+    const { table: rawPointTable, fixtureCount } = await fetchPointTableFromConnection(conn);
     await conn.close();
 
-    const rows = table.map((t) => ({
+    const rows = rawPointTable.map((t) => ({
       rank: t.rank,
       teamName: t.teamName,
       teamKey: String(t.teamName || '').trim().toUpperCase(),
@@ -149,13 +149,25 @@ async function loadOneReportSeason(base, dbName) {
     }));
 
     const indexed = addSeasonIndices(rows);
+    const tableWithIndex = indexed.map((r) => ({
+      rank: r.rank,
+      teamName: r.teamName,
+      teamKey: r.teamKey,
+      points: r.points,
+      nrr: r.nrr,
+      fairness: r.fairness,
+      matchesPlayed: r.matchesPlayed,
+      wins: r.wins,
+      losses: r.losses,
+      seasonIndex: r.seasonIndex,
+    }));
     const seasonNum = dbName.replace(/^cpl_/i, '');
     return {
       ok: true,
       dbName,
       label: `CPL ${seasonNum}`,
       fixtureCount,
-      table: rows,
+      table: tableWithIndex,
       indexed,
     };
   } catch (e) {

@@ -41,6 +41,7 @@ function writePointTablePage(doc, dbName, table, left, colX, colW, rowHeight, ta
   doc.text('Pts', colX.pts + 2, y + 4, { width: colW.pts - 4 });
   doc.text('NRR', colX.nrr + 2, y + 4, { width: colW.nrr - 4 });
   doc.text('Fair', colX.fair + 2, y + 4, { width: colW.fair - 4 });
+  doc.text('Idx', colX.sidx + 2, y + 4, { width: colW.sidx - 4 });
   doc.text('Pl', colX.played + 2, y + 4, { width: colW.played - 6 });
   doc.text('W', colX.w + 3, y + 4, { width: colW.w - 6 });
   doc.text('L', colX.l + 3, y + 4, { width: colW.l - 6 });
@@ -60,6 +61,12 @@ function writePointTablePage(doc, dbName, table, left, colX, colW, rowHeight, ta
     doc.text(String(row.points), colX.pts + 2, y + 4, { width: colW.pts - 4 });
     doc.text(String(row.nrr), colX.nrr + 2, y + 4, { width: colW.nrr - 4 });
     doc.text(String(row.fairness), colX.fair + 2, y + 4, { width: colW.fair - 4 });
+    doc.text(
+      row.seasonIndex != null && row.seasonIndex !== '' ? Number(row.seasonIndex).toFixed(2) : '—',
+      colX.sidx + 2,
+      y + 4,
+      { width: colW.sidx - 4 },
+    );
     doc.text(String(row.matchesPlayed), colX.played + 2, y + 4, { width: colW.played - 6 });
     doc.text(String(row.wins), colX.w + 3, y + 4, { width: colW.w - 6 });
     doc.text(String(row.losses), colX.l + 3, y + 4, { width: colW.l - 6 });
@@ -77,32 +84,25 @@ function writeCompositePage(doc, composite, left, generatedAt, opts = {}) {
   });
   doc.moveDown(0.5);
   doc.fontSize(8).fillColor('#4a5568').text(
-    'Per-season index = 0.5×Norm(Pts) + 0.3×Norm(NRR) + 0.2×Norm(Fair). Combined = average across seasons.',
+    'Qualification index = average of per-season indices (see each CPL table). Formula per season: 0.5×Norm(Pts) + 0.3×Norm(NRR) + 0.2×Norm(Fair).',
     { width: 520 },
   );
   doc.moveDown(0.6);
 
-  const dbLabels = composite.dbOrder.map(cplLabel);
   const rowH = 14;
   let y = doc.y;
-  const wRank = 24;
-  const wTeam = 92;
-  const wCol = 64;
-  const wFinal = 56;
+  const wRank = 28;
+  const wTeam = 300;
+  const wIdx = 88;
   const startX = left;
-  const totalW = wRank + wTeam + wCol * dbLabels.length + wFinal;
+  const totalW = wRank + wTeam + wIdx;
 
   // PDFKit: rect().fill(c) updates current fill color — must reset before text or glyphs match the bar/row bg.
   doc.rect(startX, y, totalW, rowH).fill('#2c5282');
   doc.fillColor('#ffffff').fontSize(7);
   doc.text('#', startX + 4, y + 3, { width: wRank });
   doc.text('Team', startX + wRank + 3, y + 3, { width: wTeam });
-  let x = startX + wRank + wTeam;
-  dbLabels.forEach((lab) => {
-    doc.text(lab, x + 2, y + 3, { width: wCol - 4 });
-    x += wCol;
-  });
-  doc.text('Comb.', x + 2, y + 3, { width: wFinal });
+  doc.text('Qualification index', startX + wRank + wTeam + 2, y + 3, { width: wIdx - 4 });
   y += rowH;
 
   composite.rows.forEach((r, idx) => {
@@ -115,14 +115,8 @@ function writeCompositePage(doc, composite, left, generatedAt, opts = {}) {
     doc.rect(startX, y, totalW, rowH).stroke();
     doc.fillColor('#2d3748').fontSize(7);
     doc.text(String(idx + 1), startX + 4, y + 3, { width: wRank });
-    doc.text((r.teamName || '').substring(0, 14), startX + wRank + 3, y + 3, { width: wTeam });
-    x = startX + wRank + wTeam;
-    for (const db of composite.dbOrder) {
-      const v = r.byDb[db];
-      doc.text(v != null ? Number(v).toFixed(2) : '—', x + 2, y + 3, { width: wCol - 4 });
-      x += wCol;
-    }
-    doc.text(Number(r.finalAvg).toFixed(2), x + 2, y + 3, { width: wFinal });
+    doc.text((r.teamName || '').substring(0, 36), startX + wRank + 3, y + 3, { width: wTeam });
+    doc.text(Number(r.finalAvg).toFixed(2), startX + wRank + wTeam + 2, y + 3, { width: wIdx - 4 });
     y += rowH;
   });
 }
@@ -149,17 +143,13 @@ function generateCplReportPdfBuffer(snapshot) {
     doc.on('error', reject);
 
     const left = 36;
-    const colW = { rank: 22, team: 118, pts: 32, nrr: 42, fair: 34, played: 36, w: 22, l: 22 };
-    const colX = {
-      rank: left,
-      team: left + colW.rank,
-      pts: left + colW.rank + colW.team,
-      nrr: left + colW.rank + colW.team + colW.pts,
-      fair: left + colW.rank + colW.team + colW.pts + colW.nrr,
-      played: left + colW.rank + colW.team + colW.pts + colW.nrr + colW.fair,
-      w: left + colW.rank + colW.team + colW.pts + colW.nrr + colW.fair + colW.played,
-      l: left + colW.rank + colW.team + colW.pts + colW.nrr + colW.fair + colW.played + colW.w,
-    };
+    const colW = { rank: 20, team: 96, pts: 26, nrr: 32, fair: 28, sidx: 34, played: 30, w: 20, l: 20 };
+    let ax = left;
+    const colX = {};
+    ['rank', 'team', 'pts', 'nrr', 'fair', 'sidx', 'played', 'w', 'l'].forEach((k) => {
+      colX[k] = ax;
+      ax += colW[k];
+    });
     const tableWidth = Object.values(colW).reduce((a, b) => a + b, 0);
     const rowHeight = 16;
     const generatedAt = snapshot.generatedAt || new Date().toISOString();
@@ -167,14 +157,12 @@ function generateCplReportPdfBuffer(snapshot) {
     const composite =
       snapshot.composite && snapshot.composite.rows && snapshot.composite.rows.length
         ? {
-            dbOrder: snapshot.composite.columns.map((c) => c.dbName),
             rows: snapshot.composite.rows.map((r) => ({
               teamName: r.teamName,
-              byDb: r.byDb,
               finalAvg: r.finalAvg,
             })),
           }
-        : { dbOrder: [], rows: [] };
+        : { rows: [] };
 
     const allData = (snapshot.seasons || []).map((s) => ({
       dbName: s.dbName,
@@ -182,7 +170,7 @@ function generateCplReportPdfBuffer(snapshot) {
       error: s.ok ? undefined : s.error,
     }));
 
-    if (composite.rows.length > 0 && composite.dbOrder.length > 0) {
+    if (composite.rows.length > 0) {
       writeCompositePage(doc, composite, left, generatedAt, { skipInitialAddPage: true });
       doc.addPage();
     }
