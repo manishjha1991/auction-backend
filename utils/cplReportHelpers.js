@@ -125,16 +125,13 @@ function buildCompositeRows(seasonResults) {
 }
 
 async function loadOneReportSeason(base, dbName) {
-  const uri = `${base}/${dbName}?retryWrites=true&w=majority`;
-  let conn;
   try {
-    conn = mongoose.createConnection(uri, { dbName, maxPoolSize: 4 });
-    await new Promise((resolve, reject) => {
-      conn.once('connected', resolve);
-      conn.once('error', reject);
-    });
+    if (mongoose.connection?.readyState !== 1) {
+      throw new Error('MongoDB not connected');
+    }
+    // Reuse the existing mongoose pool across DBs (Atlas M0-safe)
+    const conn = mongoose.connection.useDb(dbName, { useCache: true });
     const { table: rawPointTable, fixtureCount } = await fetchPointTableFromConnection(conn);
-    await conn.close();
 
     const rows = rawPointTable.map((t) => ({
       rank: t.rank,
@@ -171,11 +168,6 @@ async function loadOneReportSeason(base, dbName) {
       indexed,
     };
   } catch (e) {
-    if (conn) {
-      try {
-        await conn.close();
-      } catch (_) {}
-    }
     return {
       ok: false,
       dbName,

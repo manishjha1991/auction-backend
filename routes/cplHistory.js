@@ -49,22 +49,22 @@ function resolveHistoryDbNames() {
 /** Parallel season loads; cap simultaneous DB connections (Atlas-friendly). */
 const HISTORY_PARALLEL = Math.max(1, Math.min(12, parseInt(process.env.CPL_HISTORY_PARALLEL || '6', 10) || 6));
 
-async function loadOneHistorySeason(base, dbName) {
-  const uri = `${base}/${dbName}?retryWrites=true&w=majority`;
-  let conn;
+async function loadOneHistorySeason(_base, dbName) {
   try {
-    conn = mongoose.createConnection(uri, { dbName, maxPoolSize: 4 });
-    await new Promise((resolve, reject) => {
-      conn.once('connected', resolve);
-      conn.once('error', reject);
-    });
+    // IMPORTANT (Atlas M0-friendly):
+    // Reuse the existing mongoose pool instead of opening new TCP pools per DB.
+    // `useDb(..., { useCache: true })` gives a connection-like object backed by the same client.
+    if (mongoose.connection?.readyState !== 1) {
+      throw new Error('MongoDB not connected');
+    }
+
+    const conn = mongoose.connection.useDb(dbName, { useCache: true });
 
     const [{ table, fixtureCount }, playoffFinal, playerHighlights] = await Promise.all([
       fetchPointTableFromConnection(conn),
       fetchPlayoffFinalWinner(conn),
       fetchSeasonPlayerHighlights(conn),
     ]);
-    await conn.close();
 
     const seasonNum = dbName.replace(/^cpl_/i, '');
     const insights = buildSeasonInsights(table);
@@ -98,11 +98,6 @@ async function loadOneHistorySeason(base, dbName) {
       },
     };
   } catch (e) {
-    if (conn) {
-      try {
-        await conn.close();
-      } catch (_) {}
-    }
     return { ok: false, dbName, message: e.message || String(e) };
   }
 }
@@ -123,11 +118,6 @@ async function mapWithConcurrency(items, limit, fn) {
  */
 router.get('/summary', async (req, res) => {
   try {
-    const base = getBaseMongoUri();
-    if (!base) {
-      return res.status(503).json({ message: 'MONGO_URI not configured' });
-    }
-
     const dbNames = resolveHistoryDbNames();
     const cached = getCachedHistorySummary(dbNames);
     if (cached && cached.ok) {
@@ -137,7 +127,7 @@ router.get('/summary', async (req, res) => {
     }
 
     const results = await mapWithConcurrency(dbNames, HISTORY_PARALLEL, (dbName) =>
-      loadOneHistorySeason(base, dbName),
+      loadOneHistorySeason(null, dbName),
     );
 
     const seasons = [];

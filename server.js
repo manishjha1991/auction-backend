@@ -46,14 +46,17 @@ app.set('trust proxy', true);
 
 app.set('io', io);
 // 🚀 OPTIMIZED MongoDB Connection Pooling Configuration
+const poolMax = parseInt(process.env.MONGO_MAX_POOL_SIZE || '10', 10);
+const poolMin = parseInt(process.env.MONGO_MIN_POOL_SIZE || '0', 10);
 const mongooseOptions = {
   dbName: 'cpl_19',
   useNewUrlParser: true,
   useUnifiedTopology: true,
   
   // ⚡ CONNECTION POOLING - Core Performance Settings
-  maxPoolSize: 20,        // Increased from 10 - Handle more concurrent users
-  minPoolSize: 8,         // Increased from 5 - Keep more connections ready
+  // IMPORTANT: Atlas M0 has low connection limits; keep pools small by default.
+  maxPoolSize: Number.isFinite(poolMax) ? poolMax : 10,
+  minPoolSize: Number.isFinite(poolMin) ? poolMin : 0,
   maxIdleTimeMS: 60000,   // Increased from 30s - Keep connections alive longer
   maxConnecting: 5,       // Allow 5 simultaneous connection attempts
   
