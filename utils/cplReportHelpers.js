@@ -81,6 +81,21 @@ function parseReportDbs() {
   return ['cpl_19', 'cpl_18', 'cpl_17'];
 }
 
+function parseMilestoneDbs() {
+  const envList = process.env.CPL_MILESTONE_DBS;
+  if (envList && String(envList).trim()) {
+    return String(envList)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return ['cpl_12', 'cpl_13', 'cpl_14', 'cpl_15', 'cpl_16', 'cpl_17', 'cpl_18', 'cpl_19'];
+}
+
+function parseCareerSummaryDbs() {
+  return parseMilestoneDbs();
+}
+
 function normaliser(values) {
   const nums = values.map(Number).filter((v) => !Number.isNaN(v));
   if (nums.length === 0) return () => 100;
@@ -179,6 +194,197 @@ async function loadOneReportSeason(base, dbName) {
   }
 }
 
+async function countMilestonesForDb(dbName) {
+  if (mongoose.connection?.readyState !== 1) throw new Error('MongoDB not connected');
+  const conn = mongoose.connection.useDb(dbName, { useCache: true });
+  const col = conn.db.collection('playerstats');
+  const baseMatch = {
+    playerId: { $exists: true, $ne: null },
+    userId: { $exists: true, $ne: null },
+    'battingStats.runs': { $exists: true, $ne: null },
+  };
+  const [hundredsDocs, fiftiesDocs] = await Promise.all([
+    col
+      .aggregate([
+        { $match: { ...baseMatch, 'battingStats.runs': { $gte: 100 } } },
+        { $count: 'cnt' },
+      ])
+      .toArray(),
+    col
+      .aggregate([
+        { $match: { ...baseMatch, 'battingStats.runs': { $gte: 50, $lt: 100 } } },
+        { $count: 'cnt' },
+      ])
+      .toArray(),
+  ]);
+  return {
+    dbName,
+    hundreds: hundredsDocs[0]?.cnt || 0,
+    fifties: fiftiesDocs[0]?.cnt || 0,
+  };
+}
+
+async function buildMilestonesSummary() {
+  const dbNames = parseMilestoneDbs();
+  const perDb = [];
+  let totalHundreds = 0;
+  let totalFifties = 0;
+  for (const dbName of dbNames) {
+    try {
+      const row = await countMilestonesForDb(dbName);
+      perDb.push(row);
+      totalHundreds += row.hundreds;
+      totalFifties += row.fifties;
+    } catch (_) {
+      perDb.push({ dbName, hundreds: 0, fifties: 0 });
+    }
+  }
+  return { dbNames, perDb, totalHundreds, totalFifties };
+}
+
+function normName(name) {
+  return String(name || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function safeDiv(a, b) {
+  if (!b) return 0;
+  return a / b;
+}
+
+async function buildCplCareerPlayerSummary() {
+  const dbNames = parseCareerSummaryDbs();
+  const players = new Map();
+
+  for (const dbName of dbNames) {
+    try {
+      if (mongoose.connection?.readyState !== 1) throw new Error('MongoDB not connected');
+      const conn = mongoose.connection.useDb(dbName, { useCache: true });
+      const db = conn.db;
+
+      const [statsDocs, playerDocs, userDocs] = await Promise.all([
+        db
+          .collection('playerstats')
+          .find({ playerId: { $exists: true, $ne: null }, userId: { $exists: true, $ne: null } })
+          .project({
+            playerId: 1,
+            userId: 1,
+            battingStats: 1,
+            bowlingStats: 1,
+          })
+          .toArray(),
+        db.collection('players').find({}).project({ _id: 1, name: 1, role: 1 }).toArray(),
+        db.collection('users').find({}).project({ _id: 1, teamName: 1, abbreviation: 1 }).toArray(),
+      ]);
+
+      const playerById = new Map(playerDocs.map((p) => [String(p._id), { name: p.name, role: p.role }]));
+      const teamByUserId = new Map(userDocs.map((u) => [String(u._id), u.abbreviation || u.teamName || '']));
+
+      for (const row of statsDocs) {
+        const pMeta = playerById.get(String(row.playerId));
+        if (!pMeta || !pMeta.name) continue;
+        const key = normName(pMeta.name);
+        if (!key) continue;
+
+        const runs = Number(row?.battingStats?.runs) || 0;
+        const balls = Number(row?.battingStats?.balls) || 0;
+        const wickets = Number(row?.bowlingStats?.wickets) || 0;
+        const runsGiven = Number(row?.bowlingStats?.runsGiven) || 0;
+        const ballsBowled = Number(row?.bowlingStats?.ballsBowled) || 0;
+        const teamLabel = teamByUserId.get(String(row.userId)) || '';
+
+        if (!players.has(key)) {
+          players.set(key, {
+            playerName: pMeta.name,
+            role: pMeta.role || '',
+            teams: new Set(),
+            totalRuns: 0,
+            totalBalls: 0,
+            innings: 0,
+            totalFifties: 0,
+            totalHundreds: 0,
+            highestScore: 0,
+            totalWickets: 0,
+            totalRunsGiven: 0,
+            totalBallsBowled: 0,
+            bowlingInnings: 0,
+            bestBowlingWkts: 0,
+            bestBowlingRuns: Number.POSITIVE_INFINITY,
+          });
+        }
+
+        const agg = players.get(key);
+        if (teamLabel) agg.teams.add(teamLabel);
+
+        agg.totalRuns += runs;
+        agg.totalBalls += balls;
+        agg.totalRunsGiven += runsGiven;
+        agg.totalBallsBowled += ballsBowled;
+        agg.totalWickets += wickets;
+        agg.innings += 1;
+        if (ballsBowled > 0 || runsGiven > 0 || wickets > 0) agg.bowlingInnings += 1;
+
+        if (runs >= 100) agg.totalHundreds += 1;
+        else if (runs >= 50 && runs < 100) agg.totalFifties += 1;
+        if (runs > agg.highestScore) agg.highestScore = runs;
+
+        // Best bowling: prioritize wickets; tie-break by fewer runs conceded.
+        if (
+          wickets > agg.bestBowlingWkts ||
+          (wickets === agg.bestBowlingWkts && runsGiven < agg.bestBowlingRuns)
+        ) {
+          agg.bestBowlingWkts = wickets;
+          agg.bestBowlingRuns = runsGiven;
+        }
+      }
+    } catch (e) {
+      // continue with remaining DBs
+    }
+  }
+
+  const rows = Array.from(players.values()).map((p) => {
+    const strikeRate = safeDiv(p.totalRuns * 100, p.totalBalls);
+    const battingAverage = safeDiv(p.totalRuns, p.innings);
+    const bowlingAverage = p.totalWickets > 0 ? safeDiv(p.totalRunsGiven, p.totalWickets) : 0;
+    const bestBowling =
+      p.bestBowlingWkts > 0 || Number.isFinite(p.bestBowlingRuns)
+        ? `${p.bestBowlingWkts}/${Number.isFinite(p.bestBowlingRuns) ? p.bestBowlingRuns : 0}`
+        : '0/0';
+
+    return {
+      playerName: p.playerName,
+      role: p.role || null,
+      teams: Array.from(p.teams),
+      totalRuns: p.totalRuns,
+      totalFifties: p.totalFifties,
+      totalHundreds: p.totalHundreds,
+      highestScore: p.highestScore,
+      totalWickets: p.totalWickets,
+      bestBowling,
+      battingStrikeRate: Number(strikeRate.toFixed(2)),
+      battingAverage: Number(battingAverage.toFixed(2)),
+      bowlingAverage: Number(bowlingAverage.toFixed(2)),
+      innings: p.innings,
+      bowlingInnings: p.bowlingInnings,
+    };
+  });
+
+  rows.sort((a, b) => {
+    if (b.totalRuns !== a.totalRuns) return b.totalRuns - a.totalRuns;
+    if (b.totalWickets !== a.totalWickets) return b.totalWickets - a.totalWickets;
+    return a.playerName.localeCompare(b.playerName);
+  });
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    dbNames,
+    players: rows,
+  };
+}
+
 async function buildCplReportSnapshot() {
   const base = getReportBaseUri();
   if (!base) {
@@ -200,6 +406,7 @@ async function buildCplReportSnapshot() {
     okSeasons.length > 0
       ? buildCompositeRows(okSeasons.map((s) => ({ dbName: s.dbName, indexed: s.indexed })))
       : { rows: [], dbOrder: [] };
+  const milestones = await buildMilestonesSummary();
 
   return {
     ok: true,
@@ -210,6 +417,7 @@ async function buildCplReportSnapshot() {
     reportDatabases: dbNames,
     formulas: CPL_FORMULAS,
     worldCupNotes: CPL_WORLD_CUP_NOTES,
+    milestones,
     seasons,
     composite: {
       columns: composite.dbOrder.map((d) => ({ dbName: d, label: `CPL ${d.replace(/^cpl_/i, '')}` })),
@@ -230,8 +438,11 @@ module.exports = {
   getReportBaseUri,
   getRunningCplDbNameHint,
   parseReportDbs,
+  parseMilestoneDbs,
+  parseCareerSummaryDbs,
   seasonNumFromDbName,
   buildCplReportSnapshot,
+  buildCplCareerPlayerSummary,
   addSeasonIndices,
   buildCompositeRows,
 };

@@ -7,12 +7,18 @@ const { registerExtraCache } = require('./cache');
 
 const reportTtl = Math.max(15, Math.min(300, parseInt(process.env.CPL_REPORT_CACHE_TTL_SEC || '45', 10) || 45));
 const historyTtl = Math.max(30, Math.min(600, parseInt(process.env.CPL_HISTORY_CACHE_TTL_SEC || '120', 10) || 120));
+const careerTtl = Math.max(
+  60,
+  Math.min(900, parseInt(process.env.CPL_CAREER_CACHE_TTL_SEC || '300', 10) || 300),
+);
 
 const reportSnapshotCache = new NodeCache({ stdTTL: reportTtl, checkperiod: Math.floor(reportTtl / 3), useClones: false });
 const historySummaryCache = new NodeCache({ stdTTL: historyTtl, checkperiod: Math.floor(historyTtl / 3), useClones: false });
+const careerSummaryCache = new NodeCache({ stdTTL: careerTtl, checkperiod: Math.floor(careerTtl / 3), useClones: false });
 
 registerExtraCache(reportSnapshotCache);
 registerExtraCache(historySummaryCache);
+registerExtraCache(careerSummaryCache);
 
 const REPORT_SNAPSHOT_KEY = 'cpl-report:snapshot:v1';
 
@@ -40,10 +46,29 @@ function setCachedHistorySummary(dbNames, payload) {
   }
 }
 
+function getCachedCareerSummary(dbNames) {
+  return careerSummaryCache.get(historySummaryCacheKey(dbNames));
+}
+
+function setCachedCareerSummary(dbNames, payload) {
+  if (payload && payload.ok) {
+    careerSummaryCache.set(historySummaryCacheKey(dbNames), payload);
+  }
+}
+
+function invalidateCareerSummaryCache() {
+  try {
+    careerSummaryCache.flushAll();
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 /** After fixture / points / fairness updates on the live DB — report snapshot spans current+prior seasons. */
 function invalidateCplReportCache() {
   try {
     reportSnapshotCache.flushAll();
+    careerSummaryCache.flushAll();
   } catch (_) {
     /* ignore */
   }
@@ -64,6 +89,9 @@ module.exports = {
   setCachedReportSnapshot,
   getCachedHistorySummary,
   setCachedHistorySummary,
+  getCachedCareerSummary,
+  setCachedCareerSummary,
+  invalidateCareerSummaryCache,
   historySummaryCacheKey,
   invalidateCplReportCache,
   invalidateCplReadCaches,

@@ -33,5 +33,7 @@ const PlayerSchema = new mongoose.Schema({
 PlayerSchema.index({ isActive: 1 });
 PlayerSchema.index({ isSold: 1 });
 PlayerSchema.index({ type: 1 });
+// Career / rankings style: filter active roster + name
+PlayerSchema.index({ isActive: 1, name: 1 });
 
 module.exports = mongoose.model('Player', PlayerSchema);

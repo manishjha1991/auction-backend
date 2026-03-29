@@ -8,6 +8,8 @@ const UserPlayer = require('../models/UserPlayer'); // Adjust the path
 const MatchResult = require('../models/MatchResult');
 const Fixture = require('../models/Fixture');
 const { cacheConfig, invalidateCache, registerExtraCache, clearAllCaches } = require('../utils/cache');
+const { upsertLiveCareerSummaryForPlayer } = require('../utils/playerCareerSummary');
+const { invalidateCareerSummaryCache } = require('../utils/cplReadCaches');
 
 // 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats) - keeping for backward compatibility
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
@@ -532,6 +534,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
     try {
       console.log(`📊 Updating player ${playerId} totals with delta:`, deltaTotals);
       await applyPlayerStatDelta(playerId, deltaTotals);
+      await upsertLiveCareerSummaryForPlayer(playerId);
+      invalidateCareerSummaryCache();
     } catch (deltaError) {
       console.error(`⚠️ Failed to update player totals for ${playerId}, but stats saved successfully:`, deltaError);
       // Don't throw - stats are already saved, this is just a bonus update
@@ -579,6 +583,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
     try {
       console.log(`📊 Adding new stats for player ${playerId} with delta:`, deltaTotals);
       await applyPlayerStatDelta(playerId, deltaTotals);
+      await upsertLiveCareerSummaryForPlayer(playerId);
+      invalidateCareerSummaryCache();
     } catch (deltaError) {
       console.error(`⚠️ Failed to update player totals for ${playerId}, but stats saved successfully:`, deltaError);
       // Don't throw - stats are already saved, this is just a bonus update
@@ -1067,6 +1073,8 @@ router.post('/bulk-store', async (req, res) => {
         
         // Apply delta to player totals
         await applyPlayerStatDelta(entry.playerId, deltaTotals);
+        await upsertLiveCareerSummaryForPlayer(entry.playerId);
+        invalidateCareerSummaryCache();
       } else {
         // Create new entry (either no existing stats OR it's a playoff score)
         // For new entries, delta equals the new totals
@@ -1101,6 +1109,8 @@ router.post('/bulk-store', async (req, res) => {
         // Apply delta to player totals (non-blocking - don't fail OCR upload if this fails)
         try {
           await applyPlayerStatDelta(entry.playerId, deltaTotals);
+          await upsertLiveCareerSummaryForPlayer(entry.playerId);
+          invalidateCareerSummaryCache();
         } catch (deltaError) {
           console.error(`⚠️ Failed to update player totals for ${entry.playerId}, but stats saved successfully:`, deltaError);
           // Don't throw - stats are already saved, this is just a bonus update

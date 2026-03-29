@@ -23,6 +23,8 @@ const AppSettings = require('../models/AppSettings');
 const RetainedPlayer = require('../models/RetainedPlayer');
 const MatchResult = require('../models/MatchResult');
 const Tournament = require('../models/Tournament');
+const PlayerCareerSummary = require('../models/PlayerCareerSummary');
+const TeamHeadToHead = require('../models/TeamHeadToHead');
 
 // Create all indexes for maximum performance
 router.post('/create-all', async (req, res) => {
@@ -37,6 +39,10 @@ router.post('/create-all', async (req, res) => {
     // 2. PLAYER COLLECTION INDEXES
     console.log('👥 Creating Player indexes...');
     results.players = await createPlayerIndexes();
+
+    // 2b. PLAYER CAREER SUMMARY (CPL career page + upserts)
+    console.log('📊 Creating PlayerCareerSummary indexes...');
+    results.playerCareerSummaries = await createPlayerCareerSummaryIndexes();
 
     // 3. BID COLLECTION INDEXES
     console.log('💰 Creating Bid indexes...');
@@ -219,6 +225,7 @@ async function createPlayerIndexes() {
     // Search queries
     { name: 1, isActive: 1 },
     { name: 1, isSold: 1 },
+    { isActive: 1, name: 1 },
     
     // Sorting queries
     { basePrice: 1 },
@@ -235,6 +242,30 @@ async function createPlayerIndexes() {
   for (const index of indexes) {
     try {
       await Player.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// PLAYER CAREER SUMMARY — aligns with models/PlayerCareerSummary.js + career API queries
+async function createPlayerCareerSummaryIndexes() {
+  const indexes = [
+    // playerKey unique index comes from schema; use POST /sync-schema-indexes to align
+    { playerId: 1 },
+    { playerName: 1 },
+    { 'total.totalRuns': -1, 'total.totalWickets': -1, playerName: 1 },
+    { updatedAt: -1 },
+    { 'total.totalRuns': -1 },
+    { 'total.totalWickets': -1 },
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await PlayerCareerSummary.collection.createIndex(index);
       results.push({ index, status: 'created' });
     } catch (error) {
       results.push({ index, status: 'error', error: error.message });
@@ -902,12 +933,46 @@ async function createRetainedPlayerIndexes() {
   return results;
 }
 
+/**
+ * Sync indexes declared on Mongoose schemas (PlayerCareerSummary compound indexes, uniques, etc.).
+ * Safer than raw createIndex when schema already defines indexes.
+ */
+router.post('/sync-schema-indexes', async (req, res) => {
+  try {
+    const models = [
+      ['PlayerCareerSummary', PlayerCareerSummary],
+      ['Player', Player],
+      ['User', User],
+      ['PlayerStats', PlayerStats],
+      ['Fixture', Fixture],
+      ['TeamHeadToHead', TeamHeadToHead],
+    ];
+    const results = {};
+    for (const [name, Model] of models) {
+      try {
+        const syncResult = await Model.syncIndexes();
+        results[name] = { ok: true, syncIndexesResult: syncResult };
+      } catch (error) {
+        results[name] = { ok: false, error: error.message };
+      }
+    }
+    res.status(200).json({
+      success: true,
+      message: 'Schema indexes synced (drops extras not in schema)',
+      results,
+    });
+  } catch (error) {
+    console.error('sync-schema-indexes error', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Get index statistics
 router.get('/stats', async (req, res) => {
   try {
     const collections = [
       'users', 'players', 'bids', 'bidhistories', 'matchresults', 'fixtures',
-      'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
+      'playerstats', 'playercareersummaries', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
       'useractivities'
@@ -953,7 +1018,7 @@ router.post('/drop-all', async (req, res) => {
   try {
     const collections = [
       'users', 'players', 'bids', 'bidhistories', 'matchresults', 'fixtures',
-      'playerstats', 'traderequests', 'releaserequests', 'pickrequests',
+      'playerstats', 'playercareersummaries', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
       'useractivities'

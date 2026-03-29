@@ -4,7 +4,7 @@ const Player = require('../models/Player');
 
 const MONGODB_BASE_URI = 'mongodb+srv://sudha1793:eLyeXqVAC1kdCfUn@auction-app.z20al.mongodb.net/';
 /** Historical CPL DBs to aggregate (adjust if you still use older cpl_12..cpl_14 archives). */
-const SOURCE_DATABASES = ['cpl_15', 'cpl_16', 'cpl_17', 'cpl_18'];
+const SOURCE_DATABASES = ['cpl_12', 'cpl_13', 'cpl_14', 'cpl_15', 'cpl_16', 'cpl_17', 'cpl_18', 'cpl_19'];
 const TARGET_DATABASE = 'cpl_19';
 
 /**
