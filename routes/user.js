@@ -1560,6 +1560,7 @@ router.get('/:userId/trades-usage', async (req, res) => {
     const used = clampTradesUsed(user.tradesUsed);
     const cap = TRADE_SEASON_CAP;
     const remaining = Math.max(0, cap - used);
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({ tradesUsed: used, cap, remaining });
   } catch (e) {
     console.error('Trade usage error', e);
