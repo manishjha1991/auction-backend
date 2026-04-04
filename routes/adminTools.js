@@ -312,7 +312,7 @@ const runAuctionReset = async () => {
   };
 };
 
-const TRADE_CAP = 6;
+const { TRADE_SEASON_CAP: TRADE_CAP } = require('../utils/tradeConstants');
 
 // POST: clear all backend caches (use after direct DB edits to see fresh data)
 router.post('/clear-all-cache', async (req, res) => {

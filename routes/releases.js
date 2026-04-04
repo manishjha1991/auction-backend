@@ -5,6 +5,7 @@ const UserPlayer = require('../models/UserPlayer');
 const User = require('../models/User');
 const Player = require('../models/Player'); // Add Player model import
 const Bid = require('../models/Bid'); // Add Bid model import for cleanup
+const { TRADE_SEASON_CAP } = require('../utils/tradeConstants');
 
 const CRORE = 10000000;
 
@@ -88,9 +89,9 @@ router.post('/', async (req, res) => {
     if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
     // Guard: user cannot exceed 4 total trades (trade + release combined)
     // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const u = await (await require('../models/User')).findById(userId).select('tradesUsed').lean();
-    if (u && Number(u.tradesUsed || 0) >= 6) {
-      return res.status(400).json({ message: 'You have used all 4 trades.' });
+    const u = await User.findById(userId).select('tradesUsed').lean();
+    if (u && Number(u.tradesUsed || 0) >= TRADE_SEASON_CAP) {
+      return res.status(400).json({ message: `You have used all ${TRADE_SEASON_CAP} trades.` });
     }
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true }).lean();
