@@ -13,7 +13,11 @@ const {
   setTradeLockOnPlayers,
   autoRejectTradesInvolvingPlayers,
 } = require('../utils/tradeApprovalShared');
-const { TRADE_SEASON_CAP, MAX_ACTIVE_OUTGOING_TRADES } = require('../utils/tradeConstants');
+const {
+  TRADE_SEASON_CAP,
+  MAX_ACTIVE_OUTGOING_TRADES,
+  clampTradesUsed,
+} = require('../utils/tradeConstants');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
@@ -86,7 +90,7 @@ router.post('/', async (req, res) => {
     // Enforce total trade usage cap (completed trades + approved releases → tradesUsed)
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const proposer = await User.findById(fromUserId).select('tradesUsed').lean();
-    if (proposer && Number(proposer.tradesUsed || 0) >= TRADE_SEASON_CAP) {
+    if (proposer && clampTradesUsed(proposer.tradesUsed) >= TRADE_SEASON_CAP) {
       return res.status(400).json({ message: `You have used all ${TRADE_SEASON_CAP} trades.` });
     }
 
@@ -383,12 +387,12 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       }
 
       // 3. TRADE USAGE VALIDATION: Check if teams have trades remaining
-      if (Number(team1.tradesUsed || 0) >= TRADE_SEASON_CAP) {
+      if (clampTradesUsed(team1.tradesUsed) >= TRADE_SEASON_CAP) {
         return res.status(400).json({
           message: `${team1.teamName || 'Team 1'} has already used all ${TRADE_SEASON_CAP} trades.`,
         });
       }
-      if (Number(team2.tradesUsed || 0) >= TRADE_SEASON_CAP) {
+      if (clampTradesUsed(team2.tradesUsed) >= TRADE_SEASON_CAP) {
         return res.status(400).json({
           message: `${team2.teamName || 'Team 2'} has already used all ${TRADE_SEASON_CAP} trades.`,
         });

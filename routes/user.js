@@ -20,7 +20,7 @@ const Fixture = require('../models/Fixture');
 const UserPlayer = require('../models/UserPlayer');
 const TradeRequest = require('../models/TradeRequest');
 const ReleaseRequest = require('../models/ReleaseRequest');
-const { TRADE_SEASON_CAP } = require('../utils/tradeConstants');
+const { TRADE_SEASON_CAP, clampTradesUsed } = require('../utils/tradeConstants');
 const MatchResult = require('../models/MatchResult');
 const Tournament = require('../models/Tournament');
 const multer = require('multer');
@@ -1557,7 +1557,7 @@ router.get('/:userId/trades-usage', async (req, res) => {
     const { userId } = req.params;
     const user = await User.findById(userId).select('tradesUsed');
     if (!user) return res.status(404).json({ message: 'User not found' });
-    const used = Number(user.tradesUsed || 0);
+    const used = clampTradesUsed(user.tradesUsed);
     const cap = TRADE_SEASON_CAP;
     const remaining = Math.max(0, cap - used);
     res.json({ tradesUsed: used, cap, remaining });

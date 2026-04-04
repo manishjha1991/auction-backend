@@ -11,7 +11,15 @@ const TRADE_SEASON_CAP = 4;
 /** Max concurrent outgoing trade proposals per user (pending / counter / awaiting admin). */
 const MAX_ACTIVE_OUTGOING_TRADES = 4;
 
+/** Negative or invalid DB values must not inflate "remaining" or bypass season caps. */
+function clampTradesUsed(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
+
 module.exports = {
   TRADE_SEASON_CAP,
   MAX_ACTIVE_OUTGOING_TRADES,
+  clampTradesUsed,
 };

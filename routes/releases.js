@@ -5,7 +5,7 @@ const UserPlayer = require('../models/UserPlayer');
 const User = require('../models/User');
 const Player = require('../models/Player'); // Add Player model import
 const Bid = require('../models/Bid'); // Add Bid model import for cleanup
-const { TRADE_SEASON_CAP } = require('../utils/tradeConstants');
+const { TRADE_SEASON_CAP, clampTradesUsed } = require('../utils/tradeConstants');
 
 const CRORE = 10000000;
 
@@ -90,7 +90,7 @@ router.post('/', async (req, res) => {
     // Guard: user cannot exceed 4 total trades (trade + release combined)
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const u = await User.findById(userId).select('tradesUsed').lean();
-    if (u && Number(u.tradesUsed || 0) >= TRADE_SEASON_CAP) {
+    if (u && clampTradesUsed(u.tradesUsed) >= TRADE_SEASON_CAP) {
       return res.status(400).json({ message: `You have used all ${TRADE_SEASON_CAP} trades.` });
     }
     // 🚀 PERFORMANCE: Use .lean() for read-only query
