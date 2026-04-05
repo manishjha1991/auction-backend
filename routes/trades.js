@@ -76,7 +76,7 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'Missing required fields.' });
     }
 
-    // Enforce max 4 active outgoing trade requests for a user
+    // Enforce max active outgoing trade requests per user (MAX_ACTIVE_OUTGOING_TRADES)
     const activeCount = await TradeRequest.countDocuments({
       fromUser: fromUserId,
       status: { $in: ['pending', 'counter', 'admin_pending'] }

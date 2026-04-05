@@ -87,7 +87,7 @@ router.post('/', async (req, res) => {
   try {
     const { userId, playerId } = req.body;
     if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
-    // Guard: user cannot exceed 4 total trades (trade + release combined)
+    // Guard: user cannot exceed season trade cap (trade + release combined)
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const u = await User.findById(userId).select('tradesUsed').lean();
     if (u && clampTradesUsed(u.tradesUsed) >= TRADE_SEASON_CAP) {
