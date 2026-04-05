@@ -362,7 +362,9 @@ router.get("/players/data", async (req, res) => {
               else: null
             }
           },
-          profilePicture: { $ifNull: ['$profilePicture', null] }
+          profilePicture: { $ifNull: ['$profilePicture', null] },
+          tradeLocked: { $ifNull: ['$tradeLocked', false] },
+          tradeLockedUntil: 1
         }
       },
       {

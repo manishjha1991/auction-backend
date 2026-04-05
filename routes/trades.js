@@ -18,6 +18,7 @@ const {
   MAX_ACTIVE_OUTGOING_TRADES,
   clampTradesUsed,
 } = require('../utils/tradeConstants');
+const { invalidateCache } = require('../utils/cache');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
@@ -429,6 +430,9 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       ]);
 
       await setTradeLockOnPlayers([trade.offeredPlayer, trade.requestedPlayer]);
+      try {
+        invalidateCache('players:data');
+      } catch (_) {}
 
       trade.status = 'completed';
       trade.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };

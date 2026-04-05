@@ -12,10 +12,12 @@ const User = require('../models/User');
 const Player = require('../models/Player');
 const UserPlayer = require('../models/UserPlayer');
 const Bid = require('../models/Bid');
+const { invalidateCache } = require('../utils/cache');
 const {
   isTradeLocked,
   setTradeLockOnPlayers,
   autoRejectTradesInvolvingPlayers,
+  TRADE_LOCK_HOURS,
 } = require('../utils/tradeApprovalShared');
 
 const CRORE = 10_000_000;
@@ -244,6 +246,9 @@ router.post('/trade/execute', async (req, res) => {
     await Promise.all([up1.save(), up2.save(), team1.save(), team2.save()]);
 
     await setTradeLockOnPlayers([player1Id, player2Id]);
+    try {
+      invalidateCache('players:data');
+    } catch (_) {}
 
     const otherRequestsRejected = await autoRejectTradesInvolvingPlayers(
       adminUserId,
@@ -387,6 +392,14 @@ router.post('/release/preview', async (req, res) => {
       .lean();
     if (!up) return res.status(404).json({ message: 'Team does not own this player' });
 
+    const playerDoc = await Player.findById(playerId).lean();
+    if (!playerDoc) return res.status(404).json({ message: 'Player not found' });
+    if (await isTradeLocked(playerDoc)) {
+      return res.status(400).json({
+        message: `Cannot release: player is trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade.`,
+      });
+    }
+
     const user = await User.findById(teamUserId).lean();
     const refund = Number(up.bidValue || 0);
     const purse = purseNum(user);
@@ -423,6 +436,14 @@ router.post('/release/execute', async (req, res) => {
 
     const up = await UserPlayer.findOne({ userId: teamUserId, playerId, isActive: true });
     if (!up) return res.status(404).json({ message: 'Ownership not found' });
+
+    const playerDoc = await Player.findById(playerId).lean();
+    if (!playerDoc) return res.status(404).json({ message: 'Player not found' });
+    if (await isTradeLocked(playerDoc)) {
+      return res.status(400).json({
+        message: `Cannot release: player is trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade.`,
+      });
+    }
 
     const bidValue = Number(up.bidValue || 0);
     up.isActive = false;

@@ -6,6 +6,7 @@ const User = require('../models/User');
 const Player = require('../models/Player'); // Add Player model import
 const Bid = require('../models/Bid'); // Add Bid model import for cleanup
 const { TRADE_SEASON_CAP, clampTradesUsed } = require('../utils/tradeConstants');
+const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
 
 const CRORE = 10000000;
 
@@ -97,6 +98,14 @@ router.post('/', async (req, res) => {
     const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true }).lean();
     if (!ownership) return res.status(400).json({ message: 'You do not own this player' });
 
+    const playerForLock = await Player.findById(playerId).lean();
+    if (!playerForLock) return res.status(400).json({ message: 'Player not found' });
+    if (await isTradeLocked(playerForLock)) {
+      return res.status(400).json({
+        message: `This player cannot be released for ${TRADE_LOCK_HOURS} hours after a completed trade.`,
+      });
+    }
+
     // Prevent duplicate release requests while one is pending/admin_pending
     const existingPending = await ReleaseRequest.findOne({
       user: userId,
@@ -185,6 +194,12 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
       
       if (!user || !player) {
         return res.status(404).json({ message: 'User or player not found' });
+      }
+
+      if (await isTradeLocked(player)) {
+        return res.status(400).json({
+          message: `Cannot approve release: player is trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade.`,
+        });
       }
 
       // deactivate ownership
