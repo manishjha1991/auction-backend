@@ -214,10 +214,16 @@ router.get("/players/data", async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (2 minute cache for players data)
   const includeInactive = req.query.includeInactive === 'true';
   const cacheKey = includeInactive ? 'players:data:all' : 'players:data';
-  const cached = cacheConfig.medium.get(cacheKey);
-  if (cached) {
-    console.log(`✅ Players data cache HIT`);
-    return res.status(200).json(cached);
+  const skipCache =
+    req.query.nocache === '1' ||
+    req.query.nocache === 'true' ||
+    req.query.nocache === 'yes';
+  if (!skipCache) {
+    const cached = cacheConfig.medium.get(cacheKey);
+    if (cached) {
+      console.log(`✅ Players data cache HIT`);
+      return res.status(200).json(cached);
+    }
   }
 
   try {
