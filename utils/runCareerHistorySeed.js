@@ -18,7 +18,7 @@ const {
 } = require('./playerCareerSummary');
 
 function getSourceDbs() {
-  return (process.env.CPL_HISTORY_SEED_DBS || 'cpl_12,cpl_13,cpl_14,cpl_15,cpl_16,cpl_17,cpl_18')
+  return (process.env.CPL_HISTORY_SEED_DBS || 'cpl_15,cpl_16,cpl_17,cpl_18')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
