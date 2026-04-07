@@ -1,6 +1,6 @@
 /**
  * Point table + NRR for historical CPL databases (read-only).
- * Mirrors logic in routes/user.js and scripts/cpl-points-table-pdf.js
+ * Mirrors logic in routes/user.js (CPL points / NRR).
  */
 
 const parseRuns = (scoreString) => {

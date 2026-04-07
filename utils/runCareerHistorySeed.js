@@ -1,14 +1,13 @@
 /**
- * One-time script:
- * Seed PlayerCareerSummary.historical in current DB from historical DBs.
+ * Seed PlayerCareerSummary.historical from historical DBs (cpl_12..cpl_18 by default),
+ * rebuild live career blocks from current playerstats, and optionally recompute Player
+ * document totals from current PlayerStats (Top Rankings).
  *
- * Default source DBs: cpl_12..cpl_18 (NOT cpl_19 — current season is merged as "live" after seed).
- * Target DB: the database named in MONGO_URI path (…/cpl_19?…) OR MONGO_DB_NAME / DB_NAME.
- * If the URI has no DB segment (…mongodb.net/?…), Mongoose defaults to "test" — set MONGO_DB_NAME.
+ * Expects mongoose to already be connected (HTTP handler). CLI scripts connect first.
  */
-require('dotenv').config();
 const mongoose = require('mongoose');
 const Player = require('../models/Player');
+const PlayerStats = require('../models/PlayerStats');
 const PlayerCareerSummary = require('../models/PlayerCareerSummary');
 const {
   normName,
@@ -16,43 +15,14 @@ const {
   finalizeBlock,
   mergeBlocks,
   rebuildAllLiveCareerSummaries,
-} = require('../utils/playerCareerSummary');
+} = require('./playerCareerSummary');
 
-const MONGO_URI = process.env.MONGO_URI || '';
-if (!MONGO_URI) {
-  console.error('Missing MONGO_URI');
-  process.exit(1);
+function getSourceDbs() {
+  return (process.env.CPL_HISTORY_SEED_DBS || 'cpl_12,cpl_13,cpl_14,cpl_15,cpl_16,cpl_17,cpl_18')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
-
-/** True if URI path after host contains a database name (not just / or empty). */
-function mongoUriHasDatabaseName(uri) {
-  try {
-    const noQuery = uri.split('?')[0];
-    const idx = noQuery.indexOf('://');
-    if (idx < 0) return true;
-    const afterScheme = noQuery.slice(idx + 3);
-    const slashAfterHost = afterScheme.indexOf('/');
-    if (slashAfterHost < 0) return false;
-    const path = afterScheme.slice(slashAfterHost + 1);
-    return path.replace(/\/$/, '').length > 0;
-  } catch {
-    return true;
-  }
-}
-
-const explicitDbName = (process.env.MONGO_DB_NAME || process.env.DB_NAME || '').trim();
-if (!mongoUriHasDatabaseName(MONGO_URI) && !explicitDbName) {
-  console.error(
-    'MONGO_URI has no database in the path (e.g. …mongodb.net/cpl_19?…). ' +
-      'Data would go to the default DB (often "test"). Set MONGO_DB_NAME=cpl_19 (your live app DB) or fix the URI.',
-  );
-  process.exit(1);
-}
-
-const SOURCE_DBS = (process.env.CPL_HISTORY_SEED_DBS || 'cpl_12,cpl_13,cpl_14,cpl_15,cpl_16,cpl_17,cpl_18')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
 
 function addInnings(block, row) {
   const runs = Number(row?.battingStats?.runs) || 0;
@@ -84,25 +54,62 @@ function addInnings(block, row) {
   }
 }
 
-async function main() {
-  const connectOpts = {
-    maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE || '5', 10) || 5,
-    minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE || '0', 10) || 0,
-  };
-  if (explicitDbName) {
-    connectOpts.dbName = explicitDbName;
-  }
-  await mongoose.connect(MONGO_URI, connectOpts);
+/**
+ * Same aggregation as routes/playerStats `updatePlayerCumulativeStats` — kept here so admin
+ * can batch-rebuild Top Rankings fields without importing the router.
+ */
+async function updatePlayerCumulativeStatsFromStats(playerId) {
+  const allStats = await PlayerStats.find({ playerId });
 
-  const dbName = mongoose.connection.name;
-  console.log(`Connected. PlayerCareerSummary writes go to database: "${dbName}" (collection: playercareersummaries)`);
-  if (dbName === 'test' && !explicitDbName) {
-    console.warn('Warning: using database "test". If that was not intended, set MONGO_DB_NAME or add /yourDb to MONGO_URI.');
-  }
+  let totalRuns = 0;
+  let totalBalls = 0;
+  let totalRunsGiven = 0;
+  let totalBallsBowled = 0;
+  let totalWickets = 0;
+  let momCount = 0;
 
+  allStats.forEach((stat) => {
+    totalRuns += stat.battingStats?.runs || 0;
+    totalBalls += stat.battingStats?.balls || 0;
+    totalRunsGiven += stat.bowlingStats?.runsGiven || 0;
+    totalBallsBowled += stat.bowlingStats?.ballsBowled || 0;
+    totalWickets += stat.bowlingStats?.wickets || 0;
+    if (stat.isMom) momCount += 1;
+  });
+
+  await Player.findByIdAndUpdate(playerId, {
+    $set: {
+      totalRuns,
+      totalBalls,
+      totalRunsGiven,
+      totalBallsBowled,
+      totalWickets,
+      momCount,
+      matchesPlayed: allStats.length,
+    },
+  });
+}
+
+async function rebuildAllPlayerTotalsFromCurrentStats() {
+  const ids = await PlayerStats.distinct('playerId');
+  let updated = 0;
+  for (const playerId of ids) {
+    if (!playerId) continue;
+    await updatePlayerCumulativeStatsFromStats(playerId);
+    updated += 1;
+  }
+  return { playersUpdated: updated };
+}
+
+/**
+ * Seed historical career blocks from SOURCE_DBS and merge with live; then rebuild live from DB.
+ */
+async function runCareerHistorySeed() {
+  const SOURCE_DBS = getSourceDbs();
   const currentPlayers = await Player.find({}).select('_id name role').lean();
   const currentByKey = new Map(currentPlayers.map((p) => [normName(p.name), p]));
   const aggregateByKey = new Map();
+  const perDb = [];
 
   for (const dbName of SOURCE_DBS) {
     const conn = mongoose.connection.useDb(dbName, { useCache: true });
@@ -133,7 +140,7 @@ async function main() {
       const ownerTeam = userById.get(String(row.userId || ''));
       if (ownerTeam) holder.teams.add(ownerTeam);
     }
-    console.log(`Seeded from ${dbName}: ${statsDocs.length} innings`);
+    perDb.push({ database: dbName, inningsRead: statsDocs.length });
   }
 
   let upserts = 0;
@@ -163,18 +170,27 @@ async function main() {
     upserts += 1;
   }
 
-  // Ensure live block reflects current DB playerstats as of now.
   await rebuildAllLiveCareerSummaries();
 
-  console.log(`Done. Upserted historical summaries for ${upserts} players.`);
-  await mongoose.disconnect();
+  return {
+    upserts,
+    aggregateKeys: aggregateByKey.size,
+    perDb,
+  };
 }
 
-main().catch(async (e) => {
-  console.error('Seed failed:', e.message || String(e));
-  try {
-    await mongoose.disconnect();
-  } catch (_) {}
-  process.exit(1);
-});
+function getCareerHistorySeedPreview() {
+  return {
+    sourceDatabases: getSourceDbs(),
+    currentDatabase: mongoose.connection.name || null,
+  };
+}
 
+module.exports = {
+  getSourceDbs,
+  runCareerHistorySeed,
+  rebuildAllPlayerTotalsFromCurrentStats,
+  getCareerHistorySeedPreview,
+  /** Recompute Player document aggregates from current PlayerStats rows (single player). */
+  recomputePlayerDocumentTotalsFromStats: updatePlayerCumulativeStatsFromStats,
+};

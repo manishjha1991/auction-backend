@@ -19,6 +19,20 @@ const {
   runPurseAutoFix,
 } = require('../utils/purseAuditHelpers');
 const { invalidateCache, clearAllCaches } = require('../utils/cache');
+const { invalidateCareerSummaryCache } = require('../utils/cplReadCaches');
+const {
+  runCareerHistorySeed,
+  rebuildAllPlayerTotalsFromCurrentStats,
+  getCareerHistorySeedPreview,
+} = require('../utils/runCareerHistorySeed');
+const {
+  previewDuplicatePlayerStats,
+  executeDeleteDuplicatePlayerStats,
+} = require('../utils/duplicatePlayerStatsOps');
+const {
+  previewMigratePlayerTotals,
+  executeMigratePlayerTotals,
+} = require('../utils/migratePlayerTotalsFromHistoricalDbs');
 
 const AUCTION_RESET_COLLECTIONS = [
   'bidhistories',
@@ -647,6 +661,102 @@ router.post('/scripts/sync/preview', async (req, res) => {
     res
       .status(error.status || 500)
       .json({ message: error.message || 'Failed to build sync preview' });
+  }
+});
+
+router.post('/scripts/duplicate-player-stats/preview', async (req, res) => {
+  try {
+    const { adminUserId, battingOnly } = req.body;
+    await requireAdmin(adminUserId);
+    const plan = await previewDuplicatePlayerStats({ battingOnly: !!battingOnly });
+    res.json(plan);
+  } catch (error) {
+    console.error('duplicate-player-stats preview error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to scan for duplicate player stats' });
+  }
+});
+
+router.post('/scripts/duplicate-player-stats/execute', async (req, res) => {
+  try {
+    const { adminUserId, battingOnly, keepNewest } = req.body;
+    await requireAdmin(adminUserId);
+    const result = await executeDeleteDuplicatePlayerStats({
+      battingOnly: !!battingOnly,
+      keepNewest: !!keepNewest,
+    });
+    invalidateCareerSummaryCache();
+    invalidateCache('players:data');
+    res.json(result);
+  } catch (error) {
+    console.error('duplicate-player-stats execute error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to delete duplicate player stats' });
+  }
+});
+
+router.post('/scripts/player-totals-migrate/preview', async (req, res) => {
+  try {
+    const { adminUserId } = req.body;
+    await requireAdmin(adminUserId);
+    const plan = await previewMigratePlayerTotals();
+    res.json(plan);
+  } catch (error) {
+    console.error('player-totals-migrate preview error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to preview player totals migration' });
+  }
+});
+
+router.post('/scripts/player-totals-migrate/execute', async (req, res) => {
+  try {
+    const { adminUserId } = req.body;
+    await requireAdmin(adminUserId);
+    const result = await executeMigratePlayerTotals();
+    invalidateCache('players:data');
+    res.json(result);
+  } catch (error) {
+    console.error('player-totals-migrate execute error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to migrate player totals' });
+  }
+});
+
+router.post('/scripts/career-history-sync/preview', async (req, res) => {
+  try {
+    const { adminUserId } = req.body;
+    await requireAdmin(adminUserId);
+    res.json(getCareerHistorySeedPreview());
+  } catch (error) {
+    console.error('career-history-sync preview error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to read career history sync config' });
+  }
+});
+
+router.post('/scripts/career-history-sync/execute', async (req, res) => {
+  try {
+    const { adminUserId } = req.body;
+    await requireAdmin(adminUserId);
+    const career = await runCareerHistorySeed();
+    const playerTotals = await rebuildAllPlayerTotalsFromCurrentStats();
+    invalidateCareerSummaryCache();
+    invalidateCache('players:data');
+    res.json({
+      message: 'Career history seed and player totals rebuild completed',
+      career,
+      playerTotals,
+    });
+  } catch (error) {
+    console.error('career-history-sync execute error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to run career history sync' });
   }
 });
 
