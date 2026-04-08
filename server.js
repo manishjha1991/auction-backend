@@ -49,7 +49,7 @@ app.set('io', io);
 const poolMax = parseInt(process.env.MONGO_MAX_POOL_SIZE || '10', 10);
 const poolMin = parseInt(process.env.MONGO_MIN_POOL_SIZE || '0', 10);
 const mongooseOptions = {
-  dbName: 'cpl_20',
+  dbName: 'cpl_19',
   useNewUrlParser: true,
   useUnifiedTopology: true,
   
