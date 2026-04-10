@@ -14,12 +14,12 @@ const {
   autoRejectTradesInvolvingPlayers,
 } = require('../utils/tradeApprovalShared');
 const { clampTradesUsed } = require('../utils/tradeConstants');
-const {
-  getTradeRules,
-  assertPairAllowsNewProposal,
-  assertPairAllowsCompletion,
-} = require('../utils/tradeRules');
+const { getTradeRules, assertPairAllowsNewProposal } = require('../utils/tradeRules');
 const { invalidateCache } = require('../utils/cache');
+const {
+  getTradeApprovalBlockers,
+  validateTradeForAdminApproval,
+} = require('../utils/tradeApprovalBlockers');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
@@ -179,14 +179,15 @@ router.post('/', async (req, res) => {
     });
 
     // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const populated = await TradeRequest.findById(trade._id)
+    const populatedDoc = await TradeRequest.findById(trade._id)
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role')
-      .populate('requestedPlayer', 'name type role')
-      .lean();
+      .populate('requestedPlayer', 'name type role');
 
-    res.status(201).json(populated);
+    const createdObj = populatedDoc.toObject({ virtuals: true });
+    createdObj.approvalWarnings = await getTradeApprovalBlockers(populatedDoc);
+    res.status(201).json(createdObj);
   } catch (err) {
     console.error('Create trade error', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -223,7 +224,13 @@ router.post('/:tradeId/respond', async (req, res) => {
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role')
       .populate('requestedPlayer', 'name type role');
-    res.json(populated);
+    const respondObj = populated.toObject({ virtuals: true });
+    if (['pending', 'counter', 'admin_pending'].includes(populated.status)) {
+      respondObj.approvalWarnings = await getTradeApprovalBlockers(populated);
+    } else {
+      respondObj.approvalWarnings = [];
+    }
+    res.json(respondObj);
   } catch (err) {
     console.error('Respond trade error', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -277,7 +284,19 @@ router.get('/user/:userId', async (req, res) => {
       .populate('history.offeredPlayer', 'name type role')
       .populate('history.requestedPlayer', 'name type role')
       .sort({ createdAt: -1 });
-    res.json(trades);
+
+    const payload = await Promise.all(
+      trades.map(async (t) => {
+        const o = t.toObject({ virtuals: true });
+        if (['pending', 'counter', 'admin_pending'].includes(t.status)) {
+          o.approvalWarnings = await getTradeApprovalBlockers(t);
+        } else {
+          o.approvalWarnings = [];
+        }
+        return o;
+      })
+    );
+    res.json(payload);
   } catch (err) {
     console.error('List trades error', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -326,100 +345,21 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
 
     if (decision === 'approve') {
-      const rules = await getTradeRules();
-      try {
-        await assertPairAllowsCompletion(trade, rules.maxTradesPerOpponentPair);
-      } catch (e) {
-        if (e.statusCode) return res.status(e.statusCode).json({ message: e.message });
-        throw e;
+      const validation = await validateTradeForAdminApproval(trade);
+      if (!validation.ok) {
+        return res.status(400).json({ message: validation.blockers.join(' ') });
       }
 
-      // COMPREHENSIVE VALIDATION: Check all trade violations before approval
-      const [offeredUP, requestedUP] = await Promise.all([
-        UserPlayer.findOne({ playerId: trade.offeredPlayer, isActive: true }).populate('userId'),
-        UserPlayer.findOne({ playerId: trade.requestedPlayer, isActive: true }).populate('userId')
-      ]);
-      if (!offeredUP || !requestedUP) {
-        return res.status(400).json({ message: 'Players not available for trade' });
-      }
-      
-      const team1 = offeredUP.userId;
-      const team2 = requestedUP.userId;
-
-      // 1. PURSE VALIDATION: Ensure both teams would not go negative after swap
-      const offeredValue = Number(offeredUP.bidValue || 0);
-      const requestedValue = Number(requestedUP.bidValue || 0);
-      const team1Purse = Number(team1.purse || 0);
-      const team2Purse = Number(team2.purse || 0);
-      
-      const newTeam1Purse = team1Purse + offeredValue - requestedValue;
-      const newTeam2Purse = team2Purse + requestedValue - offeredValue;
-      
-      if (Number.isNaN(newTeam1Purse) || Number.isNaN(newTeam2Purse)) {
-        return res.status(400).json({ message: 'Invalid purse or bid values for trade validation.' });
-      }
-      if (newTeam1Purse < 0 || newTeam2Purse < 0) {
-        const toCr = (n) => (Number(n) / 10000000).toFixed(2);
-        const parts = [];
-        if (newTeam1Purse < 0) {
-          const shortfall = Math.abs(newTeam1Purse);
-          parts.push(`${team1.teamName || 'Team 1'}: current ₹${toCr(team1Purse)} Cr, after trade would be ₹${toCr(newTeam1Purse)} Cr, shortfall ₹${toCr(shortfall)} Cr`);
-        }
-        if (newTeam2Purse < 0) {
-          const shortfall = Math.abs(newTeam2Purse);
-          parts.push(`${team2.teamName || 'Team 2'}: current ₹${toCr(team2Purse)} Cr, after trade would be ₹${toCr(newTeam2Purse)} Cr, shortfall ₹${toCr(shortfall)} Cr`);
-        }
-        return res.status(400).json({
-          message: `Trade would result in negative purse balance. ${parts.join('; ')}.`
-        });
-      }
-
-      // 2. TYPE LIMITS VALIDATION: Check if trade violates team composition rules
-      const [team1Counts, team2Counts] = await Promise.all([
-        getUserTypeCounts(team1._id),
-        getUserTypeCounts(team2._id)
-      ]);
-      
-      // Get player types for validation
-      const [offeredPlayer, requestedPlayer] = await Promise.all([
-        Player.findById(trade.offeredPlayer),
-        Player.findById(trade.requestedPlayer)
-      ]);
-
-      if ((await isTradeLocked(offeredPlayer)) || (await isTradeLocked(requestedPlayer))) {
-        return res.status(400).json({
-          message: 'Trade blocked: one or both players are already trade-locked.'
-        });
-      }
-      
-      // Simulate post-trade counts
-      if (offeredPlayer?.type) team1Counts[offeredPlayer.type] = Math.max(0, (team1Counts[offeredPlayer.type] || 0) - 1);
-      if (requestedPlayer?.type) team1Counts[requestedPlayer.type] = (team1Counts[requestedPlayer.type] || 0) + 1;
-      if (requestedPlayer?.type) team2Counts[requestedPlayer.type] = Math.max(0, (team2Counts[requestedPlayer.type] || 0) - 1);
-      if (offeredPlayer?.type) team2Counts[offeredPlayer.type] = (team2Counts[offeredPlayer.type] || 0) + 1;
-
-      if (wouldExceedTypeLimits(team1Counts)) {
-        return res.status(400).json({ 
-          message: `Trade violates ${team1.teamName || 'Team 1'} type limits (Emerald/Sapphire caps).` 
-        });
-      }
-      if (wouldExceedTypeLimits(team2Counts)) {
-        return res.status(400).json({ 
-          message: `Trade violates ${team2.teamName || 'Team 2'} type limits (Emerald/Sapphire caps).` 
-        });
-      }
-
-      // 3. TRADE USAGE VALIDATION: Check if teams have trades remaining
-      if (clampTradesUsed(team1.tradesUsed) >= rules.tradeSeasonCap) {
-        return res.status(400).json({
-          message: `${team1.teamName || 'Team 1'} has already used all ${rules.tradeSeasonCap} trades.`,
-        });
-      }
-      if (clampTradesUsed(team2.tradesUsed) >= rules.tradeSeasonCap) {
-        return res.status(400).json({
-          message: `${team2.teamName || 'Team 2'} has already used all ${rules.tradeSeasonCap} trades.`,
-        });
-      }
+      const {
+        team1,
+        team2,
+        offeredUP,
+        requestedUP,
+        offeredPlayer,
+        requestedPlayer,
+        newTeam1Purse,
+        newTeam2Purse,
+      } = validation;
 
       // ALL VALIDATIONS PASSED - Proceed with trade execution
       console.log('✅ Trade validation passed - executing trade...');
