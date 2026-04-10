@@ -203,7 +203,11 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       // Any other unsold pick (e.g. after a cross-tier trade to refill a short category) adds +1 tradesUsed — same as a separate roster move.
       const userLean = await User.findById(item.user).select('tradesUsed').lean();
       const rules = await getTradeRules();
-      const releasePairDoc = await findUnpairedReleaseForSameTierPick(item.user, player.type);
+      const releasePairDoc = await findUnpairedReleaseForSameTierPick(
+        item.user,
+        player.type,
+        item.createdAt
+      );
 
       const usePair = !!releasePairDoc;
       const useStandaloneCharge = !usePair;

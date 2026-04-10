@@ -326,12 +326,11 @@ const runAuctionReset = async () => {
   };
 };
 
-const { clampTradesUsed } = require('../utils/tradeConstants');
-const { getTradeRules } = require('../utils/tradeRules');
 const {
   buildFullRepairPreview,
   executeReleasePickRepairs,
 } = require('../utils/releasePickRepairPlan');
+const { getTeamTradeUsageRows } = require('../utils/teamTradeUsageAccounting');
 
 // POST: clear all backend caches (use after direct DB edits to see fresh data)
 router.post('/clear-all-cache', async (req, res) => {
@@ -427,91 +426,76 @@ router.get('/team-trade-activity', async (req, res) => {
   try {
     const { adminUserId } = req.query;
     await requireAdmin(adminUserId);
-
-    const teams = await User.find({ isActive: true, isAdmin: false })
-      .select('_id name teamName tradesUsed')
-      .sort({ teamName: 1 })
-      .lean();
-
-    const teamIds = teams.map((t) => t._id);
-
-    const tradeRules = await getTradeRules();
-    const TRADE_CAP = tradeRules.tradeSeasonCap;
-
-    const [releaseCounts, pickCounts, pairedPickCounts, tradeAsFrom, tradeAsTo] = await Promise.all([
-      ReleaseRequest.aggregate([
-        { $match: { user: { $in: teamIds }, status: 'completed' } },
-        { $group: { _id: '$user', count: { $sum: 1 } } }
-      ]),
-      PickRequest.aggregate([
-        { $match: { user: { $in: teamIds }, status: 'completed' } },
-        { $group: { _id: '$user', count: { $sum: 1 } } }
-      ]),
-      ReleaseRequest.aggregate([
-        {
-          $match: {
-            user: { $in: teamIds },
-            status: 'completed',
-            pairedPickRequest: { $exists: true, $ne: null },
-          },
-        },
-        { $group: { _id: '$user', count: { $sum: 1 } } },
-      ]),
-      TradeRequest.aggregate([
-        { $match: { status: 'completed' } },
-        { $group: { _id: '$fromUser', count: { $sum: 1 } } }
-      ]),
-      TradeRequest.aggregate([
-        { $match: { status: 'completed' } },
-        { $group: { _id: '$toUser', count: { $sum: 1 } } }
-      ])
-    ]);
-
-    const releaseMap = new Map(releaseCounts.map((r) => [r._id.toString(), r.count]));
-    const pickMap = new Map(pickCounts.map((p) => [p._id.toString(), p.count]));
-    const pairedPickMap = new Map(pairedPickCounts.map((p) => [p._id.toString(), p.count]));
-    const tradeMap = new Map();
-    [...tradeAsFrom, ...tradeAsTo].forEach(({ _id, count }) => {
-      const uid = _id.toString();
-      tradeMap.set(uid, (tradeMap.get(uid) || 0) + count);
-    });
-
-    const result = teams.map((team) => {
-      const uid = team._id.toString();
-      const releases = releaseMap.get(uid) || 0;
-      const picks = pickMap.get(uid) || 0;
-      const pairedPicks = pairedPickMap.get(uid) || 0;
-      const trades = tradeMap.get(uid) || 0;
-      const tradesUsed = clampTradesUsed(team.tradesUsed);
-      const remaining = Math.max(0, TRADE_CAP - tradesUsed);
-      /** Unsold picks that charged a slot (not same-tier paired to a prior release). */
-      const standalonePicks = Math.max(0, picks - pairedPicks);
-      /** Should match tradesUsed if all events went through current server logic. */
-      const expectedTradesUsed = trades + releases + standalonePicks;
-      const usageDrift = tradesUsed - expectedTradesUsed;
-      return {
-        userId: uid,
-        teamName: team.teamName || team.name || 'Unknown',
-        name: team.name,
-        picks,
-        releases,
-        trades,
-        pairedPicks,
-        standalonePicks,
-        expectedTradesUsed,
-        usageDrift,
-        tradesUsed,
-        remaining,
-        cap: TRADE_CAP
-      };
-    });
-
-    res.json({ teams: result });
+    const teams = await getTeamTradeUsageRows();
+    res.json({ teams });
   } catch (error) {
     console.error('team-trade-activity error', error);
     res
       .status(error.status || 500)
       .json({ message: error.message || 'Failed to load team trade activity' });
+  }
+});
+
+// GET: teams where tradesUsed is BELOW event-based expected (under-count; e.g. wrong pick/release pairing)
+router.get('/trades-used-reconcile/preview', async (req, res) => {
+  try {
+    const { adminUserId } = req.query;
+    await requireAdmin(adminUserId);
+    const rows = await getTeamTradeUsageRows();
+    const under = rows.filter((r) => r.usageDrift < 0);
+    res.json({
+      teams: under.map((r) => ({
+        userId: r.userId,
+        teamName: r.teamName,
+        tradesUsed: r.tradesUsed,
+        expectedTradesUsed: r.expectedTradesUsed,
+        cap: r.cap,
+        suggestedTradesUsed: Math.min(r.expectedTradesUsed, r.cap),
+        shortBy: r.expectedTradesUsed - r.tradesUsed,
+      })),
+      totalTeams: under.length,
+      note:
+        'Stored tradesUsed is lower than trades + releases + standalone picks imply. Common causes: a pick was wrongly paired to an old release (no +1), or a bug. "Fix release + pick double count" only helps OVER-counts. This tool raises tradesUsed to match events (capped at season cap).',
+    });
+  } catch (error) {
+    console.error('trades-used-reconcile preview error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to load reconcile preview' });
+  }
+});
+
+// POST: set tradesUsed = min(expected, cap) for teams that are under-counted
+router.post('/trades-used-reconcile/execute', async (req, res) => {
+  try {
+    const { adminUserId, userIds } = req.body;
+    await requireAdmin(adminUserId);
+    const rows = await getTeamTradeUsageRows();
+    const filter =
+      Array.isArray(userIds) && userIds.length > 0 ? new Set(userIds.map(String)) : null;
+    const results = [];
+    for (const r of rows) {
+      if (r.usageDrift >= 0) continue;
+      if (filter && !filter.has(r.userId)) continue;
+      const newVal = Math.min(r.expectedTradesUsed, r.cap);
+      if (newVal <= r.tradesUsed) continue;
+      await User.updateOne({ _id: r.userId }, { $set: { tradesUsed: newVal } });
+      results.push({
+        userId: r.userId,
+        teamName: r.teamName,
+        from: r.tradesUsed,
+        to: newVal,
+      });
+    }
+    try {
+      invalidateCache('user-purses');
+    } catch (_) {}
+    res.json({ ok: true, results, updated: results.length });
+  } catch (error) {
+    console.error('trades-used-reconcile execute error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to reconcile trades used' });
   }
 });
 
