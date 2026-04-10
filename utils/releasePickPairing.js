@@ -4,6 +4,32 @@ const PickRequest = require('../models/PickRequest');
 
 const TIERS = ['Sapphire', 'Gold', 'Emerald', 'Silver'];
 
+/**
+ * Same-tier release + unsold pick only share one slot if they are the same roster move:
+ * pick request filed after the release completed, within this window. Otherwise the pick
+ * charges a separate slot (e.g. Sapphire pick after a trade must not pair to a stale Sapphire release).
+ */
+const MAX_MS_BETWEEN_RELEASE_COMPLETE_AND_PICK =
+  Number(process.env.TRADE_RELEASE_PICK_PAIR_MAX_MS) || 21 * 24 * 60 * 60 * 1000;
+
+function releaseEligibleToPairPickRequest(releaseDoc, pickCreatedAt) {
+  if (!pickCreatedAt) return true;
+  const pickT = new Date(pickCreatedAt).getTime();
+  if (Number.isNaN(pickT)) return true;
+  const relT = releaseDoc.updatedAt ? new Date(releaseDoc.updatedAt).getTime() : 0;
+  if (Number.isNaN(relT)) return true;
+  if (pickT < relT) return false;
+  if (pickT - relT > MAX_MS_BETWEEN_RELEASE_COMPLETE_AND_PICK) return false;
+  return true;
+}
+
+/** When approving a release, do not pair a same-tier pick completed ages ago (unrelated move). */
+function orphanPickRecentEnoughRelativeToNow(pickLean) {
+  const pickT = pickLean.updatedAt ? new Date(pickLean.updatedAt).getTime() : 0;
+  if (!pickT) return false;
+  return Date.now() - pickT <= MAX_MS_BETWEEN_RELEASE_COMPLETE_AND_PICK;
+}
+
 function unpairedReleaseFilter() {
   return {
     $or: [
@@ -20,20 +46,29 @@ async function pickIsAlreadyPairedToARelease(pickId) {
 /**
  * Completed release (same user) that can pair with an unsold pick of pickPlayerType.
  * Prefers `releasedPlayerType`; falls back to tier of the released Player for legacy rows.
+ * @param {Date} [pickCreatedAt] - PickRequest.createdAt; required for correct slot accounting.
  */
-async function findUnpairedReleaseForSameTierPick(userId, pickPlayerType) {
+async function findUnpairedReleaseForSameTierPick(userId, pickPlayerType, pickCreatedAt) {
   if (!TIERS.includes(pickPlayerType)) return null;
   const uid = mongoose.Types.ObjectId.isValid(userId)
     ? new mongoose.Types.ObjectId(userId)
     : userId;
 
-  const explicit = await ReleaseRequest.findOne({
+  const explicitList = await ReleaseRequest.find({
     user: uid,
     status: 'completed',
     releasedPlayerType: pickPlayerType,
     ...unpairedReleaseFilter(),
-  }).sort({ updatedAt: -1 });
-  if (explicit) return explicit;
+  })
+    .sort({ updatedAt: -1 })
+    .limit(40)
+    .lean();
+
+  for (const rel of explicitList) {
+    if (releaseEligibleToPairPickRequest(rel, pickCreatedAt)) {
+      return ReleaseRequest.findById(rel._id);
+    }
+  }
 
   const legacy = await ReleaseRequest.aggregate([
     {
@@ -58,10 +93,14 @@ async function findUnpairedReleaseForSameTierPick(userId, pickPlayerType) {
     },
     { $match: { 'rp.type': pickPlayerType } },
     { $sort: { updatedAt: -1 } },
-    { $limit: 1 },
+    { $limit: 40 },
   ]);
-  if (!legacy.length) return null;
-  return ReleaseRequest.findById(legacy[0]._id);
+  for (const row of legacy) {
+    if (releaseEligibleToPairPickRequest(row, pickCreatedAt)) {
+      return ReleaseRequest.findById(row._id);
+    }
+  }
+  return null;
 }
 
 /**
@@ -97,7 +136,9 @@ async function findOrphanPickToPairOnReleaseApprove(releaseMongooseDoc, released
   if (afterRequest.length === 1) return afterRequest[0];
   if (afterRequest.length > 1) return afterRequest[0];
 
-  if (unpairedSameTier.length === 1) return unpairedSameTier[0];
+  if (unpairedSameTier.length === 1 && orphanPickRecentEnoughRelativeToNow(unpairedSameTier[0])) {
+    return unpairedSameTier[0];
+  }
   return null;
 }
 
