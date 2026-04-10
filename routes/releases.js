@@ -105,7 +105,7 @@ router.post('/', async (req, res) => {
     if (!playerForLock) return res.status(400).json({ message: 'Player not found' });
     if (await isTradeLocked(playerForLock)) {
       return res.status(400).json({
-        message: `This player cannot be released for ${TRADE_LOCK_HOURS} hours after a completed trade.`,
+        message: `This player cannot be released for ${TRADE_LOCK_HOURS} hours after a completed trade or unsold pick.`,
       });
     }
 
@@ -201,7 +201,7 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
 
       if (await isTradeLocked(player)) {
         return res.status(400).json({
-          message: `Cannot approve release: player is trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade.`,
+          message: `Cannot approve release: player is trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade or unsold pick.`,
         });
       }
 

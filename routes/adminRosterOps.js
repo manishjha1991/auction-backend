@@ -159,7 +159,9 @@ router.post('/trade/preview', async (req, res) => {
     if (newP2 < 0) errors.push(`${team2.teamName || 'Team B'} purse would be negative (₹${toCr(newP2)} Cr)`);
 
     if ((await isTradeLocked(playerDoc1)) || (await isTradeLocked(playerDoc2))) {
-      errors.push('One or both players are trade-locked (same rule as Admin Trades approval)');
+      errors.push(
+        `One or both players are trade-locked for ${TRADE_LOCK_HOURS}h after a completed trade or unsold pick (same as trade approval)`
+      );
     }
 
     res.json({
@@ -225,7 +227,7 @@ router.post('/trade/execute', async (req, res) => {
     const [lockP1, lockP2] = await Promise.all([Player.findById(player1Id), Player.findById(player2Id)]);
     if ((await isTradeLocked(lockP1)) || (await isTradeLocked(lockP2))) {
       return res.status(400).json({
-        message: 'Trade blocked: one or both players are already trade-locked (same as Admin Trades).',
+        message: `Trade blocked: one or both players are trade-locked for ${TRADE_LOCK_HOURS}h after a completed trade or unsold pick.`,
       });
     }
 
@@ -364,6 +366,8 @@ router.post('/pick/execute', async (req, res) => {
 
     await Bid.deleteMany({ playerId });
 
+    await setTradeLockOnPlayers([playerId]);
+
     res.json({
       ok: true,
       message: 'Pick completed',
@@ -396,7 +400,7 @@ router.post('/release/preview', async (req, res) => {
     if (!playerDoc) return res.status(404).json({ message: 'Player not found' });
     if (await isTradeLocked(playerDoc)) {
       return res.status(400).json({
-        message: `Cannot release: player is trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade.`,
+        message: `Cannot release: player is trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade or unsold pick.`,
       });
     }
 
@@ -441,7 +445,7 @@ router.post('/release/execute', async (req, res) => {
     if (!playerDoc) return res.status(404).json({ message: 'Player not found' });
     if (await isTradeLocked(playerDoc)) {
       return res.status(400).json({
-        message: `Cannot release: player is trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade.`,
+        message: `Cannot release: player is trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade or unsold pick.`,
       });
     }
 

@@ -12,6 +12,7 @@ const {
   isTradeLocked,
   setTradeLockOnPlayers,
   autoRejectTradesInvolvingPlayers,
+  TRADE_LOCK_HOURS,
 } = require('../utils/tradeApprovalShared');
 const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules, assertPairAllowsNewProposal } = require('../utils/tradeRules');
@@ -157,9 +158,15 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'One or both players are not available for trade.' });
     }
 
-    if ((await isTradeLocked(offeredPlayer)) || (await isTradeLocked(requestedPlayer))) {
+    const lockHint = `Trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade or after being picked from unsold`;
+    if (await isTradeLocked(offeredPlayer)) {
       return res.status(409).json({
-        message: 'One or both players are already trade-locked and cannot be traded again.'
+        message: `Your offered player cannot be traded yet (${lockHint}).`,
+      });
+    }
+    if (await isTradeLocked(requestedPlayer)) {
+      return res.status(409).json({
+        message: `The requested player cannot be traded yet (${lockHint}).`,
       });
     }
 

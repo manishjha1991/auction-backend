@@ -7,7 +7,7 @@ const TradeRequest = require('../models/TradeRequest');
 
 const TRADE_LOCK_HOURS = 48;
 
-/** Same as routes/trades.js — trade lock after a completed swap */
+/** Trade lock after a completed swap or after a player is picked from unsold (same window length). */
 async function isTradeLocked(playerDoc) {
   if (!playerDoc) return false;
   if (playerDoc.tradeLocked !== true && playerDoc.tradeLocked !== 'true') return false;

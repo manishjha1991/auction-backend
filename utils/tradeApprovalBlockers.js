@@ -2,7 +2,7 @@ const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const { clampTradesUsed } = require('./tradeConstants');
 const { getTradeRules, assertPairAllowsCompletion } = require('./tradeRules');
-const { isTradeLocked } = require('./tradeApprovalShared');
+const { isTradeLocked, TRADE_LOCK_HOURS } = require('./tradeApprovalShared');
 
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5;
@@ -124,9 +124,15 @@ async function computeTradeApproval(tradeDoc) {
     Player.findById(requestedPid),
   ]);
 
-  if ((await isTradeLocked(offeredPlayer)) || (await isTradeLocked(requestedPlayer))) {
+  const lockRule = `Players cannot be traded again for ${TRADE_LOCK_HOURS} hours after a completed trade or after being picked from unsold`;
+  if (await isTradeLocked(offeredPlayer)) {
     blockers.push(
-      'One or both players are trade-locked. Admin cannot approve until the lock period ends.'
+      `The offered player is trade-locked (${lockRule}). Admin cannot approve until the lock expires.`
+    );
+  }
+  if (await isTradeLocked(requestedPlayer)) {
+    blockers.push(
+      `The requested player is trade-locked (${lockRule}). Admin cannot approve until the lock expires.`
     );
   }
 

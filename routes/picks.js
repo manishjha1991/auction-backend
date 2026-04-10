@@ -13,6 +13,7 @@ const ReleaseRequest = require('../models/ReleaseRequest');
 const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
+const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
 
 // Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
 router.get('/unsold', async (req, res) => {
@@ -236,6 +237,7 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       }
 
       await Player.findByIdAndUpdate(item.player, { isActive: true });
+      await setTradeLockOnPlayers([item.player]);
 
       item.status = 'completed';
       item.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
