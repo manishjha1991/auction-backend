@@ -257,8 +257,11 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
       
       item.status = 'completed';
       item.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
-      
-      // Increment user's trade usage ONLY when admin approves (completed)
+      if (player?.type && ['Sapphire', 'Gold', 'Emerald', 'Silver'].includes(player.type)) {
+        item.releasedPlayerType = player.type;
+      }
+
+      // One season slot for the release; a later unsold pick of the same tier pairs to this row and does not add tradesUsed.
       try {
         await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: 1 } });
       } catch {}

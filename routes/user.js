@@ -1552,7 +1552,7 @@ router.post('/:userId/group', async (req, res) => {
 
 
 
-// GET: trade usage for a user (completed trades + releases → tradesUsed vs season cap)
+// GET: trade usage (completed trades + releases + unsold picks that are not same-tier paired to a release → tradesUsed vs season cap)
 router.get('/:userId/trades-usage', async (req, res) => {
   try {
     const { userId } = req.params;

@@ -56,7 +56,7 @@ async function resetUsers() {
         matchesPlayed: 0,
         allPlayersReleased: false,
         isRetentionLocked: false,
-        tradesUsed:0  
+        tradesUsed: 0,
       },
     }
   );

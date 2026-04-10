@@ -102,6 +102,18 @@ async function assertPairAllowsCompletion(tradeDoc, maxTradesPerOpponentPair) {
   }
 }
 
+/**
+ * Season slot (`User.tradesUsed`) — MSD vs BLU–style accounting:
+ * - Completed player trade (any categories): +1 per team (routes/trades.js). One deal = one slot per side.
+ * - Approved release: +1 (routes/releases.js). Example: MSD drops surplus Gold after a swap → another slot.
+ * - Approved unsold pick: +1 (routes/picks.js) unless it pairs to a completed release whose `releasedPlayerType` matches the picked player’s type → pick adds no extra (release already +1).
+ * - Different-tier release + pick (e.g. release Sapphire, pick Gold): no pair → +1 release +1 pick.
+ * - Same-tier release + same-tier unsold pick: one slot total (ReleaseRequest.pairedPickRequest).
+ *
+ * Minimum roster by category (Gold/Silver/Sapphire+Emerald) is enforced elsewhere (e.g. lock-under-limit in
+ * bidRoutes.js); release/pick should be used so teams can satisfy those mins — slot counting follows the rules above.
+ */
+
 module.exports = {
   RULE_MIN,
   RULE_MAX,

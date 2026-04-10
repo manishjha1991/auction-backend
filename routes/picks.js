@@ -9,6 +9,9 @@ const BidHistory = require('../models/BidHistory');
 const mongoose = require('mongoose');
 const axios = require('axios');
 const Notification = require('../models/Notification');
+const ReleaseRequest = require('../models/ReleaseRequest');
+const { clampTradesUsed } = require('../utils/tradeConstants');
+const { getTradeRules } = require('../utils/tradeRules');
 
 // Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
 router.get('/unsold', async (req, res) => {
@@ -194,18 +197,46 @@ router.post('/admin/:pickId/decide', async (req, res) => {
           message: `Cannot approve: User already has ${boughtPlayersOfThisType} ${player.type} player(s). Maximum allowed is ${typeLimit[player.type]}.` 
         });
       }
-      
-      // Call existing sold API to finalize sale without altering its logic
+
+      // Same-tier release + same-tier unsold pick = one tradesUsed total (paired on ReleaseRequest).
+      // Any other unsold pick (e.g. after a cross-tier trade to refill a short category) adds +1 tradesUsed — same as a separate roster move.
+      const userLean = await User.findById(item.user).select('tradesUsed').lean();
+      const rules = await getTradeRules();
+      const releasePairDoc = await ReleaseRequest.findOne({
+        user: item.user,
+        status: 'completed',
+        releasedPlayerType: player.type,
+        $or: [{ pairedPickRequest: null }, { pairedPickRequest: { $exists: false } }],
+      }).sort({ updatedAt: -1 });
+
+      const usePair = !!releasePairDoc;
+      const useStandaloneCharge = !usePair;
+
+      if (
+        useStandaloneCharge &&
+        clampTradesUsed(userLean?.tradesUsed) >= rules.tradeSeasonCap
+      ) {
+        return res.status(400).json({
+          message: `Cannot approve pick: season trade cap reached (${rules.tradeSeasonCap}).`,
+        });
+      }
+
       const base = process.env.SELF_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
       const soldResp = await axios.post(`${base}/api/bids/bid/sold`, { playerID: item.player });
       if (soldResp.status >= 400) {
         return res.status(400).json({ message: 'Failed to finalize sale via sold API' });
       }
-      
-      // Ensure the player's isActive field is set to true when approved
-      // This makes the player active in the system after approval
+
+      if (usePair && releasePairDoc) {
+        await ReleaseRequest.findByIdAndUpdate(releasePairDoc._id, {
+          $set: { pairedPickRequest: item._id },
+        });
+      } else if (useStandaloneCharge) {
+        await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: 1 } });
+      }
+
       await Player.findByIdAndUpdate(item.player, { isActive: true });
-      
+
       item.status = 'completed';
       item.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
     } else if (decision === 'reject') {

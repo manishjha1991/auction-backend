@@ -459,11 +459,11 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       trade.status = 'completed';
       trade.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
 
-      // Increment BOTH teams' used trades counter when trade is actually completed
+      // Each completed trade counts as one slot per team. A later unsold pick (e.g. to refill Sapphire after a cross-tier swap) is a separate slot unless it pairs to a same-tier release — see routes/picks.js.
       try {
         await Promise.all([
           User.findByIdAndUpdate(trade.fromUser, { $inc: { tradesUsed: 1 } }),
-          User.findByIdAndUpdate(trade.toUser, { $inc: { tradesUsed: 1 } })
+          User.findByIdAndUpdate(trade.toUser, { $inc: { tradesUsed: 1 } }),
         ]);
       } catch {}
 
