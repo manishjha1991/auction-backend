@@ -13,11 +13,12 @@ const {
   setTradeLockOnPlayers,
   autoRejectTradesInvolvingPlayers,
 } = require('../utils/tradeApprovalShared');
+const { clampTradesUsed } = require('../utils/tradeConstants');
 const {
-  TRADE_SEASON_CAP,
-  MAX_ACTIVE_OUTGOING_TRADES,
-  clampTradesUsed,
-} = require('../utils/tradeConstants');
+  getTradeRules,
+  assertPairAllowsNewProposal,
+  assertPairAllowsCompletion,
+} = require('../utils/tradeRules');
 const { invalidateCache } = require('../utils/cache');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
@@ -77,22 +78,24 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'Missing required fields.' });
     }
 
-    // Enforce max active outgoing trade requests per user (MAX_ACTIVE_OUTGOING_TRADES)
+    const rules = await getTradeRules();
+
+    // Enforce max active outgoing trade requests per user (same cap as season trades)
     const activeCount = await TradeRequest.countDocuments({
       fromUser: fromUserId,
       status: { $in: ['pending', 'counter', 'admin_pending'] }
     });
-    if (activeCount >= MAX_ACTIVE_OUTGOING_TRADES) {
+    if (activeCount >= rules.maxActiveOutgoingTrades) {
       return res.status(400).json({
-        message: `Trade limit reached: You can have at most ${MAX_ACTIVE_OUTGOING_TRADES} active trade requests.`,
+        message: `Trade limit reached: You can have at most ${rules.maxActiveOutgoingTrades} active trade requests.`,
       });
     }
 
     // Enforce total trade usage cap (completed trades + approved releases → tradesUsed)
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const proposer = await User.findById(fromUserId).select('tradesUsed').lean();
-    if (proposer && clampTradesUsed(proposer.tradesUsed) >= TRADE_SEASON_CAP) {
-      return res.status(400).json({ message: `You have used all ${TRADE_SEASON_CAP} trades.` });
+    if (proposer && clampTradesUsed(proposer.tradesUsed) >= rules.tradeSeasonCap) {
+      return res.status(400).json({ message: `You have used all ${rules.tradeSeasonCap} trades.` });
     }
 
     // Prevent duplicate/parallel trade requests for the same players while active
@@ -129,6 +132,17 @@ router.post('/', async (req, res) => {
 
     if (String(requestedOwner._id) === String(fromUser._id)) {
       return res.status(400).json({ message: 'Requested player is already in your team.' });
+    }
+
+    try {
+      await assertPairAllowsNewProposal(
+        fromUserId,
+        requestedOwner._id,
+        rules.maxTradesPerOpponentPair
+      );
+    } catch (e) {
+      if (e.statusCode) return res.status(e.statusCode).json({ message: e.message });
+      throw e;
     }
 
     const [offeredPlayer, requestedPlayer, offeredUP, requestedUP] = await Promise.all([
@@ -312,6 +326,14 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
 
     if (decision === 'approve') {
+      const rules = await getTradeRules();
+      try {
+        await assertPairAllowsCompletion(trade, rules.maxTradesPerOpponentPair);
+      } catch (e) {
+        if (e.statusCode) return res.status(e.statusCode).json({ message: e.message });
+        throw e;
+      }
+
       // COMPREHENSIVE VALIDATION: Check all trade violations before approval
       const [offeredUP, requestedUP] = await Promise.all([
         UserPlayer.findOne({ playerId: trade.offeredPlayer, isActive: true }).populate('userId'),
@@ -388,14 +410,14 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
       }
 
       // 3. TRADE USAGE VALIDATION: Check if teams have trades remaining
-      if (clampTradesUsed(team1.tradesUsed) >= TRADE_SEASON_CAP) {
+      if (clampTradesUsed(team1.tradesUsed) >= rules.tradeSeasonCap) {
         return res.status(400).json({
-          message: `${team1.teamName || 'Team 1'} has already used all ${TRADE_SEASON_CAP} trades.`,
+          message: `${team1.teamName || 'Team 1'} has already used all ${rules.tradeSeasonCap} trades.`,
         });
       }
-      if (clampTradesUsed(team2.tradesUsed) >= TRADE_SEASON_CAP) {
+      if (clampTradesUsed(team2.tradesUsed) >= rules.tradeSeasonCap) {
         return res.status(400).json({
-          message: `${team2.teamName || 'Team 2'} has already used all ${TRADE_SEASON_CAP} trades.`,
+          message: `${team2.teamName || 'Team 2'} has already used all ${rules.tradeSeasonCap} trades.`,
         });
       }
 

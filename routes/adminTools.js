@@ -326,10 +326,8 @@ const runAuctionReset = async () => {
   };
 };
 
-const {
-  TRADE_SEASON_CAP: TRADE_CAP,
-  clampTradesUsed,
-} = require('../utils/tradeConstants');
+const { clampTradesUsed } = require('../utils/tradeConstants');
+const { getTradeRules } = require('../utils/tradeRules');
 
 // POST: clear all backend caches (use after direct DB edits to see fresh data)
 router.post('/clear-all-cache', async (req, res) => {
@@ -432,6 +430,9 @@ router.get('/team-trade-activity', async (req, res) => {
       .lean();
 
     const teamIds = teams.map((t) => t._id);
+
+    const tradeRules = await getTradeRules();
+    const TRADE_CAP = tradeRules.tradeSeasonCap;
 
     const [releaseCounts, pickCounts, tradeAsFrom, tradeAsTo] = await Promise.all([
       ReleaseRequest.aggregate([

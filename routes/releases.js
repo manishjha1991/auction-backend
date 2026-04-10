@@ -5,7 +5,8 @@ const UserPlayer = require('../models/UserPlayer');
 const User = require('../models/User');
 const Player = require('../models/Player'); // Add Player model import
 const Bid = require('../models/Bid'); // Add Bid model import for cleanup
-const { TRADE_SEASON_CAP, clampTradesUsed } = require('../utils/tradeConstants');
+const { clampTradesUsed } = require('../utils/tradeConstants');
+const { getTradeRules } = require('../utils/tradeRules');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
 
 const CRORE = 10000000;
@@ -91,8 +92,9 @@ router.post('/', async (req, res) => {
     // Guard: user cannot exceed season trade cap (trade + release combined)
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const u = await User.findById(userId).select('tradesUsed').lean();
-    if (u && clampTradesUsed(u.tradesUsed) >= TRADE_SEASON_CAP) {
-      return res.status(400).json({ message: `You have used all ${TRADE_SEASON_CAP} trades.` });
+    const rules = await getTradeRules();
+    if (u && clampTradesUsed(u.tradesUsed) >= rules.tradeSeasonCap) {
+      return res.status(400).json({ message: `You have used all ${rules.tradeSeasonCap} trades.` });
     }
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true }).lean();

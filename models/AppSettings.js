@@ -31,6 +31,10 @@ const AppSettingsSchema = new mongoose.Schema(
     // Auto mode: at 6 PM enable categories + bulk; at 9:40 PM switch to single-bid/11:30 crons
     auctionAutoModeEnabled: { type: Boolean, default: false },
     auctionAutoModeCategories: { type: [String], default: ['Gold', 'Silver', 'Sapphire', 'Emerald'] },
+    /** Max completed+release "slots" per team per season (also caps concurrent outgoing trade proposals). */
+    tradeSeasonCap: { type: Number, default: 3, min: 1, max: 10 },
+    /** Max trades between the same two teams (counts completed + any pending/counter/admin_pending), either direction. */
+    maxTradesPerOpponentPair: { type: Number, default: 1, min: 1, max: 10 },
   },
   { timestamps: true }
 );

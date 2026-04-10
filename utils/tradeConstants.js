@@ -1,14 +1,14 @@
 /**
- * Single source of truth for trade / release usage caps (season).
- * Completed trades and approved releases both increment User.tradesUsed.
- *
- * Consumers: routes/trades.js, routes/releases.js, routes/user.js (trades-usage), routes/adminTools.js.
- * Frontend mirror: auction-frontend/src/constants/tradeSeasonCap.js and TradeCenter.js (pending limit).
+ * Shared helpers for trade / release usage (User.tradesUsed).
+ * Season caps and per-opponent limits live in AppSettings — use utils/tradeRules.getTradeRules().
  */
-const TRADE_SEASON_CAP = 6;
+const { DEFAULT_TRADE_SEASON_CAP } = require('./tradeRules');
 
-/** Max concurrent outgoing trade proposals per user (pending / counter / awaiting admin). */
-const MAX_ACTIVE_OUTGOING_TRADES = 6;
+/** Legacy default when settings doc is missing; prefer getTradeRules().tradeSeasonCap. */
+const TRADE_SEASON_CAP = DEFAULT_TRADE_SEASON_CAP;
+
+/** @deprecated Use getTradeRules().maxActiveOutgoingTrades */
+const MAX_ACTIVE_OUTGOING_TRADES = DEFAULT_TRADE_SEASON_CAP;
 
 /** Negative or invalid DB values must not inflate "remaining" or bypass season caps. */
 function clampTradesUsed(raw) {
