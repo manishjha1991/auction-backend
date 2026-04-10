@@ -12,6 +12,7 @@ const Notification = require('../models/Notification');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
+const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 
 // Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
 router.get('/unsold', async (req, res) => {
@@ -202,12 +203,7 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       // Any other unsold pick (e.g. after a cross-tier trade to refill a short category) adds +1 tradesUsed — same as a separate roster move.
       const userLean = await User.findById(item.user).select('tradesUsed').lean();
       const rules = await getTradeRules();
-      const releasePairDoc = await ReleaseRequest.findOne({
-        user: item.user,
-        status: 'completed',
-        releasedPlayerType: player.type,
-        $or: [{ pairedPickRequest: null }, { pairedPickRequest: { $exists: false } }],
-      }).sort({ updatedAt: -1 });
+      const releasePairDoc = await findUnpairedReleaseForSameTierPick(item.user, player.type);
 
       const usePair = !!releasePairDoc;
       const useStandaloneCharge = !usePair;

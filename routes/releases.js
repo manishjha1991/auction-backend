@@ -8,6 +8,7 @@ const Bid = require('../models/Bid'); // Add Bid model import for cleanup
 const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
+const { findOrphanPickToPairOnReleaseApprove } = require('../utils/releasePickPairing');
 
 const CRORE = 10000000;
 
@@ -261,9 +262,20 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
         item.releasedPlayerType = player.type;
       }
 
-      // One season slot for the release; a later unsold pick of the same tier pairs to this row and does not add tradesUsed.
+      // One slot for release + same-tier unsold pick together. If the pick was approved first, it already +1; link and skip release +1.
+      let releaseSlotCharge = 1;
+      if (player?.type && ['Sapphire', 'Gold', 'Emerald', 'Silver'].includes(player.type)) {
+        const orphanPick = await findOrphanPickToPairOnReleaseApprove(item, player.type);
+        if (orphanPick) {
+          item.pairedPickRequest = orphanPick._id;
+          releaseSlotCharge = 0;
+        }
+      }
+
       try {
-        await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: 1 } });
+        if (releaseSlotCharge) {
+          await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: releaseSlotCharge } });
+        }
       } catch {}
       
     } else if (decision === 'reject') {

@@ -434,7 +434,7 @@ router.get('/team-trade-activity', async (req, res) => {
     const tradeRules = await getTradeRules();
     const TRADE_CAP = tradeRules.tradeSeasonCap;
 
-    const [releaseCounts, pickCounts, tradeAsFrom, tradeAsTo] = await Promise.all([
+    const [releaseCounts, pickCounts, pairedPickCounts, tradeAsFrom, tradeAsTo] = await Promise.all([
       ReleaseRequest.aggregate([
         { $match: { user: { $in: teamIds }, status: 'completed' } },
         { $group: { _id: '$user', count: { $sum: 1 } } }
@@ -442,6 +442,16 @@ router.get('/team-trade-activity', async (req, res) => {
       PickRequest.aggregate([
         { $match: { user: { $in: teamIds }, status: 'completed' } },
         { $group: { _id: '$user', count: { $sum: 1 } } }
+      ]),
+      ReleaseRequest.aggregate([
+        {
+          $match: {
+            user: { $in: teamIds },
+            status: 'completed',
+            pairedPickRequest: { $exists: true, $ne: null },
+          },
+        },
+        { $group: { _id: '$user', count: { $sum: 1 } } },
       ]),
       TradeRequest.aggregate([
         { $match: { status: 'completed' } },
@@ -455,6 +465,7 @@ router.get('/team-trade-activity', async (req, res) => {
 
     const releaseMap = new Map(releaseCounts.map((r) => [r._id.toString(), r.count]));
     const pickMap = new Map(pickCounts.map((p) => [p._id.toString(), p.count]));
+    const pairedPickMap = new Map(pairedPickCounts.map((p) => [p._id.toString(), p.count]));
     const tradeMap = new Map();
     [...tradeAsFrom, ...tradeAsTo].forEach(({ _id, count }) => {
       const uid = _id.toString();
@@ -465,9 +476,15 @@ router.get('/team-trade-activity', async (req, res) => {
       const uid = team._id.toString();
       const releases = releaseMap.get(uid) || 0;
       const picks = pickMap.get(uid) || 0;
+      const pairedPicks = pairedPickMap.get(uid) || 0;
       const trades = tradeMap.get(uid) || 0;
       const tradesUsed = clampTradesUsed(team.tradesUsed);
       const remaining = Math.max(0, TRADE_CAP - tradesUsed);
+      /** Unsold picks that charged a slot (not same-tier paired to a prior release). */
+      const standalonePicks = Math.max(0, picks - pairedPicks);
+      /** Should match tradesUsed if all events went through current server logic. */
+      const expectedTradesUsed = trades + releases + standalonePicks;
+      const usageDrift = tradesUsed - expectedTradesUsed;
       return {
         userId: uid,
         teamName: team.teamName || team.name || 'Unknown',
@@ -475,6 +492,10 @@ router.get('/team-trade-activity', async (req, res) => {
         picks,
         releases,
         trades,
+        pairedPicks,
+        standalonePicks,
+        expectedTradesUsed,
+        usageDrift,
         tradesUsed,
         remaining,
         cap: TRADE_CAP
