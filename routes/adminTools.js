@@ -328,6 +328,10 @@ const runAuctionReset = async () => {
 
 const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
+const {
+  buildFullRepairPreview,
+  executeReleasePickRepairs,
+} = require('../utils/releasePickRepairPlan');
 
 // POST: clear all backend caches (use after direct DB edits to see fresh data)
 router.post('/clear-all-cache', async (req, res) => {
@@ -508,6 +512,42 @@ router.get('/team-trade-activity', async (req, res) => {
     res
       .status(error.status || 500)
       .json({ message: error.message || 'Failed to load team trade activity' });
+  }
+});
+
+// GET: preview same-tier release/pick pairs that were never linked (extra tradesUsed)
+router.get('/release-pick-repair/preview', async (req, res) => {
+  try {
+    const { adminUserId } = req.query;
+    await requireAdmin(adminUserId);
+    const data = await buildFullRepairPreview();
+    res.json(data);
+  } catch (error) {
+    console.error('release-pick-repair preview error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to build repair preview' });
+  }
+});
+
+// POST: link pairedPickRequest + decrement tradesUsed (optional userIds = only these teams)
+router.post('/release-pick-repair/execute', async (req, res) => {
+  try {
+    const { adminUserId, userIds } = req.body;
+    await requireAdmin(adminUserId);
+    const filter =
+      Array.isArray(userIds) && userIds.length > 0 ? new Set(userIds.map(String)) : null;
+    const out = await executeReleasePickRepairs(filter);
+    try {
+      invalidateCache('players:data');
+      invalidateCache('user-purses');
+    } catch (_) {}
+    res.json(out);
+  } catch (error) {
+    console.error('release-pick-repair execute error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to apply repairs' });
   }
 });
 

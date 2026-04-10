@@ -1,6 +1,6 @@
 /**
- * Fix an already-approved same-tier release + pick that double-counted tradesUsed.
- * Sets ReleaseRequest.pairedPickRequest and decrements User.tradesUsed by 1.
+ * Fix one same-tier release + pick that double-counted tradesUsed (CLI).
+ * Prefer Admin Profile → "Fix release + same-tier pick double count" → Scan / Apply for all teams.
  *
  *   node scripts/repairReleasePickPairAndUsage.js --releaseId <mongoId> --pickId <mongoId> --dry-run
  *   node scripts/repairReleasePickPairAndUsage.js --releaseId ... --pickId ... --apply
