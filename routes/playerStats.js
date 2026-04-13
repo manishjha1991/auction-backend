@@ -1174,7 +1174,7 @@ router.get('/stats-overview', async (req, res) => {
       .populate({
         path: 'playerId',
         model: Player,
-        select: 'name role type basePrice isActive',
+        select: 'name role type basePrice isActive profilePicture',
       })
       .populate({
         path: 'userId',
@@ -1301,6 +1301,7 @@ router.get('/stats-overview', async (req, res) => {
       // Basic checks
       const playerName = playerId?.name ?? 'Unknown Player';
       const playerType = playerId?.type ?? null;
+      const profilePicture = playerId?.profilePicture ?? null;
       const teamName = userId?.teamName ?? 'Unknown Team';
       const opponentName = opponentUserId?.teamName ?? 'Unknown Opponent';
 
@@ -1318,8 +1319,10 @@ router.get('/stats-overview', async (req, res) => {
       if (sr > highestSRValue) {
         highestSRValue = sr;
         highestStrikeRateDoc = {
+          playerId: String(playerId._id),
           playerName,
           playerType,
+          profilePicture,
           teamName,
           strikeRate: parseFloat(sr.toFixed(2)),
           opponentTeam: opponentName,
@@ -1344,8 +1347,10 @@ router.get('/stats-overview', async (req, res) => {
       if (isRealisticEconomySpell && economy < bestEconValue && economy !== 99_999) {
         bestEconValue = economy;
         bestEconomicalBowler = {
+          playerId: String(playerId._id),
           playerName,
           playerType,
+          profilePicture,
           teamName,
           economy: parseFloat(economy.toFixed(2)),
           opponentTeam: opponentName,
@@ -1371,8 +1376,10 @@ router.get('/stats-overview', async (req, res) => {
       if (shouldUpdate) {
         highestWicketsCount = wickets;
         highestWicketsDoc = {
+          playerId: String(playerId._id),
           playerName,
           playerType,
+          profilePicture,
           teamName,
           wickets,
           opponentTeam: opponentName,
@@ -1386,8 +1393,10 @@ router.get('/stats-overview', async (req, res) => {
         highestScoreRuns = runs;
         const matchSR = balls > 0 ? parseFloat(((runs / balls) * 100).toFixed(2)) : 0;
         highestScoreDoc = {
+          playerId: String(playerId._id),
           playerName,
           playerType,
+          profilePicture,
           teamName,
           opponentTeam: opponentName,
           score: runs,
@@ -1429,6 +1438,7 @@ router.get('/stats-overview', async (req, res) => {
           playerId: pid,
           playerName,
           playerType,
+          profilePicture,
           teamName,
           opponentTeam: opponentName,
           wickets,
@@ -1443,6 +1453,7 @@ router.get('/stats-overview', async (req, res) => {
           playerId: pid,
           playerName,
           playerType,
+          profilePicture,
           teamName,
           opponentTeam: opponentName,
           wickets,
@@ -1457,6 +1468,7 @@ router.get('/stats-overview', async (req, res) => {
           playerId: pid,
           playerName,
           playerType,
+          profilePicture,
           teamName,
           againstTeam: opponentName,
           runs,
@@ -1470,6 +1482,7 @@ router.get('/stats-overview', async (req, res) => {
           playerId: pid,
           playerName,
           playerType,
+          profilePicture,
           teamName,
           againstTeam: opponentName,
           runs,
@@ -1514,6 +1527,7 @@ router.get('/stats-overview', async (req, res) => {
           playerName: statDoc.playerId?.name || 'Unknown Player',
           playerType: statDoc.playerId?.type || null,
           teamName: statDoc.userId?.teamName || 'Unknown Team',
+          profilePicture: statDoc.playerId?.profilePicture ?? null,
         };
       }
     });
@@ -1538,8 +1552,10 @@ router.get('/stats-overview', async (req, res) => {
       if (runs > maxRuns) {
         maxRuns = runs;
         leadingRunScorer = {
+          playerId: pid,
           playerName: playerInfo.playerName,
           playerType: playerInfo.playerType,
+          profilePicture: playerInfo.profilePicture ?? null,
           teamName: playerInfo.teamName,
           totalRuns: maxRuns,
         };
@@ -1547,8 +1563,10 @@ router.get('/stats-overview', async (req, res) => {
       if (wickets > maxWickets) {
         maxWickets = wickets;
         leadingWicketTaker = {
+          playerId: pid,
           playerName: playerInfo.playerName,
           playerType: playerInfo.playerType,
+          profilePicture: playerInfo.profilePicture ?? null,
           teamName: playerInfo.teamName,
           totalWickets: maxWickets,
         };
@@ -1577,6 +1595,7 @@ router.get('/stats-overview', async (req, res) => {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
         playerType: playerInfoMap[pid]?.playerType || null,
+        profilePicture: playerInfoMap[pid]?.profilePicture ?? null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         runs,
         halfCenturies: halfCenturyCountMap[pid] || 0,
@@ -1608,6 +1627,7 @@ router.get('/stats-overview', async (req, res) => {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
         playerType: playerInfoMap[pid]?.playerType || null,
+        profilePicture: playerInfoMap[pid]?.profilePicture ?? null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         wickets,
         fourWicketHauls: fourWicketCountMap[pid] || 0,
@@ -1623,6 +1643,7 @@ router.get('/stats-overview', async (req, res) => {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
         playerType: playerInfoMap[pid]?.playerType || null,
+        profilePicture: playerInfoMap[pid]?.profilePicture ?? null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         momCount: count,
       };
@@ -1642,6 +1663,7 @@ router.get('/stats-overview', async (req, res) => {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
         playerType: playerInfoMap[pid]?.playerType || null,
+        profilePicture: playerInfoMap[pid]?.profilePicture ?? null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         strikeRate,
       };
@@ -1662,6 +1684,7 @@ router.get('/stats-overview', async (req, res) => {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
         playerType: playerInfoMap[pid]?.playerType || null,
+        profilePicture: playerInfoMap[pid]?.profilePicture ?? null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         economy: parseFloat(economy.toFixed(2)),
         runsGiven,
@@ -1682,6 +1705,7 @@ router.get('/stats-overview', async (req, res) => {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
         playerType: playerInfoMap[pid]?.playerType || null,
+        profilePicture: playerInfoMap[pid]?.profilePicture ?? null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         matches: matchCount,
         totalRuns: runs,
@@ -1703,7 +1727,9 @@ router.get('/stats-overview', async (req, res) => {
     // 7) Construct final response
     const response = {
       highestStrikeRate: highestStrikeRateDoc || {
+        playerId: null,
         playerName: '',
+        profilePicture: null,
         teamName: '',
         strikeRate: 0,
         opponentTeam: '',
@@ -1711,7 +1737,9 @@ router.get('/stats-overview', async (req, res) => {
         balls: 0,
       },
       bestEconomicalBowler: bestEconomicalBowler || {
+        playerId: null,
         playerName: '',
+        profilePicture: null,
         teamName: '',
         economy: 0,
         opponentTeam: '',
@@ -1720,7 +1748,9 @@ router.get('/stats-overview', async (req, res) => {
         ballsBowled: 0,
       },
       highestWicketTakerInMatch: highestWicketsDoc || {
+        playerId: null,
         playerName: '',
+        profilePicture: null,
         teamName: '',
         wickets: 0,
         opponentTeam: '',
@@ -1728,7 +1758,9 @@ router.get('/stats-overview', async (req, res) => {
         ballsBowled: 0,
       },
       highestScore: highestScoreDoc || {
+        playerId: null,
         playerName: '',
+        profilePicture: null,
         teamName: '',
         opponentTeam: '',
         score: 0,
@@ -1736,12 +1768,16 @@ router.get('/stats-overview', async (req, res) => {
         strikeRate: 0,
       },
       leadingWicketTaker: leadingWicketTaker || {
+        playerId: null,
         playerName: '',
+        profilePicture: null,
         teamName: '',
         totalWickets: 0,
       },
       leadingRunScorer: leadingRunScorer || {
+        playerId: null,
         playerName: '',
+        profilePicture: null,
         teamName: '',
         totalRuns: 0,
       },
@@ -1915,6 +1951,7 @@ router.get('/player-details/:playerId', async (req, res) => {
 
     const response = {
       playerName: player.name,
+      profilePicture: player.profilePicture || null,
       teamName: ownerUser.teamName,
       type: isBattingFocused ? 'batting' : 'bowling',
       totalRuns: totalRuns,
