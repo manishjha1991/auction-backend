@@ -214,7 +214,7 @@ async function upsertLiveCareerSummaryForPlayer(playerId) {
   const historical = existing?.historical || emptyBlock();
   const total = mergeBlocks(historical, live);
 
-  return PlayerCareerSummary.findOneAndUpdate(
+  const doc = await PlayerCareerSummary.findOneAndUpdate(
     { playerKey },
     {
       $set: {
@@ -229,6 +229,8 @@ async function upsertLiveCareerSummaryForPlayer(playerId) {
     },
     { upsert: true, new: true },
   );
+  await syncPlayerRankingsFromCareerTotal(player._id, total);
+  return doc;
 }
 
 async function rebuildAllLiveCareerSummaries() {
@@ -283,6 +285,48 @@ function reconcileCareerTotalsForApi(metricsBlock) {
     bestBowlingSpells: spellsSorted,
     bestBowling,
   };
+}
+
+/**
+ * Copy reconciled career totals (historical + live) onto Player so Top Rankings match career APIs.
+ * MoM count stays from current DB PlayerStats only (not present on historical rows).
+ */
+async function syncPlayerRankingsFromCareerTotal(playerId, totalBlock) {
+  if (!playerId) return { skipped: true };
+  const t = reconcileCareerTotalsForApi(totalBlock || emptyBlock());
+  let momCount = 0;
+  try {
+    momCount = await PlayerStats.countDocuments({ playerId, isMom: true });
+  } catch (_) {
+    /* ignore */
+  }
+  await Player.findByIdAndUpdate(playerId, {
+    $set: {
+      totalRuns: Number(t.totalRuns) || 0,
+      totalBalls: Number(t.totalBalls) || 0,
+      totalRunsGiven: Number(t.totalRunsGiven) || 0,
+      totalBallsBowled: Number(t.totalBallsBowled) || 0,
+      totalWickets: Number(t.totalWickets) || 0,
+      matchesPlayed: Number(t.innings) || 0,
+      momCount,
+    },
+  });
+  return { ok: true };
+}
+
+/** Push every linked summary's merged totals to Player (covers historical-only players after seed). */
+async function syncAllPlayerRankingsFromCareerSummaries() {
+  const summaries = await PlayerCareerSummary.find({
+    playerId: { $exists: true, $ne: null },
+  }).lean();
+  for (const s of summaries) {
+    try {
+      await syncPlayerRankingsFromCareerTotal(s.playerId, s.total);
+    } catch (_) {
+      /* ignore per-player */
+    }
+  }
+  return { rankingsPlayersSynced: summaries.length };
 }
 
 /** API row shape for /api/cpl-report/player-career-summary */
@@ -340,6 +384,8 @@ module.exports = {
   mergeBlocks,
   upsertLiveCareerSummaryForPlayer,
   rebuildAllLiveCareerSummaries,
+  syncPlayerRankingsFromCareerTotal,
+  syncAllPlayerRankingsFromCareerSummaries,
   mapCareerSummaryLeanToApiPlayer,
   emptyCareerApiPlayerFromPlayer,
 };

@@ -6,6 +6,7 @@ const PlayerCareerSummary = require('../models/PlayerCareerSummary');
 const {
   normName,
   rebuildAllLiveCareerSummaries,
+  syncAllPlayerRankingsFromCareerSummaries,
   mapCareerSummaryLeanToApiPlayer,
   emptyCareerApiPlayerFromPlayer,
 } = require('../utils/playerCareerSummary');
@@ -15,6 +16,7 @@ const {
   getCachedCareerSummary,
   setCachedCareerSummary,
 } = require('../utils/cplReadCaches');
+const { invalidateCache } = require('../utils/cache');
 
 const router = express.Router();
 
@@ -54,6 +56,13 @@ async function getCareerSummaryOrCached({ refresh = false, includeInactive = tru
   // First-time bootstrap: if summary docs are empty, rebuild from current DB playerstats.
   if (!summaries.length) {
     await rebuildAllLiveCareerSummaries();
+    await syncAllPlayerRankingsFromCareerSummaries();
+    try {
+      invalidateCache('players:data');
+      invalidateCache('players:data:all');
+    } catch (_) {
+      /* ignore */
+    }
     summaries = await PlayerCareerSummary.find({}).select(CAREER_SUMMARY_LIST_PROJECTION).lean();
   }
 

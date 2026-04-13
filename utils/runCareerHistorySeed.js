@@ -7,7 +7,6 @@
  */
 const mongoose = require('mongoose');
 const Player = require('../models/Player');
-const PlayerStats = require('../models/PlayerStats');
 const PlayerCareerSummary = require('../models/PlayerCareerSummary');
 const {
   normName,
@@ -15,6 +14,8 @@ const {
   finalizeBlock,
   mergeBlocks,
   rebuildAllLiveCareerSummaries,
+  syncAllPlayerRankingsFromCareerSummaries,
+  upsertLiveCareerSummaryForPlayer,
 } = require('./playerCareerSummary');
 
 function getSourceDbs() {
@@ -55,50 +56,16 @@ function addInnings(block, row) {
 }
 
 /**
- * Same aggregation as routes/playerStats `updatePlayerCumulativeStats` — kept here so admin
- * can batch-rebuild Top Rankings fields without importing the router.
+ * Recompute career summary live block + push merged (historical + live) totals to Player for Top Rankings.
  */
 async function updatePlayerCumulativeStatsFromStats(playerId) {
-  const allStats = await PlayerStats.find({ playerId });
-
-  let totalRuns = 0;
-  let totalBalls = 0;
-  let totalRunsGiven = 0;
-  let totalBallsBowled = 0;
-  let totalWickets = 0;
-  let momCount = 0;
-
-  allStats.forEach((stat) => {
-    totalRuns += stat.battingStats?.runs || 0;
-    totalBalls += stat.battingStats?.balls || 0;
-    totalRunsGiven += stat.bowlingStats?.runsGiven || 0;
-    totalBallsBowled += stat.bowlingStats?.ballsBowled || 0;
-    totalWickets += stat.bowlingStats?.wickets || 0;
-    if (stat.isMom) momCount += 1;
-  });
-
-  await Player.findByIdAndUpdate(playerId, {
-    $set: {
-      totalRuns,
-      totalBalls,
-      totalRunsGiven,
-      totalBallsBowled,
-      totalWickets,
-      momCount,
-      matchesPlayed: allStats.length,
-    },
-  });
+  await upsertLiveCareerSummaryForPlayer(playerId);
 }
 
+/** Rebuild live career blocks from PlayerStats and align Player totals with merged career (historical + live). */
 async function rebuildAllPlayerTotalsFromCurrentStats() {
-  const ids = await PlayerStats.distinct('playerId');
-  let updated = 0;
-  for (const playerId of ids) {
-    if (!playerId) continue;
-    await updatePlayerCumulativeStatsFromStats(playerId);
-    updated += 1;
-  }
-  return { playersUpdated: updated };
+  await rebuildAllLiveCareerSummaries();
+  return syncAllPlayerRankingsFromCareerSummaries();
 }
 
 /**
@@ -171,11 +138,13 @@ async function runCareerHistorySeed() {
   }
 
   await rebuildAllLiveCareerSummaries();
+  const rankingsSync = await syncAllPlayerRankingsFromCareerSummaries();
 
   return {
     upserts,
     aggregateKeys: aggregateByKey.size,
     perDb,
+    rankingsSync,
   };
 }
 

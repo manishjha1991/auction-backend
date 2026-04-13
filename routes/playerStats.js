@@ -339,45 +339,10 @@ const buildComparisonRecommendation = (insightA, insightB) => {
     'steady output'}, so slot them in when conditions suit their strengths.`;
 };
 
-// Helper function to update cumulative stats in Player document
+// Helper: rebuild live career block from PlayerStats, merge with historical, sync Player for Top Rankings
 const updatePlayerCumulativeStats = async (playerId) => {
   try {
-    // Get all stats for this player
-    const allStats = await PlayerStats.find({ playerId });
-    
-    // Calculate cumulative stats
-    let totalRuns = 0;
-    let totalBalls = 0;
-    let totalRunsGiven = 0;
-    let totalBallsBowled = 0;
-    let totalWickets = 0;
-    let momCount = 0;
-
-    allStats.forEach(stat => {
-      totalRuns += stat.battingStats?.runs || 0;
-      totalBalls += stat.battingStats?.balls || 0;
-      totalRunsGiven += stat.bowlingStats?.runsGiven || 0;
-      totalBallsBowled += stat.bowlingStats?.ballsBowled || 0;
-      totalWickets += stat.bowlingStats?.wickets || 0;
-      if (stat.isMom) momCount++;
-    });
-
-    // Update the Player document
-    await Player.findByIdAndUpdate(playerId, {
-      $set: {
-        totalRuns: totalRuns,
-        totalBalls: totalBalls,
-        totalRunsGiven: totalRunsGiven,
-        totalBallsBowled: totalBallsBowled,
-        totalWickets: totalWickets,
-        momCount: momCount,
-        matchesPlayed: allStats.length
-      }
-    });
-
-    console.log(`Updated cumulative stats for player ${playerId}:`, {
-      totalRuns, totalBalls, totalRunsGiven, totalBallsBowled, totalWickets, momCount, matchesPlayed: allStats.length
-    });
+    await upsertLiveCareerSummaryForPlayer(playerId);
   } catch (error) {
     console.error('Error updating cumulative stats:', error);
   }

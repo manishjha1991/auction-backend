@@ -22,7 +22,6 @@ const { invalidateCache, clearAllCaches } = require('../utils/cache');
 const { invalidateCareerSummaryCache } = require('../utils/cplReadCaches');
 const {
   runCareerHistorySeed,
-  rebuildAllPlayerTotalsFromCurrentStats,
   getCareerHistorySeedPreview,
 } = require('../utils/runCareerHistorySeed');
 const {
@@ -790,13 +789,12 @@ router.post('/scripts/career-history-sync/execute', async (req, res) => {
     const { adminUserId } = req.body;
     await requireAdmin(adminUserId);
     const career = await runCareerHistorySeed();
-    const playerTotals = await rebuildAllPlayerTotalsFromCurrentStats();
     invalidateCareerSummaryCache();
     invalidateCache('players:data');
+    invalidateCache('players:data:all');
     res.json({
-      message: 'Career history seed and player totals rebuild completed',
+      message: 'Career history seed and Top Rankings sync completed',
       career,
-      playerTotals,
     });
   } catch (error) {
     console.error('career-history-sync execute error', error);
