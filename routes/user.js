@@ -1586,10 +1586,77 @@ router.get('/:userId/roster', async (req, res) => {
     const roster = await UserPlayer.find({ userId, isActive: true })
       .populate('playerId', 'name type role profilePicture')
       .lean();
-    const players = roster.map(r => ({ id: r.playerId._id, name: r.playerId.name, type: r.playerId.type, role: r.playerId.role }));
-    res.json({ userId, players });
+    const players = roster
+      .filter((r) => r.playerId)
+      .map((r) => ({
+        id: r.playerId._id,
+        name: r.playerId.name,
+        type: r.playerId.type,
+        role: r.playerId.role,
+        profilePicture: r.playerId.profilePicture || null,
+      }));
+
+    const teamOwner = await User.findById(userId).select('captainPlayerId').lean();
+    let captain = null;
+    if (teamOwner?.captainPlayerId) {
+      const cap = await Player.findById(teamOwner.captainPlayerId).select('name').lean();
+      if (cap) captain = { id: cap._id, name: cap.name };
+    }
+
+    res.json({ userId, players, captain });
   } catch (error) {
     console.error('Error fetching roster:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// PUT: set squad captain (team owner or admin; player must be on active roster)
+router.put('/:userId/captain', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { playerId, requesterUserId } = req.body || {};
+    if (!requesterUserId) {
+      return res.status(400).json({ message: 'requesterUserId is required' });
+    }
+
+    const requester = await User.findById(requesterUserId).select('isAdmin').lean();
+    const teamUser = await User.findById(userId);
+    if (!teamUser) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    const isOwner = String(requesterUserId) === String(userId);
+    if (!requester?.isAdmin && !isOwner) {
+      return res.status(403).json({ message: 'Only the team owner or an admin can set captain' });
+    }
+
+    if (!playerId) {
+      teamUser.captainPlayerId = null;
+      await teamUser.save();
+      invalidateCache(`user-details:${userId}`);
+      return res.json({ message: 'Captain cleared', captain: null });
+    }
+
+    const onSquad = await UserPlayer.exists({
+      userId,
+      playerId,
+      isActive: true,
+    });
+    if (!onSquad) {
+      return res.status(400).json({ message: 'Player is not on this squad' });
+    }
+
+    teamUser.captainPlayerId = playerId;
+    await teamUser.save();
+    invalidateCache(`user-details:${userId}`);
+
+    const p = await Player.findById(playerId).select('name').lean();
+    return res.json({
+      message: 'Captain updated',
+      captain: p ? { id: p._id, name: p.name } : null,
+    });
+  } catch (error) {
+    console.error('Error setting captain:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

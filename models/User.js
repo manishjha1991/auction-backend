@@ -39,6 +39,7 @@ const UserSchema = new mongoose.Schema({
   knownIPs: [{ type: String }], // Array of known IP addresses for this user
   knownDevices: [{ type: String }], // Array of known device fingerprints for this user
   lastDeviceFingerprint: { type: String, default: null }, // Last device fingerprint used
+  captainPlayerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Player', default: null },
 });
 
 function applyActiveFilter(next) {
