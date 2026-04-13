@@ -10,7 +10,9 @@
     "update-purse": "node update-purse-to-100-minus-players.js",
     "confirm-update-purse": "node confirm-update-purse.js",
     "portraits:wiki": "node scripts/downloadPlayerPortraitsAndSetPath.js",
-    "profile:save-local": "node scripts/uploadPlayerProfileLocal.js"
+    "profile:save-local": "node scripts/uploadPlayerProfileLocal.js",
+    "portraits:prune-dry": "node scripts/pruneOrphanPlayerPortraits.js",
+    "portraits:prune": "node scripts/pruneOrphanPlayerPortraits.js --delete"
   },
   "keywords": [],
   "author": "",
