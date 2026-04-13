@@ -11,7 +11,7 @@ const Player = require('../models/Player');
 function getMigrateSourceDbs() {
   return (
     process.env.CPL_PLAYER_TOTALS_MIGRATE_DBS ||
-    'cpl_15,cpl_16,cpl_17,cpl_18,cpl_19'
+    'cpl_15,cpl_16,cpl_17,cpl_18,cpl_19,cpl_20'
   )
     .split(',')
     .map((s) => s.trim())
