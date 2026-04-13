@@ -76,6 +76,19 @@ const invalidateCache = (pattern) => {
   });
 };
 
+// Optional hook: playerStats registers a no-arg fn to delete its stats-overview cache key
+let statsOverviewInvalidator = () => {};
+const registerStatsOverviewInvalidator = (fn) => {
+  if (typeof fn === 'function') statsOverviewInvalidator = fn;
+};
+const flushStatsOverviewCache = () => {
+  try {
+    statsOverviewInvalidator();
+  } catch (e) {
+    console.warn('stats-overview cache invalidation failed:', e.message);
+  }
+};
+
 // Extra caches (e.g. playerStats stats-overview) registered by route modules
 const extraCaches = [];
 
@@ -111,6 +124,8 @@ module.exports = {
   cacheMiddleware,
   invalidateCache,
   clearAllCaches,
-  registerExtraCache
+  registerExtraCache,
+  registerStatsOverviewInvalidator,
+  flushStatsOverviewCache,
 };
 

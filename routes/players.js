@@ -7,9 +7,10 @@ const BidNotification = require("../models/BidNotification");
 const User = require("../models/User");
 const UserPlayer = require("../models/UserPlayer");
 const ReleaseRequest = require("../models/ReleaseRequest");
-const { cacheConfig, invalidateCache } = require('../utils/cache');
+const { cacheConfig, invalidateCache, flushStatsOverviewCache } = require('../utils/cache');
 const multerMemory = require('../config/multerMemory');
 const { saveProfilePictureLocal } = require('../utils/saveProfilePictureLocal');
+const { removeLocalProfilePictureIfSafe } = require('../utils/removeLocalProfilePictureIfSafe');
 const router = express.Router();
 const formatPrice = (value) => {
   if (value >= 10000000) {
@@ -60,10 +61,15 @@ router.post('/player', upload.single('profilePicture'), async (req, res) => {
 router.put('/player/:playerID', upload.single('profilePicture'), async (req, res) => {
   try {
     const { playerID } = req.params;
-    const updates = req.body;
+    const existing = await Player.findOne({ playerID }).select('profilePicture');
+    if (!existing) {
+      return res.status(404).json({ message: 'Player not found' });
+    }
 
-    // If a new profile picture is uploaded, update its path
+    const updates = { ...req.body };
+    let previousPicture = null;
     if (req.file) {
+      previousPicture = existing.profilePicture;
       updates.profilePicture = req.file.path;
     }
 
@@ -73,8 +79,8 @@ router.put('/player/:playerID', upload.single('profilePicture'), async (req, res
       { new: true }
     );
 
-    if (!updatedPlayer) {
-      return res.status(404).json({ message: 'Player not found' });
+    if (req.file && previousPicture) {
+      await removeLocalProfilePictureIfSafe(previousPicture);
     }
 
     res.status(200).json({ message: 'Player updated successfully', player: updatedPlayer });
@@ -103,12 +109,23 @@ router.delete('/player/:playerID', async (req, res) => {
 });
 router.get("/:playerId/bids", async (req, res) => {
   const { playerId } = req.params;
+  const viewerUserId = req.query.viewerUserId || req.query.userId;
   try {
     // 1. Check if the player exists
     // 🚀 PERFORMANCE: Use .lean() for faster queries (read-only)
     const player = await Player.findById(playerId).lean();
     if (!player) {
       return res.status(404).json({ message: "Player not found." });
+    }
+
+    let viewerOwnsPlayer = false;
+    if (viewerUserId) {
+      const viewer = await User.findById(viewerUserId).select('boughtPlayers').lean();
+      if (viewer?.boughtPlayers?.length) {
+        viewerOwnsPlayer = viewer.boughtPlayers.some(
+          (id) => String(id) === String(player._id)
+        );
+      }
     }
 
     // 2. Fetch all bids for the player
@@ -137,6 +154,7 @@ router.get("/:playerId/bids", async (req, res) => {
 
     // 4. Respond with player's info + top bids + all bids
     res.status(200).json({
+      viewerOwnsPlayer,
       player: {
         id: player._id,
         name: player.name,
@@ -216,21 +234,30 @@ router.post('/:playerId/deactivate', async (req, res) => {
 async function handleAdminProfilePictureLocal(req, res) {
   try {
     const { playerId } = req.params;
-    const adminUserId = req.body?.adminUserId;
-    if (!adminUserId) {
-      return res.status(400).json({ message: 'adminUserId is required' });
-    }
-    const admin = await User.findById(adminUserId).select('isAdmin').lean();
-    if (!admin?.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can update player photos' });
+    const actingUserId = req.body?.userId || req.body?.adminUserId;
+    if (!actingUserId) {
+      return res.status(400).json({ message: 'userId is required' });
     }
     if (!req.file?.buffer) {
       return res.status(400).json({ message: 'Image file required (field name: profilePicture)' });
+    }
+    const actor = await User.findById(actingUserId).select('isAdmin boughtPlayers').lean();
+    if (!actor) {
+      return res.status(404).json({ message: 'User not found' });
     }
     const player = await Player.findById(playerId);
     if (!player) {
       return res.status(404).json({ message: 'Player not found' });
     }
+    const ownsPlayer = (actor.boughtPlayers || []).some(
+      (id) => String(id) === String(player._id)
+    );
+    if (!actor.isAdmin && !ownsPlayer) {
+      return res.status(403).json({
+        message: 'You can only replace photos for players on your team',
+      });
+    }
+    const previousPath = player.profilePicture;
     const { relativePath } = await saveProfilePictureLocal({
       buffer: req.file.buffer,
       contentType: req.file.mimetype,
@@ -239,17 +266,19 @@ async function handleAdminProfilePictureLocal(req, res) {
     player.profilePicture = relativePath;
     player.updatedAt = new Date();
     await player.save();
+    await removeLocalProfilePictureIfSafe(previousPath);
     invalidateCache('players:data');
     invalidateCache('players:data:all');
     invalidateCache('user-purses');
     invalidateCache('user-details:');
+    flushStatsOverviewCache();
     return res.json({
       message: 'Profile picture updated',
       profilePicture: relativePath,
       playerId: player._id,
     });
   } catch (err) {
-    console.error('Admin profile picture (local) error', err);
+    console.error('Profile picture (local) error', err);
     return res.status(500).json({ message: err.message || 'Upload failed' });
   }
 }

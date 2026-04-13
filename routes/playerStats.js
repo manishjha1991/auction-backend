@@ -7,13 +7,20 @@ const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
 const MatchResult = require('../models/MatchResult');
 const Fixture = require('../models/Fixture');
-const { cacheConfig, invalidateCache, registerExtraCache, clearAllCaches } = require('../utils/cache');
+const {
+  cacheConfig,
+  invalidateCache,
+  registerExtraCache,
+  clearAllCaches,
+  registerStatsOverviewInvalidator,
+} = require('../utils/cache');
 const { upsertLiveCareerSummaryForPlayer } = require('../utils/playerCareerSummary');
 const { invalidateCareerSummaryCache } = require('../utils/cplReadCaches');
 
 // 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats) - keeping for backward compatibility
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 registerExtraCache(cache);
+registerStatsOverviewInvalidator(() => cache.del('stats-overview'));
 // Load list of players with playerId and userId
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));

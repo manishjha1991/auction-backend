@@ -14,6 +14,7 @@ const path = require('path');
 const mongoose = require('mongoose');
 const Player = require('../models/Player');
 const { saveProfilePictureLocal } = require('../utils/saveProfilePictureLocal');
+const { removeLocalProfilePictureIfSafe } = require('../utils/removeLocalProfilePictureIfSafe');
 const { invalidateCache } = require('../utils/cache');
 
 async function main() {
@@ -43,6 +44,7 @@ async function main() {
         : ext === '.gif'
           ? 'image/gif'
           : 'image/jpeg';
+  const previous = await Player.findById(playerId).select('profilePicture').lean();
   const { relativePath } = await saveProfilePictureLocal({
     buffer: buf,
     contentType: mime,
@@ -56,6 +58,9 @@ async function main() {
   if (!updated) {
     console.error('Player not found:', playerId);
     process.exit(1);
+  }
+  if (previous?.profilePicture) {
+    await removeLocalProfilePictureIfSafe(previous.profilePicture);
   }
   invalidateCache('players:data');
   invalidateCache('players:data:all');
