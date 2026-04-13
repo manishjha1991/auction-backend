@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 
 const mongoose = require('mongoose');
@@ -106,6 +107,11 @@ mongoose.connect(process.env.MONGO_URI, mongooseOptions)
   });
 
 app.use('/uploads', express.static('uploads'));
+// Player portraits on disk (wiki script / manual files). Mongo profilePicture e.g. cricket-player-portraits/Name.jpg → GET /cricket-player-portraits/Name.jpg
+app.use(
+  '/cricket-player-portraits',
+  express.static(path.join(__dirname, 'cricket-player-portraits'))
+);
 
 // 🚀 PERFORMANCE: Add compression middleware (reduces response size by 60-80%)
 app.use(compression());

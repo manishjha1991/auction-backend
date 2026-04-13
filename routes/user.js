@@ -209,7 +209,7 @@ router.get("/:userId/details", async (req, res) => {
     // 2) Fetch sold players for the user
     // 🚀 PERFORMANCE: Use .lean() for faster queries
     const soldPlayers = await UserPlayer.find({ userId, isActive: true })
-      .populate("playerId", "name type role basePrice over overallScore totalRuns totalWickets")
+      .populate("playerId", "name type role basePrice over overallScore totalRuns totalWickets profilePicture")
       .lean()
       .exec();
 
@@ -217,7 +217,7 @@ router.get("/:userId/details", async (req, res) => {
     // 🚀 PERFORMANCE: Use .lean() for faster queries
     const userBids = await Bid.find({ bidder: userId })
       .select('playerId bidAmount isBidOn isActive timestamp bidder')
-      .populate("playerId", "name type role basePrice")
+      .populate("playerId", "name type role basePrice profilePicture")
       .sort({ timestamp: -1 })
       .lean()
       .exec();
@@ -380,7 +380,7 @@ router.get("/:userId/bids", async (req, res) => {
     }
 
     const userBids = await Bid.find({ bidder: userId })
-      .populate("playerId", "name type role basePrice")
+      .populate("playerId", "name type role basePrice profilePicture")
       .sort({ timestamp: -1 })
       .lean()
       .exec();
@@ -423,6 +423,7 @@ router.get("/:userId/bids", async (req, res) => {
         playerName: bid.playerId?.name,
         playerType: bid.playerId?.type,
         playerRole: bid.playerId?.role,
+        profilePicture: bid.playerId?.profilePicture || null,
         bidAmount: bid.bidAmount,
         status
       };
@@ -453,11 +454,11 @@ router.get("/purses", async (req, res) => {
       User.find({ isAdmin: { $ne: true } }).select("name teamName purse _id").lean(),
       UserPlayer.find({ isActive: true })
         .select('userId playerId bidValue')
-        .populate("playerId", "name type role")
+        .populate("playerId", "name type role profilePicture")
         .lean(),
       Bid.find({ isActive: true, isBidOn: true })
         .select('playerId bidder bidAmount timestamp isActive isBidOn')
-        .populate("playerId", "name type role")
+        .populate("playerId", "name type role profilePicture")
         .populate("bidder", "name _id")
         .sort({ bidAmount: -1 })
         .lean(),
@@ -509,6 +510,7 @@ router.get("/purses", async (req, res) => {
           boughtValue: entry.bidValue,
           type: entry.playerId.type,
           role: entry.playerId.role,
+          profilePicture: entry.playerId.profilePicture || null,
           isBidOn: false, // Sold players are not actively being bid on
           biddingPrice: null,
           biddingBy: null,
@@ -521,6 +523,7 @@ router.get("/purses", async (req, res) => {
           boughtValue: null, // Not yet sold, so no bought value
           type: bid.playerId.type,
           role: bid.playerId.role,
+          profilePicture: bid.playerId.profilePicture || null,
           isBidOn: true, // Actively being bid on
           biddingPrice: bid.bidAmount,
           biddingBy: user.name, // User placing the bid
@@ -1581,7 +1584,7 @@ router.get('/:userId/roster', async (req, res) => {
   try {
     const { userId } = req.params;
     const roster = await UserPlayer.find({ userId, isActive: true })
-      .populate('playerId', 'name type role')
+      .populate('playerId', 'name type role profilePicture')
       .lean();
     const players = roster.map(r => ({ id: r.playerId._id, name: r.playerId.name, type: r.playerId.type, role: r.playerId.role }));
     res.json({ userId, players });
@@ -1616,7 +1619,7 @@ router.post('/cleanup-bought-players', async (req, res) => {
       const activeUserPlayers = await UserPlayer.find({ 
         userId: user._id, 
         isActive: true 
-      }).select('playerId').populate('playerId', 'name type role');
+      }).select('playerId').populate('playerId', 'name type role profilePicture');
 
       const activePlayerIds = activeUserPlayers.map(up => up.playerId._id.toString());
       console.log(`   Active players from UserPlayer: ${activePlayerIds.length} players`);
@@ -1813,7 +1816,7 @@ router.get('/check-bought-players-status', async (req, res) => {
       const activeUserPlayers = await UserPlayer.find({ 
         userId: user._id, 
         isActive: true 
-      }).select('playerId').populate('playerId', 'name type role');
+      }).select('playerId').populate('playerId', 'name type role profilePicture');
       
       const activePlayerIds = activeUserPlayers.map(up => up.playerId._id.toString());
       

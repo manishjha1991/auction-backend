@@ -8,7 +8,9 @@
     "start": "node server.js",
     "check-purse-diff": "node check-user-purse-difference.js",
     "update-purse": "node update-purse-to-100-minus-players.js",
-    "confirm-update-purse": "node confirm-update-purse.js"
+    "confirm-update-purse": "node confirm-update-purse.js",
+    "portraits:wiki": "node scripts/downloadPlayerPortraitsAndSetPath.js",
+    "profile:save-local": "node scripts/uploadPlayerProfileLocal.js"
   },
   "keywords": [],
   "author": "",

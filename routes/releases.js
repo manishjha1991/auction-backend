@@ -124,7 +124,7 @@ router.post('/', async (req, res) => {
 
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const populated = await ReleaseRequest.findById(rr._id)
-      .populate('player', 'name type role')
+      .populate('player', 'name type role profilePicture')
       .populate('user', 'name teamName purse')
       .lean();
 
@@ -144,7 +144,7 @@ router.get('/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const list = await ReleaseRequest.find({ user: userId })
-      .populate('player', 'name type role')
+      .populate('player', 'name type role profilePicture')
       .populate('user', 'name teamName purse')
       .sort({ createdAt: -1 });
     const enriched = await attachInsights(list);
@@ -161,7 +161,7 @@ router.get('/admin/pending', async (req, res) => {
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const list = await ReleaseRequest.find({ status: { $in: ['pending', 'admin_pending'] } })
       .populate('user', 'name teamName purse')
-      .populate('player', 'name type role')
+      .populate('player', 'name type role profilePicture')
       .sort({ updatedAt: -1 })
       .lean();
     
@@ -292,7 +292,7 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
     
     // Return populated release request
     const populatedItem = await ReleaseRequest.findById(releaseId)
-      .populate('player', 'name type role')
+      .populate('player', 'name type role profilePicture')
       .populate('user', 'name teamName purse');
 
     const responseObj = populatedItem.toObject({ virtuals: true });
@@ -339,7 +339,7 @@ router.post('/:releaseId/withdraw', async (req, res) => {
     
     // Return populated release request
     const populatedItem = await ReleaseRequest.findById(releaseId)
-      .populate('player', 'name type role')
+      .populate('player', 'name type role profilePicture')
       .populate('user', 'name teamName purse');
     
     const responseObj = populatedItem.toObject({ virtuals: true });
@@ -357,7 +357,7 @@ router.get('/admin/history', async (req, res) => {
   try {
     const list = await ReleaseRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
       .populate('user', 'name teamName purse')
-      .populate('player', 'name type role')
+      .populate('player', 'name type role profilePicture')
       .populate('adminDecision.decidedBy', 'name email')
       .sort({ 'adminDecision.decidedAt': -1 });
     const enriched = await attachInsights(list);

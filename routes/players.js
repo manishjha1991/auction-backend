@@ -8,6 +8,8 @@ const User = require("../models/User");
 const UserPlayer = require("../models/UserPlayer");
 const ReleaseRequest = require("../models/ReleaseRequest");
 const { cacheConfig, invalidateCache } = require('../utils/cache');
+const multerMemory = require('../config/multerMemory');
+const { saveProfilePictureLocal } = require('../utils/saveProfilePictureLocal');
 const router = express.Router();
 const formatPrice = (value) => {
   if (value >= 10000000) {
@@ -150,7 +152,9 @@ router.get("/:playerId/bids", async (req, res) => {
         lastExitBy: player.lastExitBy || lastExit?.exitBy || null,
         // NEW FIELDS (assuming they exist in your Player schema)
         totalRuns: player.totalRuns || 0,
-        totalWickets: player.totalWickets || 0
+        totalWickets: player.totalWickets || 0,
+        profilePicture: player.profilePicture || null,
+        momCount: player.momCount ?? 0,
       },
       topTwoBids: lastTwoBids.map((bid) => ({
         id: bid._id,
@@ -209,6 +213,52 @@ router.post('/:playerId/deactivate', async (req, res) => {
   }
 });
 
+async function handleAdminProfilePictureLocal(req, res) {
+  try {
+    const { playerId } = req.params;
+    const adminUserId = req.body?.adminUserId;
+    if (!adminUserId) {
+      return res.status(400).json({ message: 'adminUserId is required' });
+    }
+    const admin = await User.findById(adminUserId).select('isAdmin').lean();
+    if (!admin?.isAdmin) {
+      return res.status(403).json({ message: 'Only admin can update player photos' });
+    }
+    if (!req.file?.buffer) {
+      return res.status(400).json({ message: 'Image file required (field name: profilePicture)' });
+    }
+    const player = await Player.findById(playerId);
+    if (!player) {
+      return res.status(404).json({ message: 'Player not found' });
+    }
+    const { relativePath } = await saveProfilePictureLocal({
+      buffer: req.file.buffer,
+      contentType: req.file.mimetype,
+      playerId,
+    });
+    player.profilePicture = relativePath;
+    player.updatedAt = new Date();
+    await player.save();
+    invalidateCache('players:data');
+    invalidateCache('players:data:all');
+    invalidateCache('user-purses');
+    invalidateCache('user-details:');
+    return res.json({
+      message: 'Profile picture updated',
+      profilePicture: relativePath,
+      playerId: player._id,
+    });
+  } catch (err) {
+    console.error('Admin profile picture (local) error', err);
+    return res.status(500).json({ message: err.message || 'Upload failed' });
+  }
+}
+
+router.post(
+  '/:playerId/admin/profile-picture',
+  multerMemory.single('profilePicture'),
+  handleAdminProfilePictureLocal
+);
 
 router.get("/players/data", async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (2 minute cache for players data)

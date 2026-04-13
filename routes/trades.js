@@ -189,8 +189,8 @@ router.post('/', async (req, res) => {
     const populatedDoc = await TradeRequest.findById(trade._id)
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
-      .populate('offeredPlayer', 'name type role')
-      .populate('requestedPlayer', 'name type role');
+      .populate('offeredPlayer', 'name type role profilePicture')
+      .populate('requestedPlayer', 'name type role profilePicture');
 
     const createdObj = populatedDoc.toObject({ virtuals: true });
     createdObj.approvalWarnings = await getTradeApprovalBlockers(populatedDoc);
@@ -229,8 +229,8 @@ router.post('/:tradeId/respond', async (req, res) => {
     const populated = await TradeRequest.findById(trade._id)
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
-      .populate('offeredPlayer', 'name type role')
-      .populate('requestedPlayer', 'name type role');
+      .populate('offeredPlayer', 'name type role profilePicture')
+      .populate('requestedPlayer', 'name type role profilePicture');
     const respondObj = populated.toObject({ virtuals: true });
     if (['pending', 'counter', 'admin_pending'].includes(populated.status)) {
       respondObj.approvalWarnings = await getTradeApprovalBlockers(populated);
@@ -269,8 +269,8 @@ router.post('/:tradeId/withdraw', async (req, res) => {
     const populated = await TradeRequest.findById(trade._id)
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
-      .populate('offeredPlayer', 'name type role')
-      .populate('requestedPlayer', 'name type role');
+      .populate('offeredPlayer', 'name type role profilePicture')
+      .populate('requestedPlayer', 'name type role profilePicture');
     res.json(populated);
   } catch (err) {
     console.error('Withdraw trade error', err);
@@ -285,11 +285,11 @@ router.get('/user/:userId', async (req, res) => {
     const trades = await TradeRequest.find({ $or: [{ fromUser: userId }, { toUser: userId }] })
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
-      .populate('offeredPlayer', 'name type role')
-      .populate('requestedPlayer', 'name type role')
+      .populate('offeredPlayer', 'name type role profilePicture')
+      .populate('requestedPlayer', 'name type role profilePicture')
       .populate('history.byUser', 'name teamName')
-      .populate('history.offeredPlayer', 'name type role')
-      .populate('history.requestedPlayer', 'name type role')
+      .populate('history.offeredPlayer', 'name type role profilePicture')
+      .populate('history.requestedPlayer', 'name type role profilePicture')
       .sort({ createdAt: -1 });
 
     const payload = await Promise.all(
@@ -316,8 +316,8 @@ router.get('/admin/pending', async (req, res) => {
     const trades = await TradeRequest.find({ status: 'admin_pending' })
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
-      .populate('offeredPlayer', 'name type role')
-      .populate('requestedPlayer', 'name type role')
+      .populate('offeredPlayer', 'name type role profilePicture')
+      .populate('requestedPlayer', 'name type role profilePicture')
       .sort({ updatedAt: -1 });
     res.json(trades);
   } catch (err) {
@@ -332,8 +332,8 @@ router.get('/admin/history', async (req, res) => {
     const trades = await TradeRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
-      .populate('offeredPlayer', 'name type role')
-      .populate('requestedPlayer', 'name type role')
+      .populate('offeredPlayer', 'name type role profilePicture')
+      .populate('requestedPlayer', 'name type role profilePicture')
       .populate('adminDecision.decidedBy', 'name email')
       .sort({ 'adminDecision.decidedAt': -1 });
     res.json(trades);

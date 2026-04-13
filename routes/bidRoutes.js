@@ -1964,7 +1964,7 @@ router.get('/users-dashboard', async (req, res) => {
     // Get all active bids with player and bidder info (including abbreviation)
     const activeBids = await Bid.find({ isActive: true, isBidOn: true })
       .select('playerId bidder bidAmount timestamp isActive isBidOn')
-      .populate('playerId', 'name type role basePrice')
+      .populate('playerId', 'name type role basePrice profilePicture')
       .populate('bidder', 'name teamName _id abbreviation')
       .sort({ bidAmount: -1 })
       .lean();
@@ -2056,6 +2056,7 @@ router.get('/users-dashboard', async (req, res) => {
           playerType: bid.playerId.type,
           playerRole: bid.playerId.role,
           basePrice: bid.playerId.basePrice,
+          profilePicture: bid.playerId.profilePicture || null,
           bidAmount: bid.bidAmount,
           timestamp: bid.timestamp,
           isWinning: isHighest,
