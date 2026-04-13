@@ -40,6 +40,9 @@ const UserSchema = new mongoose.Schema({
   knownDevices: [{ type: String }], // Array of known device fingerprints for this user
   lastDeviceFingerprint: { type: String, default: null }, // Last device fingerprint used
   captainPlayerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Player', default: null },
+  /** Custom colours for Team Squads page cards / modal (hex #rrggbb); null = use default palette */
+  themePrimary: { type: String, default: null },
+  themeSecondary: { type: String, default: null },
 });
 
 function applyActiveFilter(next) {

@@ -952,7 +952,7 @@ router.get('/teams', async (req, res) => {
       baseFilter.isActive = true;
     }
 
-    let query = User.find(baseFilter, 'name teamName timezone streamLink abbreviation teamImage isActive');
+    let query = User.find(baseFilter, 'name teamName timezone streamLink abbreviation teamImage isActive themePrimary themeSecondary');
     if (includeInactive) {
       query = query.includeInactive();
     }
@@ -1657,6 +1657,75 @@ router.put('/:userId/captain', async (req, res) => {
     });
   } catch (error) {
     console.error('Error setting captain:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+function normalizeThemeHex(input) {
+  if (input === undefined || input === null || input === '') return null;
+  const s = String(input).trim();
+  if (!/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.test(s)) return false;
+  if (s.length === 4) {
+    return (
+      '#' +
+      s[1].toLowerCase() +
+      s[1].toLowerCase() +
+      s[2].toLowerCase() +
+      s[2].toLowerCase() +
+      s[3].toLowerCase() +
+      s[3].toLowerCase()
+    );
+  }
+  return s.toLowerCase();
+}
+
+// PUT: squad card colours for Team Squads page (owner for self, or admin for any team)
+router.put('/:userId/squad-theme', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { requesterUserId, themePrimary, themeSecondary } = req.body || {};
+    if (!requesterUserId) {
+      return res.status(400).json({ message: 'requesterUserId is required' });
+    }
+
+    const requester = await User.findById(requesterUserId).select('isAdmin').lean();
+    const teamUser = await User.findById(userId);
+    if (!teamUser) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    const isOwner = String(requesterUserId) === String(userId);
+    if (!requester?.isAdmin && !isOwner) {
+      return res.status(403).json({
+        message: 'Only the team owner or an admin can change squad colours',
+      });
+    }
+
+    const p = normalizeThemeHex(themePrimary);
+    const s = normalizeThemeHex(themeSecondary);
+    if (p === false || s === false) {
+      return res.status(400).json({ message: 'themePrimary and themeSecondary must be valid hex colours (#rgb or #rrggbb)' });
+    }
+
+    if (p === null && s === null) {
+      teamUser.themePrimary = null;
+      teamUser.themeSecondary = null;
+    } else if (p && s) {
+      teamUser.themePrimary = p;
+      teamUser.themeSecondary = s;
+    } else {
+      return res.status(400).json({ message: 'Set both colours or clear both (use reset)' });
+    }
+
+    await teamUser.save();
+    invalidateCache(`user-details:${userId}`);
+    return res.json({
+      message: 'Squad theme updated',
+      themePrimary: teamUser.themePrimary || null,
+      themeSecondary: teamUser.themeSecondary || null,
+    });
+  } catch (error) {
+    console.error('Error updating squad theme:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
