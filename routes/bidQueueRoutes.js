@@ -15,6 +15,28 @@ router.get("/counts", async (req, res) => {
   }
 });
 
+/** Stop queue auto-bid while staying in the auction; manual bids allowed again. */
+router.post("/:playerId/resign-proxy", authenticateJWT, async (req, res) => {
+  try {
+    const io = req.app.get("io");
+    const r = await bidQueueService.resignActiveProxyToManual({
+      playerId: req.params.playerId,
+      userId: req.authenticatedUser._id,
+      io,
+    });
+    if (!r.ok) {
+      return res.status(r.status).json({ message: r.message });
+    }
+    res.json({
+      message:
+        "Auto-bid is off. You can place bids manually. To use queue auto-bid again, exit this auction, join the queue, and wait to be promoted.",
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 router.get("/:playerId", authenticateJWT, async (req, res) => {
   try {
     const state = await bidQueueService.getQueueState(

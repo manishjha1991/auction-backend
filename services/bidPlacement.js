@@ -3,10 +3,116 @@ const Bid = require("../models/Bid");
 const Player = require("../models/Player");
 const User = require("../models/User");
 const RetainedPlayer = require("../models/RetainedPlayer");
+const BidPlayerQueue = require("../models/BidPlayerQueue");
 const BidNotification = require("../models/BidNotification");
 const { invalidateCache } = require("../utils/cache");
 const { computeNextBidAmount } = require("../utils/bidIncrement");
 const { getSocketIdsForUsers } = require("../utils/socketUserMap");
+
+const TYPE_LIMIT = {
+  Sapphire: 2,
+  Gold: 8,
+  Emerald: 4,
+  Silver: 6,
+};
+
+/** Per-user queued rows (status queued) for slot limits — one row per player lot. */
+async function countQueuedSlotsForUser(userId, excludePlayerId = null) {
+  const uid = userId.toString();
+  const excl = excludePlayerId ? String(excludePlayerId) : null;
+  const docs = await BidPlayerQueue.find({ "entries.userId": userId })
+    .populate("playerId", "type")
+    .lean();
+
+  let totalQueued = 0;
+  const byType = { Sapphire: 0, Gold: 0, Emerald: 0, Silver: 0 };
+  let esQueued = 0;
+
+  for (const doc of docs) {
+    const pid = doc.playerId?._id?.toString() || doc.playerId?.toString();
+    if (excl && pid === excl) continue;
+    const has = doc.entries?.some(
+      (e) => e.userId.toString() === uid && e.status === "queued"
+    );
+    if (!has) continue;
+    totalQueued += 1;
+    const t = doc.playerId?.type;
+    if (t && Object.prototype.hasOwnProperty.call(byType, t)) byType[t] += 1;
+    if (t === "Emerald" || t === "Sapphire") esQueued += 1;
+  }
+  return { totalQueued, byType, esQueued };
+}
+
+/**
+ * Same engagement rules as placeBidCore, counting existing bid-queue rows as using a slot.
+ */
+async function assertQueueJoinSlotLimits(userId, playerId) {
+  const player = await Player.findById(playerId);
+  if (!player) {
+    return { ok: false, message: "Player not found." };
+  }
+  const user = await User.findById(userId).lean();
+  if (!user) {
+    return { ok: false, message: "User not found." };
+  }
+
+  const { totalQueued, byType, esQueued } = await countQueuedSlotsForUser(userId, null);
+  const queuedOfThisType = byType[player.type] || 0;
+  const combinedESLimit = 5;
+
+  const [boughtPlayersOfThisType, currentBidPlayersOfThisType] = await Promise.all([
+    Player.countDocuments({
+      _id: { $in: user.boughtPlayers || [] },
+      type: player.type,
+    }),
+    Player.countDocuments({
+      _id: { $in: (user.currentBids || []).map((bid) => bid.playerId) },
+      type: player.type,
+    }),
+  ]);
+
+  const totalTypeCount = boughtPlayersOfThisType + currentBidPlayersOfThisType;
+  if (totalTypeCount + queuedOfThisType >= TYPE_LIMIT[player.type]) {
+    return {
+      ok: false,
+      message: `Joining the queue would exceed your ${player.type} limit (${TYPE_LIMIT[player.type]}). That count includes ${queuedOfThisType} other ${player.type} queue slot(s). Exit an auction or wait for a queue to clear.`,
+    };
+  }
+
+  const combinedESCount = await Player.countDocuments({
+    _id: [...(user.boughtPlayers || []), ...(user.currentBids || []).map((bid) => bid.playerId)],
+    type: { $in: ["Emerald", "Sapphire"] },
+  });
+  if (
+    ["Emerald", "Sapphire"].includes(player.type) &&
+    combinedESCount + esQueued >= combinedESLimit
+  ) {
+    return {
+      ok: false,
+      message: `Joining the queue would exceed the combined Emerald + Sapphire limit (${combinedESLimit}). That includes ${esQueued} queued in that group.`,
+    };
+  }
+
+  const totalOwned = boughtPlayersOfThisType;
+  const maxConcurrentBids = TYPE_LIMIT[player.type] - totalOwned;
+
+  if (player.type === "Gold" || player.type === "Silver") {
+    if (currentBidPlayersOfThisType + queuedOfThisType >= maxConcurrentBids) {
+      return {
+        ok: false,
+        message: `Joining the queue would exceed how many ${player.type} auctions you can run at once (${maxConcurrentBids}). You have ${currentBidPlayersOfThisType} active bid(s) and ${queuedOfThisType} queued on ${player.type}.`,
+      };
+    }
+  } else if ((user.currentBids || []).length + totalQueued >= 6) {
+    return {
+      ok: false,
+      message:
+        "Joining the queue would exceed your concurrent auction limit (including other queue slots). Exit an auction or wait for a queue to clear.",
+    };
+  }
+
+  return { ok: true };
+}
 
 /**
  * Core bid placement (shared by HTTP route and bid queue proxy).
@@ -44,12 +150,7 @@ async function placeBidCore({
       };
     }
 
-    const typeLimit = {
-      Sapphire: 2,
-      Gold: 8,
-      Emerald: 4,
-      Silver: 6,
-    };
+    const typeLimit = TYPE_LIMIT;
 
     const [boughtPlayersOfThisType, retainedPlayersOfThisType, currentBidPlayersOfThisType] =
       await Promise.all([
@@ -276,4 +377,4 @@ async function placeBidCore({
   }
 }
 
-module.exports = { placeBidCore };
+module.exports = { placeBidCore, assertQueueJoinSlotLimits, countQueuedSlotsForUser };

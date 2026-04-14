@@ -8,7 +8,7 @@ const {
   countBidStepsUntilExceedingMax,
 } = require("../utils/bidIncrement");
 const { withPlayerBidLock } = require("../utils/bidQueueMutex");
-const { placeBidCore } = require("./bidPlacement");
+const { placeBidCore, assertQueueJoinSlotLimits } = require("./bidPlacement");
 const { getSocketIdsForUsers } = require("../utils/socketUserMap");
 
 const PROXY_FINGERPRINT = "bid-queue-proxy";
@@ -251,7 +251,14 @@ async function runProxyContinuation(playerId, proxyUserId, io) {
         isSuspiciousIP: false,
         io,
       });
-      outcome = res.ok ? "bid" : "stop";
+      if (!res.ok) {
+        doc.entries.pull(entry._id);
+        await doc.save();
+        await forceExitProxyUser(proxyUserId, playerId, io);
+        outcome = "promote";
+        return;
+      }
+      outcome = "bid";
     });
 
     await afterBidPlaced(playerId, io);
@@ -336,6 +343,16 @@ async function tryPromoteNextQueued(playerId, io) {
   }
 }
 
+async function triggerProxyAfterOpponentBid(playerId, io) {
+  if (!isEnabled()) return;
+  const doc = await BidPlayerQueue.findOne({ playerId }).select("entries").lean();
+  if (!doc?.entries?.length) return;
+  const proxy = doc.entries.find((e) => e.status === "active_proxy");
+  if (!proxy) return;
+  const proxyUserId = proxy.userId.toString();
+  await runProxyContinuation(playerId, proxyUserId, io);
+}
+
 async function enqueueUser({ playerId, userId, maxBid, io }) {
   if (!isEnabled()) {
     return { ok: false, status: 503, message: "Bid queue feature is disabled." };
@@ -344,6 +361,11 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
     const player = await Player.findById(playerId);
     if (!player || player.isSold) {
       return { ok: false, status: 404, message: "Player not found or sold." };
+    }
+
+    const slotCheck = await assertQueueJoinSlotLimits(userId, playerId);
+    if (!slotCheck.ok) {
+      return { ok: false, status: 400, message: slotCheck.message };
     }
 
     const user = await User.findById(userId);
@@ -431,8 +453,12 @@ async function leaveQueue({ playerId, userId, io }) {
     if (!entry) {
       return { ok: false, status: 400, message: "You are not in the queue." };
     }
-    await removeQueuedEntryById(playerId, entry._id, "left", io);
-    return { ok: true };
+    return {
+      ok: false,
+      status: 403,
+      message:
+        "You cannot leave the bid queue before you are promoted into the auction. Wait until your auto-bid starts, then use Exit if you need to stop.",
+    };
   });
 }
 
@@ -620,6 +646,59 @@ async function isPromotedProxyBidder(playerId, userId) {
   );
 }
 
+/**
+ * Promoted (active_proxy) user stays in the auction but stops auto-bid; manual Place Bid allowed again.
+ * To use auto-bid later they must exit, join queue again, and get promoted.
+ */
+async function resignActiveProxyToManual({ playerId, userId, io }) {
+  if (!isEnabled()) {
+    return { ok: false, status: 503, message: "Bid queue feature is disabled." };
+  }
+  return withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) {
+      return { ok: false, status: 404, message: "No queue for this player." };
+    }
+    const entry = doc.entries.find(
+      (e) => e.userId.toString() === userId.toString() && e.status === "active_proxy"
+    );
+    if (!entry) {
+      return {
+        ok: false,
+        status: 400,
+        message: "You are not in auto-bid (queue promotion) mode on this player.",
+      };
+    }
+    const activeBid = await Bid.findOne({
+      playerId,
+      bidder: userId,
+      isActive: true,
+      isBidOn: true,
+    }).lean();
+    if (!activeBid) {
+      return {
+        ok: false,
+        status: 400,
+        message: "No active bid on this player; nothing to switch to manual.",
+      };
+    }
+
+    doc.entries.pull(entry._id);
+    if (!doc.entries.length) {
+      await BidPlayerQueue.deleteOne({ _id: doc._id });
+    } else {
+      await doc.save();
+    }
+
+    emitQueuePersonal(io, userId, {
+      type: "proxy_resigned_manual",
+      playerId: playerId.toString(),
+    });
+    await emitBidQueueUpdated(io, playerId);
+    return { ok: true };
+  });
+}
+
 async function afterBidPlaced(playerId, io) {
   if (!isEnabled()) return;
   await pruneQueuedOverMax(playerId, io);
@@ -656,12 +735,14 @@ module.exports = {
   getActiveBidderIds,
   pruneQueuedOverMax,
   tryPromoteNextQueued,
+  triggerProxyAfterOpponentBid,
   enqueueUser,
   leaveQueue,
   updateQueueMax,
   getQueueState,
   listMyQueueMemberships,
   isPromotedProxyBidder,
+  resignActiveProxyToManual,
   afterBidPlaced,
   runProxyContinuation,
 };

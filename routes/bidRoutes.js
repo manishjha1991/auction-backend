@@ -116,6 +116,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     }
 
     await bidQueueService.afterBidPlaced(playerId, io);
+    await bidQueueService.triggerProxyAfterOpponentBid(playerId, io);
 
     res.json({
       message: "Bid placed successfully",
