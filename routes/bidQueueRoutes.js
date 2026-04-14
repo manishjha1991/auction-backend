@@ -4,6 +4,17 @@ const bidQueueService = require("../services/bidQueueService");
 
 const router = express.Router();
 
+/** Public map of playerId -> queued count (for player board badges). */
+router.get("/counts", async (req, res) => {
+  try {
+    const counts = await bidQueueService.getAllQueuedCountsByPlayer();
+    res.json(counts);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 router.get("/:playerId", authenticateJWT, async (req, res) => {
   try {
     const state = await bidQueueService.getQueueState(

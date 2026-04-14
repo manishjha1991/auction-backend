@@ -40,6 +40,36 @@ async function countQueued(playerId) {
   return doc.entries.filter((e) => e.status === "queued").length;
 }
 
+/** Broadcast queue depth for player list + popups (includes queueCount for clients). */
+async function emitBidQueueUpdated(io, playerId, queueCountKnown) {
+  if (!io) return;
+  const queueCount =
+    typeof queueCountKnown === "number"
+      ? queueCountKnown
+      : isEnabled()
+        ? await countQueued(playerId)
+        : 0;
+  io.emit("bid_queue_updated", {
+    playerId: playerId.toString(),
+    queueCount,
+  });
+}
+
+/** Map playerId string -> number of queued entries (for player board). */
+async function getAllQueuedCountsByPlayer() {
+  if (!isEnabled()) return {};
+  const rows = await BidPlayerQueue.aggregate([
+    { $unwind: "$entries" },
+    { $match: { "entries.status": "queued" } },
+    { $group: { _id: "$playerId", queueCount: { $sum: 1 } } },
+  ]);
+  const out = {};
+  for (const r of rows) {
+    if (r._id) out[r._id.toString()] = r.queueCount;
+  }
+  return out;
+}
+
 async function shouldBlockManualBid(playerId, bidderId) {
   if (!isEnabled()) return false;
   const n = await countQueued(playerId);
@@ -81,7 +111,7 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
     playerName: player?.name || "",
     refund,
   });
-  io?.emit("bid_queue_updated", { playerId: playerId.toString() });
+  await emitBidQueueUpdated(io, playerId);
 }
 
 async function pruneQueuedOverMax(playerId, io) {
@@ -174,7 +204,7 @@ async function forceExitProxyUser(userId, playerId, io) {
     currentBidder: player.currentBidder,
     playerName: player.name,
   });
-  io?.emit("bid_queue_updated", { playerId: playerId.toString() });
+  await emitBidQueueUpdated(io, playerId);
 }
 
 async function runProxyContinuation(playerId, proxyUserId, io) {
@@ -287,7 +317,7 @@ async function tryPromoteNextQueued(playerId, io) {
         return;
       }
 
-      io?.emit("bid_queue_updated", { playerId: playerId.toString() });
+      await emitBidQueueUpdated(io, playerId);
       emitQueuePersonal(io, head.userId, {
         type: "promoted",
         playerId: playerId.toString(),
@@ -379,9 +409,9 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       playerName: player.name,
       maxBid,
     });
-    io?.emit("bid_queue_updated", { playerId: playerId.toString() });
-
     const qn = doc.entries.filter((e) => e.status === "queued").length;
+    await emitBidQueueUpdated(io, playerId, qn);
+
     return { ok: true, queueCount: qn };
   });
 }
@@ -448,15 +478,62 @@ async function updateQueueMax({ playerId, userId, maxBid, io }) {
     await user.save();
     await doc.save();
 
-    io?.emit("bid_queue_updated", { playerId: playerId.toString() });
+    await emitBidQueueUpdated(io, playerId);
     return { ok: true };
   });
+}
+
+/**
+ * All queue / proxy rows for this user (for auction hub).
+ */
+async function listMyQueueMemberships(userId) {
+  const uid = userId.toString();
+  const docs = await BidPlayerQueue.find({ "entries.userId": userId })
+    .populate("playerId", "name type profilePicture")
+    .lean();
+
+  const out = [];
+  for (const doc of docs) {
+    if (!doc?.playerId) continue;
+    const queued = doc.entries
+      .filter((e) => e.status === "queued")
+      .sort((a, b) => new Date(a.joinedAt) - new Date(b.joinedAt));
+    const mine = doc.entries.find(
+      (e) => e.userId.toString() === uid && (e.status === "queued" || e.status === "active_proxy")
+    );
+    if (!mine) continue;
+
+    const idx = queued.findIndex((e) => e.userId.toString() === uid);
+    const position = mine.status === "queued" && idx >= 0 ? idx + 1 : null;
+    const aheadCount = mine.status === "queued" && idx >= 0 ? idx : null;
+    const behindCount =
+      mine.status === "queued" && idx >= 0 ? Math.max(0, queued.length - idx - 1) : null;
+
+    out.push({
+      playerId: doc.playerId._id?.toString() || doc.playerId.toString(),
+      playerName: doc.playerId.name || "?",
+      playerType: doc.playerId.type || "",
+      profilePicture: doc.playerId.profilePicture || null,
+      position,
+      aheadCount,
+      behindCount,
+      queueLength: queued.length,
+      maxBid: mine.maxBid,
+      status: mine.status,
+      maxEditTradesRemaining: mine.maxEditTradesRemaining,
+      label: mine.status === "active_proxy" ? "Auto-bidding (queue)" : `Queue #${position} of ${queued.length}`,
+    });
+  }
+  return out;
 }
 
 async function getQueueState(playerId, viewerUserId) {
   const activeBidderIds = await getActiveBidderIds(playerId);
   const activeBidderCount = activeBidderIds.length;
   const queueJoinAllowed = activeBidderCount === 2;
+
+  const viewerStr = viewerUserId ? viewerUserId.toString() : null;
+  const viewerIsActiveBidder = viewerStr ? activeBidderIds.includes(viewerStr) : false;
 
   if (!isEnabled()) {
     return {
@@ -465,30 +542,82 @@ async function getQueueState(playerId, viewerUserId) {
       queueCount: 0,
       you: null,
       queueJoinAllowed: false,
+      canJoinQueue: false,
       activeBidderCount,
     };
   }
   const doc = await BidPlayerQueue.findOne({ playerId })
     .populate("entries.userId", "name teamName")
     .lean();
-  const queued = doc?.entries.filter((e) => e.status === "queued") || [];
-  const manualBidsFrozen = queued.length > 0;
-  const you = viewerUserId
+  const queuedRaw = doc?.entries.filter((e) => e.status === "queued") || [];
+  const queued = [...queuedRaw].sort(
+    (a, b) => new Date(a.joinedAt) - new Date(b.joinedAt)
+  );
+  const queueCount = queued.length;
+  const manualBidsFrozen = queueCount > 0;
+  const youQueued = viewerUserId
     ? queued.find((e) => e.userId._id.toString() === viewerUserId.toString()) || null
     : null;
+  const proxyYou = viewerUserId
+    ? doc?.entries.find(
+        (e) =>
+          e.userId._id.toString() === viewerUserId.toString() && e.status === "active_proxy"
+      ) || null
+    : null;
+
+  const viewerDisplayName = (u) => {
+    if (!u || typeof u !== "object") return null;
+    return u.name || u.teamName || null;
+  };
+
+  let you = null;
+  if (youQueued) {
+    const idx = queued.findIndex((e) => e.userId._id.toString() === viewerUserId.toString());
+    const position = idx >= 0 ? idx + 1 : null;
+    you = {
+      maxBid: youQueued.maxBid,
+      maxEditTradesRemaining: youQueued.maxEditTradesRemaining,
+      isPromotedProxy: false,
+      displayName: viewerDisplayName(youQueued.userId),
+      teamName: youQueued.userId?.teamName || null,
+      position,
+      queueLength: queueCount,
+    };
+  } else if (proxyYou) {
+    you = {
+      maxBid: proxyYou.maxBid,
+      maxEditTradesRemaining: proxyYou.maxEditTradesRemaining,
+      isPromotedProxy: true,
+      displayName: viewerDisplayName(proxyYou.userId),
+      teamName: proxyYou.userId?.teamName || null,
+    };
+  }
+
+  const canJoinQueue =
+    queueJoinAllowed &&
+    !!viewerStr &&
+    !viewerIsActiveBidder &&
+    !you;
+
   return {
     enabled: true,
     manualBidsFrozen,
-    queueCount: queued.length,
+    queueCount,
     queueJoinAllowed,
+    canJoinQueue,
     activeBidderCount,
-    you: you
-      ? {
-          maxBid: you.maxBid,
-          maxEditTradesRemaining: you.maxEditTradesRemaining,
-        }
-      : null,
+    you,
   };
+}
+
+async function isPromotedProxyBidder(playerId, userId) {
+  if (!isEnabled()) return false;
+  const doc = await BidPlayerQueue.findOne({ playerId }).select("entries").lean();
+  if (!doc?.entries?.length) return false;
+  const uid = userId.toString();
+  return doc.entries.some(
+    (e) => e.userId.toString() === uid && e.status === "active_proxy"
+  );
 }
 
 async function afterBidPlaced(playerId, io) {
@@ -516,13 +645,14 @@ async function afterBidPlaced(playerId, io) {
     }
   }
   if (changed) await doc.save();
-  io?.emit("bid_queue_updated", { playerId: playerId.toString() });
+  await emitBidQueueUpdated(io, playerId);
 }
 
 module.exports = {
   isEnabled,
   shouldBlockManualBid,
   countQueued,
+  getAllQueuedCountsByPlayer,
   getActiveBidderIds,
   pruneQueuedOverMax,
   tryPromoteNextQueued,
@@ -530,6 +660,8 @@ module.exports = {
   leaveQueue,
   updateQueueMax,
   getQueueState,
+  listMyQueueMemberships,
+  isPromotedProxyBidder,
   afterBidPlaced,
   runProxyContinuation,
 };

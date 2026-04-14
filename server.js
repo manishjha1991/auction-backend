@@ -51,7 +51,7 @@ app.set('io', io);
 const poolMax = parseInt(process.env.MONGO_MAX_POOL_SIZE || '10', 10);
 const poolMin = parseInt(process.env.MONGO_MIN_POOL_SIZE || '0', 10);
 const mongooseOptions = {
-  dbName: 'cpl_20',
+  dbName: 'cpl_20_test',
   useNewUrlParser: true,
   useUnifiedTopology: true,
   
@@ -199,9 +199,12 @@ app.use('/api/admin/roster', adminRosterOpsRoutes);
 
 // 🚀 NOTIFICATION: Socket user mapping for targeted notifications
 const { registerUserSocket, unregisterSocket } = require('./utils/socketUserMap');
+const { attachPlayerWatchHandlers } = require('./utils/playerWatchSocket');
 
 io.on('connection', (socket) => {
   if (process.env.NODE_ENV !== 'production') console.log('Socket connected:', socket.id);
+
+  attachPlayerWatchHandlers(socket, io);
 
   socket.on('user_identify', (data) => {
     const userId = data?.userId || data?.user_id || data?.id;

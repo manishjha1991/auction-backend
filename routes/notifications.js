@@ -68,6 +68,27 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Deactivate bid notifications where this user is current or second bidder (auction hub "clear")
+router.post('/bid/clear-for-user', async (req, res) => {
+  try {
+    const userId = req.body?.userId != null ? String(req.body.userId) : '';
+    if (!userId) {
+      return res.status(400).json({ message: 'userId is required' });
+    }
+    await BidNotification.updateMany(
+      {
+        active: true,
+        $or: [{ currentBidder: userId }, { secondBidder: userId }],
+      },
+      { active: false }
+    );
+    res.json({ message: 'Your bid alerts were cleared' });
+  } catch (error) {
+    console.error('Error clearing bid notifications for user:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Accept a notification (match invitation or new time slot)
 router.post('/:id/accept', async (req, res) => {
   try {

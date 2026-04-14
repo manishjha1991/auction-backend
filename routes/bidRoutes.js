@@ -15,6 +15,7 @@ const RetainedPlayer = require('../models/RetainedPlayer');
 const { invalidateCache } = require('../utils/cache');
 const { placeBidCore } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
+const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
@@ -86,6 +87,17 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       return res.status(409).json({
         message:
           "Manual bidding is paused for this player while users are in the bid queue. Join the queue or wait until it clears. Only the two active bidders may bid.",
+      });
+    }
+
+    const proxyBidder = await bidQueueService.isPromotedProxyBidder(
+      playerId,
+      authenticatedUserId
+    );
+    if (proxyBidder) {
+      return res.status(403).json({
+        message:
+          "You were promoted from the bid queue: auto-bidding is active up to your max. You cannot place manual bids — use Exit to leave the auction.",
       });
     }
 
@@ -1782,6 +1794,219 @@ router.get('/users-dashboard', async (req, res) => {
     res.json({ users: result });
   } catch (error) {
     console.error('Error fetching users dashboard data:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Personalized auction command center: running bids, purses, queues, notifications
+router.get('/my-auction-hub/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const me = await User.findById(userId)
+      .select('name teamName purse _id abbreviation isAdmin')
+      .lean();
+    if (!me) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    if (me.isAdmin) {
+      const ioAdm = req.app.get('io');
+      let demandAdm = { globalTop: null, yourTop: null };
+      if (ioAdm) {
+        const topList = getTopWatchedPlayers(ioAdm, 5);
+        if (topList.length > 0) {
+          const t = topList[0];
+          const pl = await Player.findById(t.playerId).select('name profilePicture').lean();
+          demandAdm.globalTop = {
+            playerId: t.playerId,
+            count: t.count,
+            playerName: pl?.name || '?',
+            profilePicture: pl?.profilePicture || null,
+          };
+        }
+      }
+      return res.json({
+        me: {
+          userId: me._id,
+          name: me.name,
+          teamName: me.teamName || me.name,
+          abbreviation:
+            me.abbreviation ||
+            me.teamName?.substring(0, 3).toUpperCase() ||
+            me.name?.substring(0, 3).toUpperCase() ||
+            'N/A',
+          purse: parseFloat(me.purse.toString()),
+          isAdmin: true,
+        },
+        runningBids: [],
+        queueMemberships: [],
+        bidNotifications: [],
+        demand: demandAdm,
+      });
+    }
+
+    const users = await User.find({
+      isAdmin: { $ne: true },
+      teamName: { $exists: true, $ne: null },
+    })
+      .select('purse _id')
+      .lean();
+    const purseByUserId = new Map(
+      users.map((u) => [u._id.toString(), parseFloat(u.purse.toString())])
+    );
+
+    const activeBids = await Bid.find({ isActive: true, isBidOn: true })
+      .select('playerId bidder bidAmount timestamp isActive isBidOn')
+      .populate('playerId', 'name type role basePrice profilePicture')
+      .populate('bidder', 'name teamName _id abbreviation')
+      .sort({ bidAmount: -1 })
+      .lean();
+
+    const abbr = (bidder) =>
+      bidder?.abbreviation ||
+      bidder?.teamName?.substring(0, 3).toUpperCase() ||
+      bidder?.name?.substring(0, 3).toUpperCase() ||
+      'N/A';
+
+    const bidsByPlayer = {};
+    activeBids.forEach((bid) => {
+      const pid = bid.playerId._id.toString();
+      if (!bidsByPlayer[pid]) bidsByPlayer[pid] = [];
+      bidsByPlayer[pid].push({
+        bidderId: bid.bidder._id.toString(),
+        bidderName: bid.bidder.name,
+        bidderAbbreviation: abbr(bid.bidder),
+        bidAmount: bid.bidAmount,
+        timestamp: bid.timestamp,
+      });
+    });
+    Object.keys(bidsByPlayer).forEach((pid) => {
+      bidsByPlayer[pid].sort((a, b) => b.bidAmount - a.bidAmount);
+    });
+
+    const myId = userId.toString();
+    const myRunning = [];
+
+    activeBids.forEach((bid) => {
+      if (bid.bidder._id.toString() !== myId) return;
+      const playerId = bid.playerId._id.toString();
+      const playerBids = bidsByPlayer[playerId] || [];
+      const isHighest = playerBids[0]?.bidderId === myId;
+      const isSecond =
+        playerBids[1]?.bidderId === myId &&
+        playerBids[1]?.bidderId !== playerBids[0]?.bidderId;
+
+      let otherBidderId = null;
+      let otherBidderAbbr = null;
+      let otherBidderName = null;
+      if (isHighest && playerBids[1]) {
+        otherBidderId = playerBids[1].bidderId;
+        otherBidderAbbr = playerBids[1].bidderAbbreviation;
+        otherBidderName = playerBids[1].bidderName;
+      } else if (isSecond && playerBids[0]) {
+        otherBidderId = playerBids[0].bidderId;
+        otherBidderAbbr = playerBids[0].bidderAbbreviation;
+        otherBidderName = playerBids[0].bidderName;
+      }
+
+      const existingPlayerBid = myRunning.find((b) => b.playerId.toString() === playerId);
+      if (!existingPlayerBid || existingPlayerBid.bidAmount < bid.bidAmount) {
+        if (existingPlayerBid) {
+          const index = myRunning.indexOf(existingPlayerBid);
+          myRunning.splice(index, 1);
+        }
+        const oppPurse = otherBidderId != null ? purseByUserId.get(otherBidderId) ?? null : null;
+        myRunning.push({
+          playerId: bid.playerId._id,
+          playerName: bid.playerId.name,
+          playerType: bid.playerId.type,
+          playerRole: bid.playerId.role,
+          basePrice: bid.playerId.basePrice,
+          profilePicture: bid.playerId.profilePicture || null,
+          bidAmount: bid.bidAmount,
+          isWinning: isHighest,
+          isLosing: isSecond,
+          otherBidderAbbr,
+          otherBidderName,
+          otherBidderId,
+          otherBidderPurse: oppPurse,
+          leadingBidAmount: playerBids[0]?.bidAmount ?? bid.bidAmount,
+          secondBidAmount: playerBids[1]?.bidAmount ?? null,
+        });
+      }
+    });
+
+    const bidNotifications = await BidNotification.find({ active: true })
+      .sort({ timestamp: -1 })
+      .limit(50)
+      .lean();
+
+    const relevantNotifications = bidNotifications
+      .filter((n) => {
+        const cb = n.currentBidder != null ? String(n.currentBidder) : '';
+        const sb = n.secondBidder != null ? String(n.secondBidder) : '';
+        return cb === myId || sb === myId;
+      })
+      .slice(0, 5);
+
+    const queueMemberships = await bidQueueService.listMyQueueMemberships(me._id);
+
+    const io = req.app.get('io');
+    let demand = { globalTop: null, yourTop: null };
+    if (io) {
+      const topList = getTopWatchedPlayers(io, 5);
+      if (topList.length > 0) {
+        const t = topList[0];
+        const pl = await Player.findById(t.playerId).select('name profilePicture').lean();
+        demand.globalTop = {
+          playerId: t.playerId,
+          count: t.count,
+          playerName: pl?.name || '?',
+          profilePicture: pl?.profilePicture || null,
+        };
+      }
+      const myPidSet = new Set();
+      myRunning.forEach((b) => myPidSet.add(b.playerId.toString()));
+      queueMemberships.forEach((q) => myPidSet.add(String(q.playerId)));
+      let best = null;
+      let bestCount = -1;
+      for (const pid of myPidSet) {
+        const c = getWatchCountFromAdapter(io, pid);
+        if (c > bestCount) {
+          bestCount = c;
+          best = pid;
+        }
+      }
+      if (best != null && bestCount > 0) {
+        const pl = await Player.findById(best).select('name profilePicture').lean();
+        demand.yourTop = {
+          playerId: best,
+          count: bestCount,
+          playerName: pl?.name || '?',
+          profilePicture: pl?.profilePicture || null,
+        };
+      }
+    }
+
+    res.json({
+      me: {
+        userId: me._id,
+        name: me.name,
+        teamName: me.teamName || me.name,
+        abbreviation:
+          me.abbreviation ||
+          me.teamName?.substring(0, 3).toUpperCase() ||
+          me.name?.substring(0, 3).toUpperCase() ||
+          'N/A',
+        purse: parseFloat(me.purse.toString()),
+        isAdmin: false,
+      },
+      runningBids: myRunning,
+      queueMemberships,
+      bidNotifications: relevantNotifications,
+      demand,
+    });
+  } catch (error) {
+    console.error('Error fetching my auction hub:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
