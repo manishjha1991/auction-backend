@@ -14,6 +14,7 @@ const authRoutes = require('./routes/auth');
 const playerRoutes = require('./routes/players'); // Adjust the path as needed
 const userRoutes = require('./routes/user'); // Adjust the path
 const bidRoutes = require('./routes/bidRoutes'); // Import bid routes
+const bidQueueRoutes = require('./routes/bidQueueRoutes');
 const playerStatsRoutes = require('./routes/playerStats'); // Adjust path
 const fixtureRoutes = require('./routes/fixture'); // Adjust path
 const app = express();
@@ -169,6 +170,7 @@ app.use('/api/users', userRoutes); // Mount the route
 app.use('/api/fixtures', fixtureRoutes);
 app.use('/api', playerRoutes);
 app.use('/api/bids', bidRoutes); // Mount bid routes
+app.use('/api/bid-queue', bidQueueRoutes);
 app.use('/api/player-stats', playerStatsRoutes);
 // ...
 app.use('/api/notifications', notificationRoutes);

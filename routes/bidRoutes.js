@@ -13,6 +13,8 @@ const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
 const { getClientIp } = require('../utils/network');
 const RetainedPlayer = require('../models/RetainedPlayer');
 const { invalidateCache } = require('../utils/cache');
+const { placeBidCore } = require('../services/bidPlacement');
+const bidQueueService = require('../services/bidQueueService');
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
@@ -79,342 +81,35 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   }
 
   try {
-    // 1. Fetch the player
-    // NOTE: Cannot use .lean() here because we need to save the player later
-    const player = await Player.findById(playerId);
-    if (!player) {
-      return res.status(404).json({ message: "Player not found" });
-    }
-
-    // 2. Check if the player is already sold
-    if (player.isSold) {
-      return res
-        .status(400)
-        .json({ message: "Cannot place bids on a sold player." });
-    }
-
-    // 3. Use authenticated user (already fetched by JWT middleware)
-    const user = req.authenticatedUser;
-    
-    // If the user is locked, reject their bid with a friendly explanation
-    if (user.isLocked) {
-      return res.status(403).json({
-        message: "You’ve been locked out for not meeting the minimum/maximum player count by the deadline. " +
-                "Please wait until everyone has secured their favorite players. After that window, " +
-                "you’ll have the chance to join with the remaining players. Hang in there!"
-      });
-    }
-    // ============================
-    // 4. Per-Type Limits
-    // ============================
-    const typeLimit = {
-      Sapphire: 2,
-      Gold: 8,
-      Emerald: 4,
-      Silver: 6,
-    };
-
-    // Count all bought players of this type
-    const [boughtPlayersOfThisType, retainedPlayersOfThisType, currentBidPlayersOfThisType] = await Promise.all([
-      Player.countDocuments({
-        _id: { $in: user.boughtPlayers },
-        type: player.type,
-      }),
-      RetainedPlayer.countDocuments({
-        userId: user._id,
-        playerType: player.type,
-        isActive: true,
-      }),
-      Player.countDocuments({
-        _id: { $in: user.currentBids.map((bid) => bid.playerId) },
-        type: player.type,
-      })
-    ]);
-
-    // Total count = bought players + current bids
-    // Retained players ARE included in boughtPlayers, so they count towards the limit
-    // Formula: bought (includes retained) + current bids = total
-    // This ensures: bought + bidding ≤ limit
-    // Example: 1 retained + 0 other bought + 7 bids = 8 total (at limit) ✓
-    // Example: 1 retained + 2 other bought + 5 bids = 8 total (at limit) ✓
-    const totalTypeCount = boughtPlayersOfThisType + currentBidPlayersOfThisType;
-
-    const alreadyBiddingThisPlayer = user.currentBids.some(
-      (bid) => bid.playerId.toString() === playerId
-    );
-
-    if (totalTypeCount >= typeLimit[player.type] && !alreadyBiddingThisPlayer) {
-      // Calculate remaining slots
-      const remainingSlots = typeLimit[player.type] - totalTypeCount;
-      return res.status(400).json({
-        message: `You have already reached the maximum limit for ${player.type} players (limit: ${typeLimit[player.type]}). You have ${boughtPlayersOfThisType} bought ${player.type} player(s) (including ${retainedPlayersOfThisType} retained) + ${currentBidPlayersOfThisType} current bids = ${totalTypeCount} total.`,
+    const blocked = await bidQueueService.shouldBlockManualBid(playerId, authenticatedUserId);
+    if (blocked) {
+      return res.status(409).json({
+        message:
+          "Manual bidding is paused for this player while users are in the bid queue. Join the queue or wait until it clears. Only the two active bidders may bid.",
       });
     }
 
-    // ============================
-    // 5. Combined Emerald + Sapphire Limit
-    // ============================
-    const combinedESLimit = 5;
-    const combinedESCount = await Player.countDocuments({
-      _id: [...user.boughtPlayers, ...user.currentBids.map((bid) => bid.playerId)],
-      type: { $in: ["Emerald", "Sapphire"] },
-    });
-
-    if (
-      ["Emerald", "Sapphire"].includes(player.type) &&
-      combinedESCount >= combinedESLimit &&
-      !alreadyBiddingThisPlayer
-    ) {
-      return res.status(400).json({
-        message: `You have reached the maximum combined limit (${combinedESLimit}) for Emerald + Sapphire players.`,
-      });
-    }
-    // Fetch active bids on this player
-    // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
-      .select('bidder bidAmount isActive isBidOn')
-      .lean();
-
-    // Ensure only two bidders can actively bid on the player
-    const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
-
-    if (activeBidders.length >= 2 && !activeBidders.includes(bidder.toString())) {
-      return res.status(400).json({
-        message: 'Only two bidders can actively bid on a player. Wait for one of the current bidders to exit.',
-      });
-    }
-    // ============================
-    // 6. Concurrent Bid Limit (varies by player type)
-    // ============================
-    // For Gold players: max concurrent bids = 8 - (retained + bought/sold)
-    //   Example: 1 retained + 2 sold = 3, so can bid on 5 more (1 + 2 + 5 = 8 total)
-    //   Example: 0 retained + 0 sold = 0, so can bid on 8 (0 + 8 = 8 total)
-    // For Silver players: max concurrent bids = 6 - (retained + bought/sold)
-    //   Example: 1 retained + 1 sold = 2, so can bid on 4 more (1 + 1 + 4 = 6 total)
-    // For other types: max 5 concurrent bids
-    
-    if (player.type === 'Gold' || player.type === 'Silver') {
-      // For Gold and Silver: Check type-specific concurrent bid limit
-      // Get all current bid player IDs
-      const currentBidPlayerIds = user.currentBids.map(bid => bid.playerId);
-      
-      // Count players of this type in current bids
-      const [playersOfThisTypeInCurrentBids, retainedCount] = await Promise.all([
-        Player.countDocuments({
-          _id: { $in: currentBidPlayerIds },
-          type: player.type
-        }),
-        RetainedPlayer.countDocuments({
-          userId: user._id,
-          playerType: player.type,
-          isActive: true
-        })
-      ]);
-      
-      // boughtPlayersOfThisType already includes retained players
-      // So total owned = boughtPlayersOfThisType (which includes retained + non-retained bought)
-      // Non-retained bought = boughtPlayersOfThisType - retainedCount
-      const nonRetainedBoughtCount = Math.max(0, boughtPlayersOfThisType - retainedCount);
-      const totalOwned = boughtPlayersOfThisType; // This is retained + non-retained bought
-      
-      // Max concurrent bids = typeLimit - totalOwned
-      // This ensures: (retained + non-retained bought) + concurrent bids ≤ typeLimit
-      // Example for Gold: 1 retained + 2 sold + 5 bidding = 8 total
-      const maxConcurrentBids = typeLimit[player.type] - totalOwned;
-      
-      if (playersOfThisTypeInCurrentBids >= maxConcurrentBids && !alreadyBiddingThisPlayer) {
-        return res.status(400).json({
-          message: `You can bid on a maximum of ${maxConcurrentBids} ${player.type} players at a time (you have ${retainedCount} retained + ${nonRetainedBoughtCount} bought = ${totalOwned} ${player.type} player${totalOwned !== 1 ? 's' : ''}, so ${totalOwned} + ${maxConcurrentBids} = ${typeLimit[player.type]} total). You currently have ${playersOfThisTypeInCurrentBids} ${player.type} bids. Exit an existing ${player.type} auction to bid on this player.`,
-        });
-      }
-    } else {
-      // For non-Gold/Silver players: max 5 concurrent bids (original logic - unchanged)
-      if (user.currentBids.length >= 6 && !alreadyBiddingThisPlayer) {
-        return res.status(400).json({
-          message:
-            "You can bid on a maximum of 5 players at a time. Exit an existing auction to bid on this player.",
-        });
-      }
-    }
-
-    // ============================
-    // 7. Fetch the highest active bid for the player
-    // ============================
-    // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const highestBid = await Bid.findOne({ playerId, isActive: true })
-      .select('bidder bidAmount')
-      .sort({ bidAmount: -1 })
-      .lean();
-
-    // 8. Determine the new bid amount
-    let bidAmount;
-    if (!highestBid) {
-      // No active bids => start at basePrice
-      bidAmount = player.basePrice;
-    } else {
-      // There's an existing bid, figure out increment
-      const determineBidIncrement = (playerType, lastBidAmount) => {
-        if (["Sapphire", "Gold", "Emerald"].includes(playerType)) {
-          return 5000000; // 50 Lakh increment
-        } else if (playerType === "Silver" && lastBidAmount >= 10000000) {
-          return 5000000; // 50 Lakh for Silver if last >= 1 Cr
-        } else if (playerType === "Silver") {
-          return 1000000; // 10 Lakh for Silver otherwise
-        }
-        return 1000000; // default 10 Lakh
-      };
-
-      const bidIncrement = determineBidIncrement(player.type, highestBid.bidAmount);
-      bidAmount = highestBid.bidAmount + bidIncrement;
-    }
-
-    // 9. Check if user has enough purse
-    // First, figure out the incremental difference
-    const currentBidOnPlayer = user.currentBids.find(
-      (bid) => bid.playerId.toString() === playerId
-    );
-    const lockedAmount = currentBidOnPlayer ? currentBidOnPlayer.amount : 0;
-    const incrementalDifference = bidAmount - lockedAmount;
-
-    // If incrementalDifference <= 0 => user is not actually raising
-    // but typically we only handle raising bids. So if <= 0, no additional purse needed.
-    if (incrementalDifference > 0) {
-      const purseValue = parseFloat(user.purse.toString());
-      if (purseValue < incrementalDifference) {
-        return res.status(400).json({
-          message: `Insufficient funds in purse. You need at least ₹${incrementalDifference
-            } extra to place this bid. Your current purse is ₹${purseValue}.`,
-        });
-      }
-      // Deduct only the incremental difference
-      const updatedPurse = purseValue - incrementalDifference;
-      user.purse = mongoose.Types.Decimal128.fromString(updatedPurse.toString());
-    }
-
-    // 10. Ensure same user can't place consecutive bids
-    if (highestBid && highestBid.bidder.toString() === bidder.toString()) {
-      return res.status(400).json({
-        message: "You cannot place consecutive bids. Wait for another bidder to bid.",
-      });
-    }
-
-    // 11. Save the new bid to the Bid collection
-    const newBid = new Bid({
+    const io = req.app.get("io");
+    const result = await placeBidCore({
       playerId,
-      bidder,
-      bidAmount,
-      isActive: true,
-      // isBidOn default = true, etc., if that's in your schema
+      bidderId: bidder,
+      clientIP,
+      deviceFingerprint,
+      isSuspiciousIP,
+      io,
     });
-    await newBid.save();
 
-    // 12. Update the user's currentBids
-    if (currentBidOnPlayer) {
-      // They previously had locked X for this same player
-      currentBidOnPlayer.amount = bidAmount; // new total
-    } else {
-      // They didn't have a bid for this player, add a new currentBids entry
-      user.currentBids.push({ playerId, amount: bidAmount });
-    }
-    
-    // Update user's last bid IP, time, and device fingerprint
-    user.lastBidIP = clientIP;
-    user.lastBidTime = new Date();
-    user.lastDeviceFingerprint = deviceFingerprint;
-    
-    // Update known IPs and devices (keep last 10)
-    if (!user.knownIPs) user.knownIPs = [];
-    if (!user.knownIPs.includes(clientIP)) {
-      user.knownIPs.push(clientIP);
-      if (user.knownIPs.length > 10) user.knownIPs.shift();
-    }
-    
-    if (!user.knownDevices) user.knownDevices = [];
-    if (!user.knownDevices.includes(deviceFingerprint)) {
-      user.knownDevices.push(deviceFingerprint);
-      if (user.knownDevices.length > 10) user.knownDevices.shift();
-    }
-    
-    // Increment suspicious activity count if IP/device mismatch or multi-account detected
-    if (isSuspiciousIP) {
-      user.suspiciousActivityCount = (user.suspiciousActivityCount || 0) + 1;
-    }
-    
-    await user.save();
-
-    // 13. Update the player's currentBid & currentBidder
-    player.currentBid = bidAmount;
-    player.currentBidder = bidder;
-    player.lastBidAt = new Date();
-    await player.save();
-
-    // Determine secondBidder: the bidder in activeBidders that is not the current bidder.
-    let secondBidder = null;
-    if (activeBidders.length >= 1) {
-      secondBidder = activeBidders.find(id => id !== bidder.toString());
+    if (!result.ok) {
+      return res.status(result.status).json({ message: result.message });
     }
 
-    // ** Create and save bid notification **
-    const notificationData = {
-      message: "A new bid has been placed",
-      playername: player.name,
-      currentBid: player.currentBid,
-      currentBidder: user.name, // sending bidder's name
-      secondBidder,
-      newBid: bidAmount, // Use the bid amount instead of the entire bid object
-      active: true
-    };
+    await bidQueueService.afterBidPlaced(playerId, io);
 
-    // Save notification to database
-    const newNotification = new BidNotification(notificationData);
-    await newNotification.save();
-
-    // 🚀 NOTIFICATION: Emit real-time notification ONLY to active bidders
-    const io = req.app.get('io');
-    const { getSocketIdsForUsers } = require('../utils/socketUserMap');
-    
-    // Re-fetch active bidders AFTER the new bid is saved to include the new bidder
-    const currentActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
-      .select('bidder')
-      .lean();
-    const currentActiveBidders = [...new Set(currentActiveBids.map((bid) => bid.bidder.toString()))];
-    
-    // Exclude the current bidder (they don't need notification about their own bid)
-    const otherActiveBidders = currentActiveBidders.filter(bidderId => bidderId !== bidder.toString());
-    
-    // Get socket IDs for other active bidders (excluding the one who just bid)
-    const activeBidderSocketIds = getSocketIdsForUsers(otherActiveBidders);
-    
-    if (activeBidderSocketIds.length > 0) {
-      // Send notification only to active bidders
-      activeBidderSocketIds.forEach(socketId => {
-        io.to(socketId).emit('bid_notification', notificationData);
-      });
-      console.log(`📢 Bid notification sent to ${activeBidderSocketIds.length} active bidders for player ${player.name}`);
-    } else {
-      // Fallback: if no sockets found, broadcast (shouldn't happen in normal flow)
-      console.warn(`⚠️ No active bidder sockets found, broadcasting to all`);
-      io.emit('bid_notification', notificationData);
-    }
-    // 🚀 PERFORMANCE: Invalidate caches when bid is placed
-    invalidateCache('user-purses');
-    invalidateCache('players:data');
-    
-    // 🚀 REALTIME: Broadcast player bid update to all clients
-    io.emit('player_bid_update', {
-      playerId: playerId.toString(),
-      currentBid: player.currentBid,
-      currentBidder: player.currentBidder,
-      bidderName: user.name,
-      bidAmount: bidAmount,
-      playerName: player.name
-    });
-    
     res.json({
       message: "Bid placed successfully",
-      currentBid: player.currentBid,
-      currentBidder: player.currentBidder,
-      newBid,
+      currentBid: result.player.currentBid,
+      currentBidder: result.player.currentBidder,
+      newBid: result.newBid,
     });
   } catch (error) {
     console.error("Error placing bid:", error);
@@ -496,6 +191,9 @@ router.post("/:playerId/exit", async (req, res) => {
             player.currentBidder = null;
           }
           await player.save();
+
+          const ioAdmin = req.app.get("io");
+          await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin);
 
           return res.json({
             message: "The second-highest bidder has exited successfully. Locked amount refunded.",
@@ -593,6 +291,8 @@ router.post("/:playerId/exit", async (req, res) => {
       currentBidder: player.currentBidder,
       playerName: player.name
     });
+
+    await bidQueueService.tryPromoteNextQueued(playerId, io);
     
     res.json({
       message: "You have exited the bid successfully. Locked amount refunded.",
