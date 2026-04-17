@@ -6,6 +6,7 @@ const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
+const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
 
 const router = express.Router();
 
@@ -547,6 +548,17 @@ router.post('/save', isAdmin, async (req, res) => {
             .catch((err) => console.error('Head-to-head sync:', err));
         } else if (headToHeadModule.syncHeadToHead) {
           headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
+        }
+
+        const shouldBumpCareer =
+          !oldWinnerBeforeSave || oldWinnerBeforeSave !== fixture.winner;
+        if (shouldBumpCareer) {
+          applyCareerLeagueResult({
+            team1: fixture.team1,
+            team2: fixture.team2,
+            newWinnerName: fixture.winner,
+            oldWinnerName: oldWinnerBeforeSave || null,
+          }).catch((err) => console.error('Career counters:', err));
         }
       } catch (pointsError) {
         console.error('Error updating points:', pointsError);

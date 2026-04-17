@@ -6,6 +6,7 @@ const AppSettings = require('../models/AppSettings');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
 
 // Helper function to parse score string and extract runs
 const parseRuns = (scoreString) => {
@@ -1032,6 +1033,9 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Team 2 overs is required' });
     }
 
+    const oldTournamentFixtureWinner =
+      tournament.tournamentFixtures[fixtureIndex].winner || null;
+
     // Update the fixture in the array
     if (winner !== undefined) tournament.tournamentFixtures[fixtureIndex].winner = winner;
     if (margin !== undefined) tournament.tournamentFixtures[fixtureIndex].margin = margin;
@@ -1080,6 +1084,20 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
     
     // Save the tournament first
     await tournament.save();
+
+    const fxAfterSave = tournament.tournamentFixtures[fixtureIndex];
+    const twNow = fxAfterSave.winner;
+    const shouldBumpCareer =
+      twNow &&
+      (!oldTournamentFixtureWinner || oldTournamentFixtureWinner !== twNow);
+    if (shouldBumpCareer) {
+      applyCareerLeagueResult({
+        team1: fxAfterSave.team1,
+        team2: fxAfterSave.team2,
+        newWinnerName: twNow,
+        oldWinnerName: oldTournamentFixtureWinner || null,
+      }).catch((err) => console.error('Career counters (tournament):', err));
+    }
 
     // Auto-update point table ONLY for round-robin fixtures (NOT for semi-finals or finals)
     // Knockout matches don't affect the point table

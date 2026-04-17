@@ -6,7 +6,6 @@ const router = express.Router();
 const { getClientIp } = require('../utils/network');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
-
 // Request logging only in development (avoids logging sensitive body in prod)
 router.use((req, res, next) => {
   if (process.env.NODE_ENV !== 'production') console.log(`👤 ${req.method} ${req.path}`);
@@ -952,12 +951,23 @@ router.get('/teams', async (req, res) => {
       baseFilter.isActive = true;
     }
 
-    let query = User.find(baseFilter, 'name teamName timezone streamLink abbreviation teamImage isActive themePrimary themeSecondary');
+    let query = User.find(baseFilter).select(
+      'name teamName timezone streamLink abbreviation teamImage isActive themePrimary themeSecondary matchesPlayed points careerMatchesPlayed careerWins'
+    );
     if (includeInactive) {
       query = query.includeInactive();
     }
     const teams = await query.lean();
-    res.status(200).json({ teams });
+
+    // Career totals: backfill from scripts/syncTeamCareerFromAllDbs.js (historical DBs); thereafter only
+    // league fixture save, playoff update, and tournament (WC) fixture update bump User via utils/careerUserCounters.js.
+    const teamsOut = teams.map((t) => ({
+      ...t,
+      careerMatchesPlayed: Number(t.careerMatchesPlayed) || 0,
+      careerWins: Number(t.careerWins) || 0,
+    }));
+
+    res.status(200).json({ teams: teamsOut });
   } catch (error) {
     console.error('Error fetching teams:', error);
     res.status(500).json({ message: 'An error occurred while fetching teams.' });

@@ -19,6 +19,9 @@ const UserSchema = new mongoose.Schema({
   tradesUsed: { type: Number, default: 0 },
   points: { type: Number, default: 0 }, // Store total points
   matchesPlayed: { type: Number, default: 0 }, // Store total matches played
+  /** Career totals across seasons (cpl_12…cpl_20 + live bumps); reconcile with sync script */
+  careerMatchesPlayed: { type: Number, default: 0 },
+  careerWins: { type: Number, default: 0 },
   fairnessPoint:{ type: Number, default: 0 },
   isActive:{ type: Boolean, default: true },
   abbreviation: { type: String, default: null },

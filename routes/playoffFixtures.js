@@ -6,6 +6,7 @@ const Tournament = require('../models/Tournament');
 const AppSettings = require('../models/AppSettings');
 const Fixture = require('../models/Fixture');
 const headToHeadModule = require('./headToHead');
+const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
 
 // Helper function to parse score string and extract runs
 const parseRuns = (scoreString) => {
@@ -663,6 +664,19 @@ router.post('/update/:matchId', async (req, res) => {
             .catch((err) => console.error('Head-to-head sync:', err));
         } else if (headToHeadModule.syncHeadToHead) {
           headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
+        }
+
+        const shouldBumpCareer =
+          validTeams &&
+          newWinner &&
+          (!oldWinner || oldWinner !== newWinner);
+        if (shouldBumpCareer) {
+          applyCareerLeagueResult({
+            team1: playoffFixture.team1,
+            team2: playoffFixture.team2,
+            newWinnerName: newWinner,
+            oldWinnerName: oldWinner || null,
+          }).catch((err) => console.error('Career counters (playoff):', err));
         }
       }
 
