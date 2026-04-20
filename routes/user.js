@@ -272,9 +272,9 @@ router.get("/:userId/details", async (req, res) => {
     // Limit past bids to the last 5
     const lastFivePastBids = pastBids.slice(0, 5);
 
-    // 4) Fetch last 5 fixtures (matches) for this user's team
-    //    We assume user.teamName matches fixture.team1 or fixture.team2
-    // In your route or controller:
+    // 4) Fetch ALL fixtures (matches) for this user's team, most recent first
+    //    We only keep matches that were actually played (have a winner set)
+    //    so the Recent Form list shows real results, not upcoming fixtures.
     let fixtures = await Fixture.find({
       $or: [
         { team1: user.teamName },
@@ -282,8 +282,7 @@ router.get("/:userId/details", async (req, res) => {
       ],
       isActive: true,
     })
-      .sort({ createdAt: 1 })
-      .limit(5)
+      .sort({ createdAt: -1 })
       .exec();
 
     // OPTIMIZATION: Get all opponent team names first
@@ -302,13 +301,15 @@ router.get("/:userId/details", async (req, res) => {
     const tournamentReadyTeams = new Set(opponentUsers.map(u => u.teamName));
 
     // Filter out fixtures where the opponent is not tournament ready
+    // and keep only matches that were actually played (have a winner declared)
     const filteredFixtures = fixtures.filter(fx => {
       const opponentTeamName = fx.team1 === user.teamName ? fx.team2 : fx.team1;
-      return tournamentReadyTeams.has(opponentTeamName);
+      if (!tournamentReadyTeams.has(opponentTeamName)) return false;
+      return Boolean(fx.winner);
     });
 
     // Transform fixture data into a simpler "score/fairness/result/opponentTeam" format
-    const lastFiveMatches = filteredFixtures.map((fx) => {
+    const allMatches = filteredFixtures.map((fx) => {
       // Determine if user is team1 or team2 in this fixture
       const isTeam1 = (fx.team1 === user.teamName);
 
@@ -330,8 +331,12 @@ router.get("/:userId/details", async (req, res) => {
         fairness: userFairness || 0,
         result: userResult,
         opponentTeam: opponentTeam || "NA",
+        playedAt: fx.createdAt,
       };
     });
+
+    // Keep backward-compat: expose most recent 5 as lastFiveMatches
+    const lastFiveMatches = allMatches.slice(0, 5);
 
     // 5) Return everything, including the new lastFiveMatches and allPlayersReleased from user document
     const totalTime = Date.now() - startTime;
@@ -356,7 +361,8 @@ router.get("/:userId/details", async (req, res) => {
       })),
       activeBids,
       pastBids: lastFivePastBids,
-      lastFiveMatches, // <-- includes opponentTeam now
+      lastFiveMatches, // <-- includes opponentTeam (kept for backward compatibility)
+      allMatches,      // <-- ALL played matches, most recent first
     };
     
     // 🚀 PERFORMANCE: Cache the response (2 minute cache)
