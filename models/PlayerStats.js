@@ -16,6 +16,18 @@ const playerStatsSchema = new mongoose.Schema({
     ref: 'User', // Reference to User collection (Opponent team user ID)
     required: true,
   },
+  tournamentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tournament',
+    default: null,
+    index: true,
+  },
+  venue: {
+    type: String,
+    default: null,
+    trim: true,
+    index: true,
+  },
   battingStats: {
     runs: {
       type: Number,
@@ -57,6 +69,15 @@ const playerStatsSchema = new mongoose.Schema({
     isPlayoffScore: {
       type: Boolean,
       default: false,
+    },
+    isWcScore: {
+      type: Boolean,
+      default: false,
+    },
+    wcStage: {
+      type: String,
+      enum: ['super8', 'semi', 'final', null],
+      default: null,
     },
   },
   createdAt: {

@@ -299,9 +299,16 @@ const isAuthenticated = async (req, res, next) => {
 // GET /api/tournaments - Get all tournaments with filters (optional authentication)
 router.get('/', async (req, res) => {
   try {
-    const { status, page = 1, limit = 10 } = req.query;
-    const query = { isActive: true };
-    
+    const { status, page = 1, limit = 10, includeInactive } = req.query;
+    const query = {};
+    // By default we hide archived tournaments (isActive:false) so older list
+    // consumers don't suddenly see ghost data. Pass ?includeInactive=true to
+    // surface archived ones (e.g., the Tournaments page wants full history).
+    const wantInactive = String(includeInactive).toLowerCase() === 'true';
+    if (!wantInactive) {
+      query.isActive = true;
+    }
+
     if (status && ['upcoming', 'running', 'completed'].includes(status)) {
       query.status = status;
     }

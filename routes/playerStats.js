@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const NodeCache = require('node-cache');
 const PlayerStats = require('../models/PlayerStats'); // Adjust the path as needed
 const Player = require('../models/Player'); // Adjust the path
@@ -7,6 +8,7 @@ const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
 const MatchResult = require('../models/MatchResult');
 const Fixture = require('../models/Fixture');
+const Tournament = require('../models/Tournament');
 const {
   cacheConfig,
   invalidateCache,
@@ -396,6 +398,13 @@ const applyPlayerStatDelta = async (playerId, delta = {}) => {
   }
 };
 
+const VALID_WC_STAGES = ['super8', 'semi', 'final'];
+const normalizeWcStage = (stage) => {
+  if (typeof stage !== 'string') return null;
+  const trimmed = stage.trim().toLowerCase();
+  return VALID_WC_STAGES.includes(trimmed) ? trimmed : null;
+};
+
 const savePlayerStatsEntry = async (payload = {}) => {
   const {
     playerId,
@@ -405,9 +414,15 @@ const savePlayerStatsEntry = async (payload = {}) => {
     wicketsTaken,
     isMom,
     isPlayoffScore,
+    isWcScore,
+    wcStage: rawWcStage,
+    tournamentId: rawTournamentId,
+    venue: rawVenue,
     economy,
     extras,
   } = payload;
+
+  const venue = typeof rawVenue === 'string' ? rawVenue.trim() : rawVenue || null;
 
   if (!playerId) {
     const error = new Error('playerId is required');
@@ -426,11 +441,42 @@ const savePlayerStatsEntry = async (payload = {}) => {
   }
 
   const userId = ownerUser._id;
-  const existingStats = await PlayerStats.findOne({
-    playerId,
-    userId,
-    opponentUserId,
-  });
+  const wcStage = isWcScore ? normalizeWcStage(rawWcStage) : null;
+  const tournamentId = rawTournamentId || null;
+
+  if (isWcScore && !wcStage) {
+    const error = new Error('wcStage is required when isWcScore is true (super8 | semi | final)');
+    error.status = 400;
+    throw error;
+  }
+
+  // Decide what existing entry (if any) to overwrite based on score type.
+  // - WC entries are bucketed by (player, owner, opponent, tournamentId, wcStage)
+  //   → same opponent in the SAME stage of the SAME tournament overwrites
+  //   → different stage / different tournament creates a new entry
+  // - Playoff entries always create new (existing behavior)
+  // - Regular entries dedup on (player, owner, opponent) but exclude WC/playoff buckets
+  let existingStats = null;
+  if (isWcScore) {
+    existingStats = await PlayerStats.findOne({
+      playerId,
+      userId,
+      opponentUserId,
+      tournamentId,
+      'metadata.isWcScore': true,
+      'metadata.wcStage': wcStage,
+    });
+  } else if (!isPlayoffScore) {
+    existingStats = await PlayerStats.findOne({
+      playerId,
+      userId,
+      opponentUserId,
+      $and: [
+        { $or: [{ 'metadata.isWcScore': { $ne: true } }, { 'metadata.isWcScore': { $exists: false } }] },
+        { $or: [{ 'metadata.isPlayoffScore': { $ne: true } }, { 'metadata.isPlayoffScore': { $exists: false } }] },
+      ],
+    });
+  }
 
   const newTotals = {
     runs: battingStats?.runs || 0,
@@ -454,10 +500,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     matches: 0,
   };
 
-  // If existing stats found AND it's NOT a playoff score → UPDATE (no duplicates for regular matches)
-  // If existing stats found AND it IS a playoff score → CREATE NEW (allow duplicates for playoff matches)
-  // If no existing stats → CREATE NEW
-  if (existingStats && !isPlayoffScore) {
+  if (existingStats) {
     const previousTotals = {
       runs: existingStats.battingStats?.runs || 0,
       balls: existingStats.battingStats?.balls || 0,
@@ -499,6 +542,16 @@ const savePlayerStatsEntry = async (payload = {}) => {
     if (isPlayoffScore !== null && isPlayoffScore !== undefined) {
       existingStats.metadata.isPlayoffScore = !!isPlayoffScore;
     }
+    if (isWcScore !== null && isWcScore !== undefined) {
+      existingStats.metadata.isWcScore = !!isWcScore;
+    }
+    if (isWcScore) {
+      existingStats.metadata.wcStage = wcStage;
+      existingStats.tournamentId = tournamentId;
+    }
+    if (venue) {
+      existingStats.venue = venue;
+    }
 
     await existingStats.save();
     
@@ -532,6 +585,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
     playerId,
     userId,
     opponentUserId,
+    tournamentId: isWcScore ? tournamentId : null,
+    venue: venue || null,
     battingStats: {
       runs: battingStats?.runs || 0,
       balls: battingStats?.balls || 0,
@@ -546,6 +601,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
       economy: economy !== null && economy !== undefined ? Number(economy) : null,
       extras: extras !== null && extras !== undefined ? Number(extras) : null,
       isPlayoffScore: !!isPlayoffScore,
+      isWcScore: !!isWcScore,
+      wcStage: isWcScore ? wcStage : null,
     },
   });
 
@@ -809,6 +866,188 @@ router.post('/store', async (req, res) => {
   }
 });
 
+// GET /api/player-stats/venue-aggregate
+// Optional query: ?playerId=...&userId=...&tournamentId=...&venue=...
+// Returns aggregated batting/bowling totals grouped by venue, plus per-match breakdowns.
+// Useful for showing "at this venue, this many runs scored / this many wickets fallen".
+router.get('/venue-aggregate', async (req, res) => {
+  try {
+    const { playerId, userId, tournamentId, venue } = req.query;
+
+    const match = { venue: { $nin: [null, ''] } };
+    if (playerId) match.playerId = new mongoose.Types.ObjectId(playerId);
+    if (userId) match.userId = new mongoose.Types.ObjectId(userId);
+    if (tournamentId) match.tournamentId = new mongoose.Types.ObjectId(tournamentId);
+    if (venue) match.venue = venue;
+
+    const grouped = await PlayerStats.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: '$venue',
+          matches: { $sum: 1 },
+          totalRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+          totalBalls: { $sum: { $ifNull: ['$battingStats.balls', 0] } },
+          totalFours: { $sum: { $ifNull: ['$battingStats.fours', 0] } },
+          totalSixes: { $sum: { $ifNull: ['$battingStats.sixes', 0] } },
+          totalWicketsTaken: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+          totalRunsGiven: { $sum: { $ifNull: ['$bowlingStats.runsGiven', 0] } },
+          totalBallsBowled: { $sum: { $ifNull: ['$bowlingStats.ballsBowled', 0] } },
+        },
+      },
+      { $sort: { matches: -1, _id: 1 } },
+    ]);
+
+    const venues = grouped.map((row) => ({
+      venue: row._id,
+      matches: row.matches,
+      batting: {
+        runs: row.totalRuns,
+        balls: row.totalBalls,
+        fours: row.totalFours,
+        sixes: row.totalSixes,
+        strikeRate: row.totalBalls
+          ? Number(((row.totalRuns / row.totalBalls) * 100).toFixed(2))
+          : 0,
+      },
+      bowling: {
+        wickets: row.totalWicketsTaken,
+        runsGiven: row.totalRunsGiven,
+        ballsBowled: row.totalBallsBowled,
+        economy: row.totalBallsBowled
+          ? Number(((row.totalRunsGiven / (row.totalBallsBowled / 6))).toFixed(2))
+          : 0,
+      },
+    }));
+
+    return res.status(200).json({ venues });
+  } catch (err) {
+    console.error('venue-aggregate error:', err);
+    return res.status(500).json({ message: 'Failed to compute venue aggregates' });
+  }
+});
+
+// GET /api/player-stats/wc-stats?tournamentId=...
+// Returns all PlayerStats entries flagged as WC scores for teams subscribed to a given tournament.
+// Used by the World Cup tournament detail view to show per-match player contributions.
+router.get('/wc-stats', async (req, res) => {
+  try {
+    const { tournamentId } = req.query;
+    if (!tournamentId) {
+      return res.status(400).json({ message: 'tournamentId is required' });
+    }
+
+    const tournament = await Tournament.findById(tournamentId).lean();
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found' });
+    }
+
+    const subscribedUserIds = (tournament.subscribedTeams || [])
+      .map((t) => t.userId)
+      .filter(Boolean);
+
+    // Primary scope: anything tagged with this tournamentId.
+    // Fallback (for entries saved before tournamentId was tracked): match by subscribed userIds + start date.
+    const startBound = tournament.startDate ? new Date(tournament.startDate) : null;
+    const orConditions = [{ tournamentId: tournament._id }];
+    if (subscribedUserIds.length) {
+      orConditions.push({
+        tournamentId: null,
+        $or: [
+          { userId: { $in: subscribedUserIds } },
+          { opponentUserId: { $in: subscribedUserIds } },
+        ],
+      });
+    }
+    const query = {
+      'metadata.isWcScore': true,
+      $or: orConditions,
+    };
+    if (startBound && !Number.isNaN(startBound.getTime())) {
+      query.createdAt = { $gte: startBound };
+    }
+
+    const stats = await PlayerStats.find(query)
+      .populate('playerId', 'name role type profilePicture')
+      .populate('userId', 'teamName')
+      .populate('opponentUserId', 'teamName')
+      .sort({ createdAt: 1 })
+      .lean();
+
+    // Group by player so the UI can render per-player match contributions
+    const byPlayer = new Map();
+    stats.forEach((stat) => {
+      const player = stat.playerId;
+      if (!player || !player._id) return;
+      const key = String(player._id);
+      if (!byPlayer.has(key)) {
+        byPlayer.set(key, {
+          playerId: key,
+          name: player.name || 'Unknown Player',
+          role: player.role || null,
+          type: player.type || null,
+          profilePicture: player.profilePicture || null,
+          team: stat.userId?.teamName || null,
+          totals: { runs: 0, balls: 0, wickets: 0, runsGiven: 0, ballsBowled: 0, mom: 0, matches: 0 },
+          matches: [],
+        });
+      }
+      const entry = byPlayer.get(key);
+      const runs = stat.battingStats?.runs || 0;
+      const balls = stat.battingStats?.balls || 0;
+      const wickets = stat.bowlingStats?.wickets || 0;
+      const runsGiven = stat.bowlingStats?.runsGiven || 0;
+      const ballsBowled = stat.bowlingStats?.ballsBowled || 0;
+      entry.totals.runs += runs;
+      entry.totals.balls += balls;
+      entry.totals.wickets += wickets;
+      entry.totals.runsGiven += runsGiven;
+      entry.totals.ballsBowled += ballsBowled;
+      entry.totals.mom += stat.isMom ? 1 : 0;
+      entry.totals.matches += 1;
+      entry.matches.push({
+        statId: stat._id,
+        opponent: stat.opponentUserId?.teamName || 'Unknown',
+        runs,
+        balls,
+        wickets,
+        runsGiven,
+        ballsBowled,
+        isMom: !!stat.isMom,
+        wcStage: stat.metadata?.wcStage || null,
+        venue: stat.venue || null,
+        createdAt: stat.createdAt,
+      });
+    });
+
+    // Order each player's matches: super8 → semi → final, then by date.
+    const stageOrder = { super8: 0, semi: 1, final: 2 };
+    byPlayer.forEach((entry) => {
+      entry.matches.sort((a, b) => {
+        const sa = stageOrder[a.wcStage] ?? 99;
+        const sb = stageOrder[b.wcStage] ?? 99;
+        if (sa !== sb) return sa - sb;
+        return new Date(a.createdAt) - new Date(b.createdAt);
+      });
+    });
+
+    const players = Array.from(byPlayer.values()).sort((a, b) => {
+      const runsDiff = (b.totals.runs || 0) - (a.totals.runs || 0);
+      if (runsDiff !== 0) return runsDiff;
+      return (b.totals.wickets || 0) - (a.totals.wickets || 0);
+    });
+
+    return res.json({
+      tournamentId,
+      tournamentName: tournament.name,
+      players,
+    });
+  } catch (error) {
+    console.error('Error fetching WC stats:', error);
+    return res.status(500).json({ message: 'Error fetching WC stats' });
+  }
+});
+
 // POST /api/player-stats/clear-all-cache - Clear ALL backend caches (stats, fixtures, players, users, news). Use after direct DB edits.
 // Body: { adminUserId: "..." } or ?adminUserId=...
 router.post('/clear-all-cache', async (req, res) => {
@@ -927,7 +1166,13 @@ router.post('/bulk-store', async (req, res) => {
       matchKey,
       fixtureId,
       isPlayoffScore,
+      isWcScore,
+      wcStage: bulkWcStage,
+      tournamentId: bulkTournamentId,
+      venue: bulkVenue,
     } = req.body || {};
+
+    const normalizedBulkVenue = typeof bulkVenue === 'string' ? bulkVenue.trim() : bulkVenue || null;
 
     if (!Array.isArray(entries) || !entries.length) {
       return res.status(400).json({ message: 'entries array is required' });
@@ -963,19 +1208,51 @@ router.post('/bulk-store', async (req, res) => {
           : isPlayoffScore !== undefined
           ? !!isPlayoffScore
           : false;
+      const entryIsWcScore =
+        entry.isWcScore !== undefined
+          ? !!entry.isWcScore
+          : isWcScore !== undefined
+          ? !!isWcScore
+          : false;
+      const entryWcStage = entryIsWcScore
+        ? normalizeWcStage(entry.wcStage !== undefined ? entry.wcStage : bulkWcStage)
+        : null;
+      const entryTournamentId = entry.tournamentId || bulkTournamentId || null;
+      const entryVenueRaw = entry.venue !== undefined ? entry.venue : normalizedBulkVenue;
+      const entryVenue = typeof entryVenueRaw === 'string' ? entryVenueRaw.trim() : entryVenueRaw || null;
 
-      const query = {
-        playerId: entry.playerId,
-        userId: ownerUser._id,
-      };
-      if (normalizedMatchKey) {
-        query.matchKey = normalizedMatchKey;
-      } else if (resolvedOpponentUserId) {
-        query.opponentUserId = resolvedOpponentUserId;
+      if (entryIsWcScore && !entryWcStage) {
+        warnings.push(`Skipping WC entry for player ${entry.playerId}: wcStage must be super8 | semi | final`);
+        continue;
       }
 
-      // Check for existing stats
-      let statDoc = await PlayerStats.findOne(query);
+      // Build the lookup query based on score type (same rules as savePlayerStatsEntry).
+      let statDoc = null;
+      if (entryIsWcScore) {
+        statDoc = await PlayerStats.findOne({
+          playerId: entry.playerId,
+          userId: ownerUser._id,
+          opponentUserId: resolvedOpponentUserId || null,
+          tournamentId: entryTournamentId,
+          'metadata.isWcScore': true,
+          'metadata.wcStage': entryWcStage,
+        });
+      } else if (!entryIsPlayoffScore) {
+        const baseQuery = {
+          playerId: entry.playerId,
+          userId: ownerUser._id,
+          $and: [
+            { $or: [{ 'metadata.isWcScore': { $ne: true } }, { 'metadata.isWcScore': { $exists: false } }] },
+            { $or: [{ 'metadata.isPlayoffScore': { $ne: true } }, { 'metadata.isPlayoffScore': { $exists: false } }] },
+          ],
+        };
+        if (normalizedMatchKey) {
+          baseQuery.matchKey = normalizedMatchKey;
+        } else if (resolvedOpponentUserId) {
+          baseQuery.opponentUserId = resolvedOpponentUserId;
+        }
+        statDoc = await PlayerStats.findOne(baseQuery);
+      }
 
       // Calculate new totals for delta calculation
       const newTotals = {
@@ -998,10 +1275,11 @@ router.post('/bulk-store', async (req, res) => {
         matches: 0,
       };
 
-      // If existing stats found AND it's NOT a playoff score → UPDATE (no duplicates for regular matches)
-      // If existing stats found AND it IS a playoff score → CREATE NEW (allow duplicates for playoff matches)
-      // If no existing stats → CREATE NEW
-      if (statDoc && !entryIsPlayoffScore) {
+      // Decision rules (in this priority):
+      //   - WC entries: dedup within (player, owner, opponent, tournamentId, wcStage). Overwrite if found.
+      //   - Playoff (non-WC): always create new (allow duplicates).
+      //   - Regular (non-WC, non-playoff): dedup ignoring WC/playoff buckets.
+      if (statDoc) {
         // Calculate delta from previous stats
         const previousTotals = {
           runs: statDoc.battingStats?.runs || 0,
@@ -1040,6 +1318,14 @@ router.post('/bulk-store', async (req, res) => {
           statDoc.metadata.extras = Number(entry.extras);
         }
         statDoc.metadata.isPlayoffScore = entryIsPlayoffScore;
+        statDoc.metadata.isWcScore = entryIsWcScore;
+        if (entryIsWcScore) {
+          statDoc.metadata.wcStage = entryWcStage;
+          statDoc.tournamentId = entryTournamentId;
+        }
+        if (entryVenue) {
+          statDoc.venue = entryVenue;
+        }
 
         await statDoc.save();
         
@@ -1062,6 +1348,8 @@ router.post('/bulk-store', async (req, res) => {
           playerId: entry.playerId,
           userId: ownerUser._id,
           opponentUserId: resolvedOpponentUserId || null,
+          tournamentId: entryIsWcScore ? entryTournamentId : null,
+          venue: entryVenue || null,
           matchName: normalizedMatchName || null,
           matchKey: normalizedMatchKey || null,
           fixtureId: entry.fixtureId || fixtureId || null,
@@ -1073,6 +1361,8 @@ router.post('/bulk-store', async (req, res) => {
             economy: entry.economy !== null && entry.economy !== undefined ? Number(entry.economy) : null,
             extras: entry.extras !== null && entry.extras !== undefined ? Number(entry.extras) : null,
             isPlayoffScore: entryIsPlayoffScore,
+            isWcScore: entryIsWcScore,
+            wcStage: entryIsWcScore ? entryWcStage : null,
           },
         });
 
