@@ -9,6 +9,7 @@ const UserPlayer = require('../models/UserPlayer'); // Adjust the path
 const MatchResult = require('../models/MatchResult');
 const Fixture = require('../models/Fixture');
 const Tournament = require('../models/Tournament');
+const VenueMatchEntry = require('../models/VenueMatchEntry');
 const {
   cacheConfig,
   invalidateCache,
@@ -405,6 +406,66 @@ const normalizeWcStage = (stage) => {
   return VALID_WC_STAGES.includes(trimmed) ? trimmed : null;
 };
 
+/**
+ * Mirror a saved PlayerStats row into the persistent VenueMatchEntry
+ * ledger. Keyed on `sourcePlayerStatsId` so re-saves of the same row
+ * within the current season overwrite (no duplicates), but the entry
+ * survives any future PlayerStats wipe.
+ *
+ * Best-effort — logs and swallows errors so a ledger glitch never
+ * blocks the primary stats save.
+ */
+/**
+ * Minimal venue ledger row. We deliberately keep this tight — only
+ * fields that /venue-aggregate (or future per-venue analytics) will
+ * actually read. Anything cosmetic (matchName, matchKey, isMom, fours/
+ * sixes) lives on PlayerStats while the season is active and is not
+ * mirrored here.
+ */
+const upsertVenueMatchEntry = async (
+  playerStatsDoc,
+  { matchId } = {}
+) => {
+  try {
+    if (!playerStatsDoc) return;
+    const venueRaw = playerStatsDoc.venue;
+    const venue = typeof venueRaw === 'string' ? venueRaw.trim() : '';
+    if (!venue) return; // No venue → nothing to ledger.
+
+    const meta = playerStatsDoc.metadata || {};
+
+    await VenueMatchEntry.findOneAndUpdate(
+      { sourcePlayerStatsId: playerStatsDoc._id },
+      {
+        $set: {
+          playerId: playerStatsDoc.playerId,
+          userId: playerStatsDoc.userId,
+          opponentUserId: playerStatsDoc.opponentUserId || null,
+          venue,
+          tournamentId: playerStatsDoc.tournamentId || null,
+          matchId: matchId || null,
+          isPlayoffScore: !!meta.isPlayoffScore,
+          isWcScore: !!meta.isWcScore,
+          wcStage: meta.wcStage || null,
+          battingStats: {
+            runs: playerStatsDoc.battingStats?.runs || 0,
+            balls: playerStatsDoc.battingStats?.balls || 0,
+          },
+          bowlingStats: {
+            runsGiven: playerStatsDoc.bowlingStats?.runsGiven || 0,
+            ballsBowled: playerStatsDoc.bowlingStats?.ballsBowled || 0,
+            wickets: playerStatsDoc.bowlingStats?.wickets || 0,
+          },
+          sourcePlayerStatsId: playerStatsDoc._id,
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+  } catch (err) {
+    console.error('⚠️ Failed to upsert VenueMatchEntry (non-fatal):', err.message);
+  }
+};
+
 const savePlayerStatsEntry = async (payload = {}) => {
   const {
     playerId,
@@ -420,6 +481,9 @@ const savePlayerStatsEntry = async (payload = {}) => {
     venue: rawVenue,
     economy,
     extras,
+    matchKey,
+    matchName,
+    matchId,
   } = payload;
 
   const venue = typeof rawVenue === 'string' ? rawVenue.trim() : rawVenue || null;
@@ -570,6 +634,9 @@ const savePlayerStatsEntry = async (payload = {}) => {
     cache.del('stats-overview');
     invalidateCache('players:data'); // Invalidate top rankings cache
 
+    // Mirror to persistent venue ledger (survives PlayerStats wipes).
+    await upsertVenueMatchEntry(existingStats, { matchId });
+
     return { action: 'updated', doc: existingStats };
   }
 
@@ -622,6 +689,9 @@ const savePlayerStatsEntry = async (payload = {}) => {
     // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when new stats are added
     cache.del('stats-overview');
     invalidateCache('players:data'); // Invalidate top rankings cache
+
+    // Mirror to persistent venue ledger (survives PlayerStats wipes).
+    await upsertVenueMatchEntry(newStats, { matchId });
 
     return { action: 'created', doc: newStats };
 };
@@ -871,6 +941,10 @@ router.post('/store', async (req, res) => {
 // Returns aggregated batting/bowling totals grouped by venue, plus per-match breakdowns.
 // Useful for showing "at this venue, this many runs scored / this many wickets fallen".
 //
+// IMPORTANT: this aggregate reads from the persistent VenueMatchEntry
+// ledger (NOT PlayerStats). PlayerStats is wiped at the end of every
+// tournament — the ledger isn't, so venue analytics survive resets.
+//
 // scope:
 //   - 'league' (default when nothing tournament-specific is passed): only regular
 //     league matches — excludes any entry tagged isWcScore, isPlayoffScore, or
@@ -880,6 +954,9 @@ router.get('/venue-aggregate', async (req, res) => {
   try {
     const { playerId, userId, tournamentId, venue, scope } = req.query;
 
+    // Source of truth is the persistent VenueMatchEntry ledger — it
+    // survives PlayerStats wipes (which happen at end-of-tournament),
+    // so historical venue analytics keep working across seasons.
     const match = { venue: { $nin: [null, ''] } };
     if (playerId) match.playerId = new mongoose.Types.ObjectId(playerId);
     if (userId) match.userId = new mongoose.Types.ObjectId(userId);
@@ -889,38 +966,53 @@ router.get('/venue-aggregate', async (req, res) => {
     const wantLeagueOnly = scope === 'league' || (!scope && !tournamentId);
     if (wantLeagueOnly) {
       match.$and = [
-        { $or: [{ 'metadata.isWcScore': { $ne: true } }, { 'metadata.isWcScore': { $exists: false } }] },
-        { $or: [{ 'metadata.isPlayoffScore': { $ne: true } }, { 'metadata.isPlayoffScore': { $exists: false } }] },
+        { isWcScore: { $ne: true } },
+        { isPlayoffScore: { $ne: true } },
         { $or: [{ tournamentId: null }, { tournamentId: { $exists: false } }] },
       ];
     }
 
-    const grouped = await PlayerStats.aggregate([
+    const grouped = await VenueMatchEntry.aggregate([
       { $match: match },
+      // Each ledger row is one player-innings, NOT one match. To count
+      // distinct matches we group by a stable matchId. For rows that
+      // somehow lack one, fall back to `_id` (counts that row as its
+      // own match — degenerate but avoids over-counting blowups).
+      {
+        $addFields: {
+          _matchKeyForCount: {
+            $ifNull: ['$matchId', { $toString: '$_id' }],
+          },
+        },
+      },
       {
         $group: {
           _id: '$venue',
-          matches: { $sum: 1 },
+          innings: { $sum: 1 },
+          matchSet: { $addToSet: '$_matchKeyForCount' },
           totalRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
           totalBalls: { $sum: { $ifNull: ['$battingStats.balls', 0] } },
-          totalFours: { $sum: { $ifNull: ['$battingStats.fours', 0] } },
-          totalSixes: { $sum: { $ifNull: ['$battingStats.sixes', 0] } },
           totalWicketsTaken: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
           totalRunsGiven: { $sum: { $ifNull: ['$bowlingStats.runsGiven', 0] } },
           totalBallsBowled: { $sum: { $ifNull: ['$bowlingStats.ballsBowled', 0] } },
         },
       },
+      {
+        $addFields: {
+          matches: { $size: '$matchSet' },
+        },
+      },
+      { $project: { matchSet: 0 } },
       { $sort: { matches: -1, _id: 1 } },
     ]);
 
     const venues = grouped.map((row) => ({
       venue: row._id,
       matches: row.matches,
+      innings: row.innings,
       batting: {
         runs: row.totalRuns,
         balls: row.totalBalls,
-        fours: row.totalFours,
-        sixes: row.totalSixes,
         strikeRate: row.totalBalls
           ? Number(((row.totalRuns / row.totalBalls) * 100).toFixed(2))
           : 0,
@@ -1217,6 +1309,7 @@ router.post('/bulk-store', async (req, res) => {
 
       const normalizedMatchKey = entry.matchKey || matchKey || null;
       const normalizedMatchName = entry.matchName || matchName || null;
+      const normalizedMatchId = entry.matchId || req.body.matchId || null;
       const entryIsPlayoffScore =
         entry.isPlayoffScore !== undefined
           ? !!entry.isPlayoffScore
@@ -1393,6 +1486,9 @@ router.post('/bulk-store', async (req, res) => {
           // Don't throw - stats are already saved, this is just a bonus update
         }
       }
+
+      // Mirror to persistent venue ledger (survives PlayerStats wipes).
+      await upsertVenueMatchEntry(statDoc, { matchId: normalizedMatchId });
 
       successCount += 1;
     }

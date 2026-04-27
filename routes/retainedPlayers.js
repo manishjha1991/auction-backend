@@ -19,6 +19,21 @@ const TradeRequest = require('../models/TradeRequest');
 const AppSettings = require('../models/AppSettings');
 const { invalidateCache } = require('../utils/cache');
 
+/* ──────────────────────────────────────────────────────────────────────
+ * ⚠️  DO NOT WIPE `VenueMatchEntry` IN ANY RESET FLOW BELOW.
+ *
+ *  PlayerStats / Fixture / Bid* / etc. are intentionally cleared at the
+ *  end of each season ("release all players" admin action). The
+ *  `VenueMatchEntry` collection, however, is the persistent ledger that
+ *  powers all venue analytics — Top Rankings "Run Factory" / "Bowler's
+ *  Paradise", Profile "Venues" tab, Tournament "Venues" tab.
+ *
+ *  Wiping it would erase the entire ground-by-ground history that we
+ *  intentionally preserve across tournaments. If you ever need to clear
+ *  it (e.g. a one-off data cleanup), do it in a separate dedicated
+ *  script, NOT inside any of the season-reset endpoints below.
+ * ────────────────────────────────────────────────────────────────────── */
+
 // Helper function to get original base price based on player type
 const getOriginalBasePrice = (playerType) => {
   switch (playerType) {
@@ -554,6 +569,8 @@ router.post('/release-all-others', async (req, res) => {
     console.log(`Verification: ${updatedUsers.length} users now have allPlayersReleased: true`);
 
     // Clear all data from PlayerStats and Fixture collections
+    // NOTE: do NOT add VenueMatchEntry to this list — it is the
+    // persistent venue-analytics ledger and is preserved across seasons.
     console.log('Clearing all PlayerStats data...');
     const playerStatsResult = await PlayerStats.deleteMany({});
     console.log(`Deleted ${playerStatsResult.deletedCount} PlayerStats records`);
@@ -1193,6 +1210,8 @@ router.post('/release-team-players', async (req, res) => {
     );
 
     // Clear all data from PlayerStats and Fixture collections
+    // NOTE: do NOT add VenueMatchEntry to this list — it is the
+    // persistent venue-analytics ledger and is preserved across seasons.
     console.log('Clearing all PlayerStats data...');
     const playerStatsResult = await PlayerStats.deleteMany({});
     console.log(`Deleted ${playerStatsResult.deletedCount} PlayerStats records`);
