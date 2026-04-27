@@ -867,18 +867,33 @@ router.post('/store', async (req, res) => {
 });
 
 // GET /api/player-stats/venue-aggregate
-// Optional query: ?playerId=...&userId=...&tournamentId=...&venue=...
+// Optional query: ?playerId=...&userId=...&tournamentId=...&venue=...&scope=league|all
 // Returns aggregated batting/bowling totals grouped by venue, plus per-match breakdowns.
 // Useful for showing "at this venue, this many runs scored / this many wickets fallen".
+//
+// scope:
+//   - 'league' (default when nothing tournament-specific is passed): only regular
+//     league matches — excludes any entry tagged isWcScore, isPlayoffScore, or
+//     belonging to a tournament.
+//   - 'all'   : every entry that has a venue, regardless of category.
 router.get('/venue-aggregate', async (req, res) => {
   try {
-    const { playerId, userId, tournamentId, venue } = req.query;
+    const { playerId, userId, tournamentId, venue, scope } = req.query;
 
     const match = { venue: { $nin: [null, ''] } };
     if (playerId) match.playerId = new mongoose.Types.ObjectId(playerId);
     if (userId) match.userId = new mongoose.Types.ObjectId(userId);
     if (tournamentId) match.tournamentId = new mongoose.Types.ObjectId(tournamentId);
     if (venue) match.venue = venue;
+
+    const wantLeagueOnly = scope === 'league' || (!scope && !tournamentId);
+    if (wantLeagueOnly) {
+      match.$and = [
+        { $or: [{ 'metadata.isWcScore': { $ne: true } }, { 'metadata.isWcScore': { $exists: false } }] },
+        { $or: [{ 'metadata.isPlayoffScore': { $ne: true } }, { 'metadata.isPlayoffScore': { $exists: false } }] },
+        { $or: [{ tournamentId: null }, { tournamentId: { $exists: false } }] },
+      ];
+    }
 
     const grouped = await PlayerStats.aggregate([
       { $match: match },
