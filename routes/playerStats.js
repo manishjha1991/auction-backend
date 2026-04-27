@@ -941,6 +941,11 @@ router.post('/store', async (req, res) => {
 // Returns aggregated batting/bowling totals grouped by venue, plus per-match breakdowns.
 // Useful for showing "at this venue, this many runs scored / this many wickets fallen".
 //
+// Response fields per venue row:
+//   - `matches` — distinct games (matchId cardinality).
+//   - `teamInnings` — T20 convention: 2 × matches (both sides bat once).
+//   - `playerRows` — number of ledger lines (≈ XI per side); legacy key `innings` = same.
+//
 // IMPORTANT: this aggregate reads from the persistent VenueMatchEntry
 // ledger (NOT PlayerStats). PlayerStats is wiped at the end of every
 // tournament — the ledger isn't, so venue analytics survive resets.
@@ -1006,10 +1011,18 @@ router.get('/venue-aggregate', async (req, res) => {
       { $sort: { matches: -1, _id: 1 } },
     ]);
 
-    const venues = grouped.map((row) => ({
+    const venues = grouped.map((row) => {
+      const matches = row.matches || 0;
+      const playerRows = row.innings || 0;
+      // T20: each completed match has two team batting innings (side A + side B).
+      // `playerRows` is how many ledger lines (usually ~11 per side per match).
+      return {
       venue: row._id,
-      matches: row.matches,
-      innings: row.innings,
+      matches,
+      playerRows,
+      /** @deprecated use `playerRows` — kept for older clients */
+      innings: playerRows,
+      teamInnings: matches * 2,
       batting: {
         runs: row.totalRuns,
         balls: row.totalBalls,
@@ -1025,7 +1038,8 @@ router.get('/venue-aggregate', async (req, res) => {
           ? Number(((row.totalRunsGiven / (row.totalBallsBowled / 6))).toFixed(2))
           : 0,
       },
-    }));
+    };
+    });
 
     return res.status(200).json({ venues });
   } catch (err) {
