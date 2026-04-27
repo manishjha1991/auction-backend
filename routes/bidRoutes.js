@@ -387,7 +387,7 @@ router.post("/bid/sold", async (req, res) => {
         // Get all users who have this player in their currentBids (for cleanup)
         const usersWithBidsOnThisPlayer = await User.find({
           'currentBids.playerId': pid
-        }).select('_id currentBids');
+        }).select('_id purse currentBids');
 
         // 5. Mark all bids as inactive
         await Bid.updateMany({ playerId: pid }, { $set: { isActive: false } });
@@ -910,7 +910,7 @@ async function sellPlayer(playerId, io = null) {
     // Get all users who have this player in their currentBids (for cleanup)
     const usersWithBidsOnThisPlayer = await User.find({
       'currentBids.playerId': playerId
-    }).select('_id currentBids');
+    }).select('_id purse currentBids');
 
     // c) Deactivate all bids
     await Bid.updateMany({ playerId: playerId }, { $set: { isActive: false } });
