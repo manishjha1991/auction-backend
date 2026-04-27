@@ -945,6 +945,7 @@ router.post('/store', async (req, res) => {
 //   - `matches` — distinct games (matchId cardinality).
 //   - `teamInnings` — T20 convention: 2 × matches (both sides bat once).
 //   - `playerRows` — number of ledger lines (≈ XI per side); legacy key `innings` = same.
+//   - `players` — only when `userId` is passed: each squad member's runs & wickets at that venue.
 //
 // IMPORTANT: this aggregate reads from the persistent VenueMatchEntry
 // ledger (NOT PlayerStats). PlayerStats is wiped at the end of every
@@ -1040,6 +1041,72 @@ router.get('/venue-aggregate', async (req, res) => {
       },
     };
     });
+
+    // Per-player breakdown at each venue (squad view) — only when scoped to an owner user.
+    if (userId && mongoose.Types.ObjectId.isValid(String(userId))) {
+      const perPlayer = await VenueMatchEntry.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: { venue: '$venue', playerId: '$playerId' },
+            runs: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+            balls: { $sum: { $ifNull: ['$battingStats.balls', 0] } },
+            wickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+            ballsBowled: { $sum: { $ifNull: ['$bowlingStats.ballsBowled', 0] } },
+          },
+        },
+        {
+          $lookup: {
+            from: 'players',
+            localField: '_id.playerId',
+            foreignField: '_id',
+            as: 'p',
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            venue: '$_id.venue',
+            playerId: '$_id.playerId',
+            runs: 1,
+            balls: 1,
+            wickets: 1,
+            ballsBowled: 1,
+            name: { $arrayElemAt: ['$p.name', 0] },
+          },
+        },
+      ]);
+
+      const byVenue = new Map();
+      for (const row of perPlayer) {
+        const vName = row.venue;
+        if (!vName) continue;
+        const r = row.runs || 0;
+        const b = row.balls || 0;
+        const w = row.wickets || 0;
+        const bb = row.ballsBowled || 0;
+        if (r === 0 && b === 0 && w === 0 && bb === 0) continue;
+        if (!byVenue.has(vName)) byVenue.set(vName, []);
+        byVenue.get(vName).push({
+          playerId: row.playerId,
+          name: row.name || 'Player',
+          runs: r,
+          balls: b,
+          wickets: w,
+          ballsBowled: bb,
+        });
+      }
+      for (const arr of byVenue.values()) {
+        arr.sort(
+          (a, b) =>
+            b.runs - a.runs || b.wickets - a.wickets || b.balls - a.balls || b.ballsBowled - a.ballsBowled
+        );
+      }
+
+      for (const v of venues) {
+        v.players = byVenue.get(v.venue) || [];
+      }
+    }
 
     return res.status(200).json({ venues });
   } catch (err) {
