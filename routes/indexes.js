@@ -66,6 +66,10 @@ const VENUE_MATCH_ENTRY_INDEX_GUIDE = {
       fields: { userId: 1, venue: 1, playerId: 1 },
       purpose: 'Per-user squad breakdown at each venue (profile Venues tab)',
     },
+    {
+      fields: { matchId: 1, userId: 1 },
+      purpose: 'Per-match team rows + batting order (1st/2nd innings) on ground detail',
+    },
   ],
 };
 

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const axios = require('axios');
 const NodeCache = require('node-cache');
 const PlayerStats = require('../models/PlayerStats'); // Adjust the path as needed
 const Player = require('../models/Player'); // Adjust the path
@@ -19,6 +20,7 @@ const {
 } = require('../utils/cache');
 const { upsertLiveCareerSummaryForPlayer } = require('../utils/playerCareerSummary');
 const { invalidateCareerSummaryCache } = require('../utils/cplReadCaches');
+const venueInsights = require('../utils/venueInsights');
 
 // 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats) - keeping for backward compatibility
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
@@ -469,6 +471,10 @@ const upsertVenueMatchEntry = async (
             wickets: playerStatsDoc.bowlingStats?.wickets || 0,
           },
           sourcePlayerStatsId: playerStatsDoc._id,
+          teamInningsOrder:
+            playerStatsDoc.teamInningsOrder === 1 || playerStatsDoc.teamInningsOrder === 2
+              ? playerStatsDoc.teamInningsOrder
+              : null,
         },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -496,9 +502,12 @@ const savePlayerStatsEntry = async (payload = {}) => {
     matchKey,
     matchName,
     matchId,
+    teamInningsOrder: rawTeamInningsOrder,
   } = payload;
 
   const venue = typeof rawVenue === 'string' ? rawVenue.trim() : rawVenue || null;
+  const normalizedTeamInningsOrder =
+    rawTeamInningsOrder === 1 || rawTeamInningsOrder === 2 ? rawTeamInningsOrder : null;
 
   if (!playerId) {
     const error = new Error('playerId is required');
@@ -628,6 +637,9 @@ const savePlayerStatsEntry = async (payload = {}) => {
     if (venue) {
       existingStats.venue = venue;
     }
+    if (Object.prototype.hasOwnProperty.call(payload, 'teamInningsOrder')) {
+      existingStats.teamInningsOrder = normalizedTeamInningsOrder;
+    }
 
     await existingStats.save();
     
@@ -666,6 +678,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     opponentUserId,
     tournamentId: isWcScore ? tournamentId : null,
     venue: venue || null,
+    teamInningsOrder: normalizedTeamInningsOrder,
     battingStats: {
       runs: battingStats?.runs || 0,
       balls: battingStats?.balls || 0,
@@ -1431,12 +1444,19 @@ router.get('/venue-explorer', async (req, res) => {
           $group: {
             _id: { mid: '$_mid', userId: '$userId' },
             runs: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+            inningsOrder: { $max: '$teamInningsOrder' },
           },
         },
         {
           $group: {
             _id: '$_id.mid',
-            sides: { $push: { userId: '$_id.userId', runs: '$runs' } },
+            sides: {
+              $push: {
+                userId: '$_id.userId',
+                runs: '$runs',
+                inningsOrder: '$inningsOrder',
+              },
+            },
           },
         },
       ]),
@@ -1505,8 +1525,15 @@ router.get('/venue-explorer', async (req, res) => {
             userId: s.userId,
             teamName: userMap.get(String(s.userId)) || 'Team',
             runs: s.runs || 0,
+            inningsOrder:
+              s.inningsOrder === 1 || s.inningsOrder === 2 ? s.inningsOrder : null,
           }))
-          .sort((a, b) => b.runs - a.runs);
+          .sort((a, b) => {
+            const oa = a.inningsOrder != null ? a.inningsOrder : 99;
+            const ob = b.inningsOrder != null ? b.inningsOrder : 99;
+            if (oa !== ob) return oa - ob;
+            return (b.runs || 0) - (a.runs || 0);
+          });
         const matchTotal = sides.reduce((sum, s) => sum + (s.runs || 0), 0);
         return {
           matchId: doc._id,
@@ -1533,6 +1560,411 @@ router.get('/venue-explorer', async (req, res) => {
   } catch (err) {
     console.error('venue-explorer error:', err);
     return res.status(500).json({ message: 'Failed to load venue explorer' });
+  }
+});
+
+// GET /api/player-stats/venue-insight?venue=NAME&scope=all|league
+// Tactical hints from ledger: spin vs pace lean, toss lean (heuristic), main assets.
+// Optional: set OPENAI_API_KEY for an extra LLM narrative (gpt-4o-mini by default).
+router.get('/venue-insight', async (req, res) => {
+  try {
+    const bustCache =
+      req.query.nocache === '1' ||
+      req.query.nocache === 'true' ||
+      req.query.nocache === 'yes';
+    const insightKey = `vins:${stableVenueCacheKeyFromQuery(req)}`;
+    if (!bustCache) {
+      const hit = venueAnalyticsCache.get(insightKey);
+      if (hit) return res.status(200).json(hit);
+    }
+
+    const { venue: venueQ, scope, tournamentId: rawTournamentId } = req.query;
+    const venueStr = venueQ != null ? String(venueQ).trim() : '';
+    if (!venueStr) {
+      return res.status(400).json({ message: 'venue query parameter is required' });
+    }
+
+    const match = { venue: venueStr };
+    if (rawTournamentId && mongoose.Types.ObjectId.isValid(String(rawTournamentId))) {
+      match.tournamentId = new mongoose.Types.ObjectId(rawTournamentId);
+    }
+    const wantLeagueOnly = scope === 'league';
+    if (wantLeagueOnly) {
+      match.$and = [
+        { isWcScore: { $ne: true } },
+        { isPlayoffScore: { $ne: true } },
+        { $or: [{ tournamentId: null }, { tournamentId: { $exists: false } }] },
+      ];
+    }
+
+    const midField = {
+      $addFields: { _mid: { $ifNull: ['$matchId', { $toString: '$_id' }] } },
+    };
+
+    const [
+      totAgg,
+      topBatAgg,
+      topBowlAgg,
+      allRoundAgg,
+      chaseDocs,
+      inningsOrderDocs,
+    ] = await Promise.all([
+      VenueMatchEntry.aggregate([
+        { $match: match },
+        midField,
+        {
+          $group: {
+            _id: null,
+            totalRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+            totalWickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+            matchSet: { $addToSet: '$_mid' },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            totalRuns: 1,
+            totalWickets: 1,
+            matches: { $size: '$matchSet' },
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: '$playerId',
+            runs: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+          },
+        },
+        { $match: { runs: { $gte: 1 } } },
+        { $sort: { runs: -1 } },
+        { $limit: 5 },
+        { $lookup: { from: 'players', localField: '_id', foreignField: '_id', as: 'pl' } },
+        {
+          $project: {
+            playerId: '$_id',
+            name: { $ifNull: [{ $arrayElemAt: ['$pl.name', 0] }, 'Player'] },
+            role: { $arrayElemAt: ['$pl.role', 0] },
+            runs: 1,
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: '$playerId',
+            wickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+            runsGiven: { $sum: { $ifNull: ['$bowlingStats.runsGiven', 0] } },
+            ballsBowled: { $sum: { $ifNull: ['$bowlingStats.ballsBowled', 0] } },
+          },
+        },
+        { $match: { wickets: { $gte: 1 } } },
+        { $sort: { wickets: -1, runsGiven: 1 } },
+        { $limit: 12 },
+        { $lookup: { from: 'players', localField: '_id', foreignField: '_id', as: 'pl' } },
+        {
+          $project: {
+            playerId: '$_id',
+            name: { $ifNull: [{ $arrayElemAt: ['$pl.name', 0] }, 'Bowler'] },
+            role: { $arrayElemAt: ['$pl.role', 0] },
+            style: { $arrayElemAt: ['$pl.style', 0] },
+            wickets: 1,
+            runsGiven: 1,
+            ballsBowled: 1,
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: '$playerId',
+            runs: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+            wickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+          },
+        },
+        { $match: { runs: { $gte: 1 }, wickets: { $gte: 1 } } },
+        {
+          $addFields: {
+            index: { $add: ['$runs', { $multiply: [20, '$wickets'] }] },
+          },
+        },
+        { $sort: { index: -1, runs: -1 } },
+        { $limit: 3 },
+        { $lookup: { from: 'players', localField: '_id', foreignField: '_id', as: 'pl' } },
+        {
+          $project: {
+            playerId: '$_id',
+            playerName: { $arrayElemAt: ['$pl.name', 0] },
+            role: { $arrayElemAt: ['$pl.role', 0] },
+            style: { $arrayElemAt: ['$pl.style', 0] },
+            runs: 1,
+            wickets: 1,
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: match },
+        midField,
+        {
+          $group: {
+            _id: { mid: '$_mid', userId: '$userId' },
+            teamRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+          },
+        },
+        {
+          $group: {
+            _id: '$_id.mid',
+            runsList: { $push: '$teamRuns' },
+          },
+        },
+        {
+          $match: {
+            $expr: { $gte: [{ $size: '$runsList' }, 2] },
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: match },
+        midField,
+        {
+          $group: {
+            _id: { mid: '$_mid', userId: '$userId' },
+            teamRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+            inningsOrder: { $max: '$teamInningsOrder' },
+          },
+        },
+        {
+          $group: {
+            _id: '$_id.mid',
+            sides: {
+              $push: {
+                userId: '$_id.userId',
+                teamRuns: '$teamRuns',
+                inningsOrder: '$inningsOrder',
+              },
+            },
+          },
+        },
+        {
+          $match: {
+            $expr: { $gte: [{ $size: '$sides' }, 2] },
+          },
+        },
+      ]),
+    ]);
+
+    const t0 = totAgg[0];
+    const matches = t0?.matches || 0;
+    const totalRuns = t0?.totalRuns || 0;
+    const totalWickets = t0?.totalWickets || 0;
+    const teamInnings = Math.max(1, matches * 2);
+    const avgTeamInnings = totalRuns / teamInnings;
+    const wktsPerTeamInnings = totalWickets / teamInnings;
+
+    let closeChaseRate = 0;
+    let twoTeamMatches = 0;
+    for (const doc of chaseDocs || []) {
+      const arr = (doc.runsList || []).map((n) => Number(n) || 0).filter((n) => n > 0);
+      if (arr.length < 2) continue;
+      const mx = Math.max(...arr);
+      const mn = Math.min(...arr);
+      if (mx <= 0) continue;
+      twoTeamMatches += 1;
+      if (mn >= 0.85 * mx) closeChaseRate += 1;
+    }
+    const closeRate = twoTeamMatches ? closeChaseRate / twoTeamMatches : 0;
+
+    let inningsOrderMatches = 0;
+    let sumRunsFirst = 0;
+    let sumRunsSecond = 0;
+    let batFirstWins = 0;
+    for (const doc of inningsOrderDocs || []) {
+      const sides = doc.sides || [];
+      if (sides.length !== 2) continue;
+      const a = sides[0];
+      const b = sides[1];
+      const oa = a.inningsOrder;
+      const ob = b.inningsOrder;
+      if ((oa !== 1 && oa !== 2) || (ob !== 1 && ob !== 2) || oa === ob) continue;
+      const firstSide = oa === 1 ? a : b;
+      const secondSide = oa === 2 ? a : b;
+      const rFirst = Number(firstSide.teamRuns) || 0;
+      const rSecond = Number(secondSide.teamRuns) || 0;
+      inningsOrderMatches += 1;
+      sumRunsFirst += rFirst;
+      sumRunsSecond += rSecond;
+      if (rFirst > rSecond) batFirstWins += 1;
+    }
+
+    const inningsOrderStats =
+      inningsOrderMatches >= 2
+        ? {
+            matches: inningsOrderMatches,
+            avgRunsBattingFirst: sumRunsFirst / inningsOrderMatches,
+            avgRunsBattingSecond: sumRunsSecond / inningsOrderMatches,
+            batFirstWinRate: batFirstWins / inningsOrderMatches,
+          }
+        : null;
+
+    const toss = venueInsights.tossLeanFromNumbers({
+      avgTeamInnings,
+      wktsPerTeamInnings,
+      closeChaseRate: closeRate,
+      matches,
+      inningsOrderStats,
+    });
+
+    const bowlersForStyle = (topBowlAgg || []).map((b) => ({
+      playerId: b.playerId,
+      name: b.name,
+      wickets: b.wickets,
+      style: b.style,
+      role: b.role,
+    }));
+    const spinPace = venueInsights.spinPaceFromBowlers(bowlersForStyle);
+
+    const assets = {
+      batters: (topBatAgg || []).map((b) => ({
+        playerId: b.playerId,
+        name: b.name,
+        role: b.role,
+        runs: b.runs,
+      })),
+      bowlers: bowlersForStyle.slice(0, 5),
+      allrounders: (allRoundAgg || []).map((a) => ({
+        playerId: a.playerId,
+        name: a.playerName || 'Player',
+        role: a.role,
+        style: a.style,
+        runs: a.runs,
+        wickets: a.wickets,
+      })),
+    };
+
+    const disclaimer =
+      inningsOrderStats && inningsOrderStats.matches >= 2
+        ? 'Based on your league’s saved scorecards at this venue. Toss hints use first- vs second-innings team totals where batting order is recorded (OCR “who batted first” or scripts/promptVenueMatchInningsOrder.js).'
+        : 'Based on your league’s saved scorecards at this venue — not weather or real pitch reports. For sharper toss hints, record who batted first when saving scorecards or run scripts/promptVenueMatchInningsOrder.js once for older games.';
+
+    const bowlersAtVenueForAi = venueInsights.annotateBowlersForSnapshot(
+      bowlersForStyle.slice(0, 10)
+    );
+    const allroundersForAi = (assets.allrounders || []).slice(0, 4).map((a) => ({
+      name: a.name,
+      role: a.role || null,
+      styleFromRoster: a.style || null,
+      runsAtVenue: a.runs,
+      wicketsAtVenue: a.wickets,
+      bowlingType: venueInsights.classifyBowlingStyle(a.style),
+    }));
+
+    const snapshot = {
+      venue: venueStr,
+      dataProvenance:
+        'Bowling type (spin vs pace) is from Player.style in your DB at request time, rule-classified as bowlingType. OpenAI must not override this with guesses from names.',
+      matches,
+      avgTeamInnings: Number(avgTeamInnings.toFixed(1)),
+      wktsPerTeamInnings: Number(wktsPerTeamInnings.toFixed(2)),
+      closeGameRate: twoTeamMatches ? Number(closeRate.toFixed(2)) : null,
+      toss: toss.key,
+      inningsOrder: toss.inningsOrder || null,
+      spinPaceHeuristic: {
+        recommendation: spinPace.recommendation,
+        label: spinPace.label,
+        spinWicketShare: spinPace.spinWicketShare,
+        paceWicketShare: spinPace.paceWicketShare,
+      },
+      bowlersAtVenue: bowlersAtVenueForAi,
+      allroundersAtVenue: allroundersForAi,
+      topBatters: assets.batters.slice(0, 3),
+      topBowlers: assets.bowlers.slice(0, 3),
+      allrounders: assets.allrounders.slice(0, 2),
+    };
+
+    let aiNarrative = null;
+    let aiError = null;
+    let aiErrorKind = null;
+    let aiProvider = null;
+    const venueAiEnabled = (() => {
+      const v = process.env.VENUE_AI_ENABLED;
+      if (v !== undefined && String(v).trim() !== '') {
+        return !['0', 'false', 'no', 'off'].includes(String(v).toLowerCase());
+      }
+      return !['0', 'false', 'no', 'off'].includes(
+        String(process.env.OPENAI_VENUE_ENABLED || '1').toLowerCase()
+      );
+    })();
+    const hideQuotaBanner = ['1', 'true', 'yes', 'on'].includes(
+      String(
+        process.env.VENUE_AI_HIDE_QUOTA_ERRORS ||
+          process.env.OPENAI_VENUE_HIDE_QUOTA_ERRORS ||
+          ''
+      ).toLowerCase()
+    );
+    if (venueAiEnabled && venueInsights.resolveVenueAiProvider()) {
+      const aiResult = await venueInsights.enrichVenueInsightWithLLM({ axios, snapshot });
+      if (aiResult?.text) {
+        aiNarrative = aiResult.text;
+        aiProvider = aiResult.provider || null;
+      } else if (aiResult?.error) {
+        aiProvider = aiResult.provider || null;
+        const kind = aiResult.kind || null;
+        if (hideQuotaBanner && kind === 'quota') {
+          /* optional: no banner when quota exhausted */
+        } else {
+          aiError = aiResult.error;
+          aiErrorKind = kind;
+        }
+      }
+    }
+
+    const heuristicNarrative = venueInsights.buildHeuristicNarrative({
+      venueStr,
+      totals: { runs: totalRuns, wickets: totalWickets, matches, teamInnings },
+      toss,
+      spinPace,
+      assets: {
+        batters: assets.batters.slice(0, 3),
+        bowlers: assets.bowlers.slice(0, 3),
+      },
+      closeChaseRate: twoTeamMatches ? closeRate : null,
+      matches,
+    });
+
+    const payload = {
+      venue: venueStr,
+      disclaimer,
+      metrics: {
+        matches,
+        totalRuns,
+        totalWickets,
+        avgTeamInnings: Number(avgTeamInnings.toFixed(1)),
+        wktsPerTeamInnings: Number(wktsPerTeamInnings.toFixed(2)),
+        twoTeamMatchesSampled: twoTeamMatches,
+        closeGameRate: twoTeamMatches ? Number(closeRate.toFixed(2)) : null,
+        inningsOrderMatchesUsed: inningsOrderMatches,
+      },
+      toss,
+      spinVsPace: spinPace,
+      mainAssets: assets,
+      narratives: {
+        heuristicMarkdown: heuristicNarrative,
+        aiMarkdown: aiNarrative,
+        aiError: aiError || undefined,
+        aiErrorKind: aiErrorKind || undefined,
+        aiProvider: aiProvider || undefined,
+      },
+      snapshot,
+    };
+
+    if (!bustCache) venueAnalyticsCache.set(insightKey, payload);
+    return res.status(200).json(payload);
+  } catch (err) {
+    console.error('venue-insight error:', err);
+    return res.status(500).json({ message: 'Failed to build venue insight' });
   }
 });
 
@@ -1938,6 +2370,12 @@ router.post('/bulk-store', async (req, res) => {
         if (entryVenue) {
           statDoc.venue = entryVenue;
         }
+        if (Object.prototype.hasOwnProperty.call(entry, 'teamInningsOrder')) {
+          statDoc.teamInningsOrder =
+            entry.teamInningsOrder === 1 || entry.teamInningsOrder === 2
+              ? entry.teamInningsOrder
+              : null;
+        }
 
         await statDoc.save();
         
@@ -1966,6 +2404,10 @@ router.post('/bulk-store', async (req, res) => {
           matchKey: normalizedMatchKey || null,
           fixtureId: entry.fixtureId || fixtureId || null,
           isPlayoffScore: entryIsPlayoffScore,
+          teamInningsOrder:
+            entry.teamInningsOrder === 1 || entry.teamInningsOrder === 2
+              ? entry.teamInningsOrder
+              : null,
           battingStats: batStats,
           bowlingStats: bowlStats,
           isMom: !!entry.isMom,

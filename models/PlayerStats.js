@@ -28,6 +28,16 @@ const playerStatsSchema = new mongoose.Schema({
     trim: true,
     index: true,
   },
+  /**
+   * Which team innings this side batted in the match (T20: 1 = first dig, 2 = second).
+   * Set from scorecard entry (e.g. OCR). Null when unknown or legacy rows.
+   */
+  teamInningsOrder: {
+    type: Number,
+    default: null,
+    min: 1,
+    max: 2,
+  },
   battingStats: {
     runs: {
       type: Number,

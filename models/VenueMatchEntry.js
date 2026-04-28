@@ -74,6 +74,8 @@ const venueMatchEntrySchema = new mongoose.Schema(
      * from (venue + createdAt minute-bucket + sorted team pair).
      */
     matchId: { type: String, default: null, index: true },
+    /** 1 = this userId’s team batted first in the match, 2 = second; null if unknown. */
+    teamInningsOrder: { type: Number, default: null, min: 1, max: 2 },
 
     isPlayoffScore: { type: Boolean, default: false },
     isWcScore: { type: Boolean, default: false },
@@ -110,5 +112,7 @@ venueMatchEntrySchema.index({ tournamentId: 1, venue: 1 });
 venueMatchEntrySchema.index({ isWcScore: 1, isPlayoffScore: 1, venue: 1 });
 // Per-user squad breakdown: $match userId then $group by venue + playerId.
 venueMatchEntrySchema.index({ userId: 1, venue: 1, playerId: 1 });
+// Match card: team totals + batting order per match.
+venueMatchEntrySchema.index({ matchId: 1, userId: 1 });
 
 module.exports = mongoose.model('VenueMatchEntry', venueMatchEntrySchema);
