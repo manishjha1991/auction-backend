@@ -1543,6 +1543,72 @@ router.get('/venue-explorer', async (req, res) => {
       })
       .sort((a, b) => String(a.matchId).localeCompare(String(b.matchId)));
 
+    /** Per-team wins when batting 1st vs 2nd (matches with both innings orders recorded). */
+    let inningsOrderDecisionMatches = 0;
+    const teamOrderStats = new Map();
+    const ensureTeamOrder = (uid) => {
+      const k = String(uid);
+      if (!teamOrderStats.has(k)) {
+        teamOrderStats.set(k, {
+          matchesBattingFirst: 0,
+          matchesBattingSecond: 0,
+          winsBattingFirst: 0,
+          winsBattingSecond: 0,
+        });
+      }
+      return teamOrderStats.get(k);
+    };
+
+    for (const m of matchScores) {
+      const sides = m.sides || [];
+      if (sides.length !== 2) continue;
+      const o0 = sides[0].inningsOrder;
+      const o1 = sides[1].inningsOrder;
+      if (o0 === null || o1 === null || o0 === o1) continue;
+      if ((o0 !== 1 && o0 !== 2) || (o1 !== 1 && o1 !== 2)) continue;
+
+      inningsOrderDecisionMatches += 1;
+
+      const a = sides[0];
+      const b = sides[1];
+      const ra = Number(a.runs) || 0;
+      const rb = Number(b.runs) || 0;
+
+      const stA = ensureTeamOrder(a.userId);
+      const stB = ensureTeamOrder(b.userId);
+      if (a.inningsOrder === 1) stA.matchesBattingFirst += 1;
+      else stA.matchesBattingSecond += 1;
+      if (b.inningsOrder === 1) stB.matchesBattingFirst += 1;
+      else stB.matchesBattingSecond += 1;
+
+      if (ra > rb) {
+        if (a.inningsOrder === 1) stA.winsBattingFirst += 1;
+        else stA.winsBattingSecond += 1;
+      } else if (rb > ra) {
+        if (b.inningsOrder === 1) stB.winsBattingFirst += 1;
+        else stB.winsBattingSecond += 1;
+      }
+    }
+
+    const teamBattingOrderRecord = uidList
+      .map((id) => {
+        const st = teamOrderStats.get(String(id)) || {
+          matchesBattingFirst: 0,
+          matchesBattingSecond: 0,
+          winsBattingFirst: 0,
+          winsBattingSecond: 0,
+        };
+        return {
+          userId: id,
+          teamName: userMap.get(String(id)) || 'Team',
+          matchesBattingFirst: st.matchesBattingFirst,
+          matchesBattingSecond: st.matchesBattingSecond,
+          winsBattingFirst: st.winsBattingFirst,
+          winsBattingSecond: st.winsBattingSecond,
+        };
+      })
+      .sort((x, y) => String(x.teamName).localeCompare(String(y.teamName)));
+
     const detailPayload = {
       venue: venueStr,
       totals,
@@ -1554,6 +1620,8 @@ router.get('/venue-explorer', async (req, res) => {
       lowestTeamInnings,
       bestTeamBowlingInnings: hiTeamBowl && hiTeamBowl.wickets > 0 ? hiTeamBowl : null,
       bestAllrounder: bestAr || null,
+      inningsOrderDecisionMatches,
+      teamBattingOrderRecord,
     };
     if (!bustCache) venueAnalyticsCache.set(explorerCacheKey, detailPayload);
     return res.status(200).json(detailPayload);
