@@ -106,5 +106,9 @@ const venueMatchEntrySchema = new mongoose.Schema(
 venueMatchEntrySchema.index({ venue: 1, createdAt: -1 });
 venueMatchEntrySchema.index({ userId: 1, venue: 1 });
 venueMatchEntrySchema.index({ tournamentId: 1, venue: 1 });
+// League-only $match (excludes WC/playoff/tournament-tagged rows) + venue grouping.
+venueMatchEntrySchema.index({ isWcScore: 1, isPlayoffScore: 1, venue: 1 });
+// Per-user squad breakdown: $match userId then $group by venue + playerId.
+venueMatchEntrySchema.index({ userId: 1, venue: 1, playerId: 1 });
 
 module.exports = mongoose.model('VenueMatchEntry', venueMatchEntrySchema);

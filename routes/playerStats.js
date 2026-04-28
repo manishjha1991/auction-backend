@@ -24,6 +24,18 @@ const { invalidateCareerSummaryCache } = require('../utils/cplReadCaches');
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 registerExtraCache(cache);
 registerStatsOverviewInvalidator(() => cache.del('stats-overview'));
+
+/** Heavy venue analytics (aggregate + explorer) — short TTL, flushed on ledger / stats saves. */
+const venueAnalyticsCache = new NodeCache({ stdTTL: 120, checkperiod: 30 });
+registerExtraCache(venueAnalyticsCache);
+
+const stableVenueCacheKeyFromQuery = (req) => {
+  const q = req.query || {};
+  const keys = Object.keys(q)
+    .filter((k) => k !== 'nocache')
+    .sort();
+  return keys.map((k) => `${k}=${String(q[k] ?? '')}`).join('&');
+};
 // Load list of players with playerId and userId
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -933,6 +945,7 @@ router.post('/store', async (req, res) => {
     // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when stats are saved/updated
     cache.del('stats-overview');
     invalidateCache('players:data'); // Invalidate top rankings cache
+    venueAnalyticsCache.flushAll();
   }
 });
 
@@ -958,6 +971,16 @@ router.post('/store', async (req, res) => {
 //   - 'all'   : every entry that has a venue, regardless of category.
 router.get('/venue-aggregate', async (req, res) => {
   try {
+    const bustCache =
+      req.query.nocache === '1' ||
+      req.query.nocache === 'true' ||
+      req.query.nocache === 'yes';
+    const venueAggCacheKey = `vagg:${stableVenueCacheKeyFromQuery(req)}`;
+    if (!bustCache) {
+      const cachedAgg = venueAnalyticsCache.get(venueAggCacheKey);
+      if (cachedAgg) return res.status(200).json(cachedAgg);
+    }
+
     const { playerId, userId, tournamentId, venue, scope } = req.query;
 
     // Source of truth is the persistent VenueMatchEntry ledger — it
@@ -1043,7 +1066,13 @@ router.get('/venue-aggregate', async (req, res) => {
     });
 
     // Per-player breakdown at each venue (squad view) — only when scoped to an owner user.
-    if (userId && mongoose.Types.ObjectId.isValid(String(userId))) {
+    const skipPlayers =
+      req.query.includePlayers === '0' || req.query.includePlayers === 'false';
+    if (
+      userId &&
+      mongoose.Types.ObjectId.isValid(String(userId)) &&
+      !skipPlayers
+    ) {
       const perPlayer = await VenueMatchEntry.aggregate([
         { $match: match },
         {
@@ -1055,31 +1084,30 @@ router.get('/venue-aggregate', async (req, res) => {
             ballsBowled: { $sum: { $ifNull: ['$bowlingStats.ballsBowled', 0] } },
           },
         },
-        {
-          $lookup: {
-            from: 'players',
-            localField: '_id.playerId',
-            foreignField: '_id',
-            as: 'p',
-          },
-        },
-        {
-          $project: {
-            _id: 0,
-            venue: '$_id.venue',
-            playerId: '$_id.playerId',
-            runs: 1,
-            balls: 1,
-            wickets: 1,
-            ballsBowled: 1,
-            name: { $arrayElemAt: ['$p.name', 0] },
-          },
-        },
       ]);
+
+      const pidSet = new Set();
+      for (const row of perPlayer) {
+        const pid = row._id?.playerId;
+        if (pid && mongoose.Types.ObjectId.isValid(String(pid))) {
+          pidSet.add(String(pid));
+        }
+      }
+      const pidList = [...pidSet].map((id) => new mongoose.Types.ObjectId(id));
+      const playerDocs =
+        pidList.length > 0
+          ? await Player.find({ _id: { $in: pidList } })
+              .select('name')
+              .lean()
+          : [];
+      const nameById = new Map(
+        playerDocs.map((p) => [String(p._id), p.name || 'Player'])
+      );
 
       const byVenue = new Map();
       for (const row of perPlayer) {
-        const vName = row.venue;
+        const vName = row._id?.venue;
+        const rowPlayerId = row._id?.playerId;
         if (!vName) continue;
         const r = row.runs || 0;
         const b = row.balls || 0;
@@ -1088,8 +1116,8 @@ router.get('/venue-aggregate', async (req, res) => {
         if (r === 0 && b === 0 && w === 0 && bb === 0) continue;
         if (!byVenue.has(vName)) byVenue.set(vName, []);
         byVenue.get(vName).push({
-          playerId: row.playerId,
-          name: row.name || 'Player',
+          playerId: rowPlayerId,
+          name: nameById.get(String(rowPlayerId)) || 'Player',
           runs: r,
           balls: b,
           wickets: w,
@@ -1108,7 +1136,9 @@ router.get('/venue-aggregate', async (req, res) => {
       }
     }
 
-    return res.status(200).json({ venues });
+    const payload = { venues };
+    if (!bustCache) venueAnalyticsCache.set(venueAggCacheKey, payload);
+    return res.status(200).json(payload);
   } catch (err) {
     console.error('venue-aggregate error:', err);
     return res.status(500).json({ message: 'Failed to compute venue aggregates' });
@@ -1121,6 +1151,16 @@ router.get('/venue-aggregate', async (req, res) => {
 // Detail payload includes: matchScores (per-game team batting totals), lowestTeamInnings (when < highest).
 router.get('/venue-explorer', async (req, res) => {
   try {
+    const bustCache =
+      req.query.nocache === '1' ||
+      req.query.nocache === 'true' ||
+      req.query.nocache === 'yes';
+    const explorerCacheKey = `vex:${stableVenueCacheKeyFromQuery(req)}`;
+    if (!bustCache) {
+      const cachedEx = venueAnalyticsCache.get(explorerCacheKey);
+      if (cachedEx) return res.status(200).json(cachedEx);
+    }
+
     const { venue: venueQ, scope, tournamentId: rawTournamentId } = req.query;
 
     const match = { venue: { $nin: [null, ''] } };
@@ -1172,7 +1212,9 @@ router.get('/venue-explorer', async (req, res) => {
         teamInnings: r.teamInnings,
         ledgerRows: r.ledgerRows,
       }));
-      return res.status(200).json({ venues });
+      const listPayload = { venues };
+      if (!bustCache) venueAnalyticsCache.set(explorerCacheKey, listPayload);
+      return res.status(200).json(listPayload);
     }
 
     const detailMatch = { ...match, venue: venueStr };
@@ -1474,7 +1516,7 @@ router.get('/venue-explorer', async (req, res) => {
       })
       .sort((a, b) => String(a.matchId).localeCompare(String(b.matchId)));
 
-    return res.status(200).json({
+    const detailPayload = {
       venue: venueStr,
       totals,
       teams: teamsAgg,
@@ -1485,7 +1527,9 @@ router.get('/venue-explorer', async (req, res) => {
       lowestTeamInnings,
       bestTeamBowlingInnings: hiTeamBowl && hiTeamBowl.wickets > 0 ? hiTeamBowl : null,
       bestAllrounder: bestAr || null,
-    });
+    };
+    if (!bustCache) venueAnalyticsCache.set(explorerCacheKey, detailPayload);
+    return res.status(200).json(detailPayload);
   } catch (err) {
     console.error('venue-explorer error:', err);
     return res.status(500).json({ message: 'Failed to load venue explorer' });
@@ -1637,6 +1681,7 @@ router.post('/clear-cache', async (req, res) => {
     cache.del('stats-overview');
     invalidateCache('player-stats-list');
     invalidateCache('players:data');
+    venueAnalyticsCache.flushAll();
 
     const resetTotals = req.query.resetPlayerTotals === '1' || req.body?.resetPlayerTotals === true;
     const clearStatsOverview = req.query.clearStatsOverview === '1' || req.body?.clearStatsOverview === true;
@@ -1703,6 +1748,7 @@ router.post('/bulk-store', async (req, res) => {
     cache.del('stats-overview');
     invalidateCache('player-stats-list');
     invalidateCache('players:data'); // Invalidate top rankings cache
+    venueAnalyticsCache.flushAll();
 
     return res.status(errors.length ? 207 : 200).json({
       message: 'Bulk player stats processed',
@@ -1955,6 +2001,7 @@ router.post('/bulk-store', async (req, res) => {
     cache.del('stats-overview');
     invalidateCache('player-stats-list');
     invalidateCache('players:data'); // Invalidate top rankings cache
+    venueAnalyticsCache.flushAll();
 
     return res.status(200).json({
       message: 'Player stats saved successfully',

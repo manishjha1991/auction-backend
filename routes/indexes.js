@@ -25,6 +25,49 @@ const MatchResult = require('../models/MatchResult');
 const Tournament = require('../models/Tournament');
 const PlayerCareerSummary = require('../models/PlayerCareerSummary');
 const TeamHeadToHead = require('../models/TeamHeadToHead');
+const VenueMatchEntry = require('../models/VenueMatchEntry');
+
+/**
+ * Venue ledger index plan — returned in POST /create-all as `venueMatchEntryIndexGuide`
+ * so operators see which fields power /venue-aggregate and /venue-explorer.
+ */
+const VENUE_MATCH_ENTRY_INDEX_GUIDE = {
+  collection: 'venuematchentries',
+  model: 'VenueMatchEntry',
+  description:
+    'Persistent venue ledger (survives PlayerStats wipes). Used by venue aggregate, explorer, profile Venues tab.',
+  singleFieldIndexes: [
+    { fields: { playerId: 1 }, purpose: 'Filter/group ledger rows by player' },
+    { fields: { userId: 1 }, purpose: 'Owner-scoped venue stats and team splits' },
+    { fields: { opponentUserId: 1 }, purpose: 'Opponent-side lookups when needed' },
+    { fields: { venue: 1 }, purpose: 'Primary venue filter and $group by venue name' },
+    { fields: { tournamentId: 1 }, purpose: 'Tournament-scoped venue analytics' },
+    { fields: { matchId: 1 }, purpose: 'Distinct match counts ($addToSet matchId) per venue' },
+    { fields: { sourcePlayerStatsId: 1 }, purpose: 'Upsert key mirroring PlayerStats row' },
+  ],
+  compoundIndexes: [
+    {
+      fields: { venue: 1, createdAt: -1 },
+      purpose: 'Recent activity per ground; time-ordered venue lists',
+    },
+    {
+      fields: { userId: 1, venue: 1 },
+      purpose: 'Profile + explorer team splits: match userId then venue',
+    },
+    {
+      fields: { tournamentId: 1, venue: 1 },
+      purpose: 'Tournament venue leaderboards',
+    },
+    {
+      fields: { isWcScore: 1, isPlayoffScore: 1, venue: 1 },
+      purpose: 'League-only scope=league (excludes WC/playoff flags) with venue grouping',
+    },
+    {
+      fields: { userId: 1, venue: 1, playerId: 1 },
+      purpose: 'Per-user squad breakdown at each venue (profile Venues tab)',
+    },
+  ],
+};
 
 // Create all indexes for maximum performance
 router.post('/create-all', async (req, res) => {
@@ -116,11 +159,16 @@ router.post('/create-all', async (req, res) => {
     console.log('🔒 Creating RetainedPlayer indexes...');
     results.retainedPlayers = await createRetainedPlayerIndexes();
 
+    // 22. VENUE MATCH ENTRY (grounds / venue analytics ledger)
+    console.log('🏟️ Creating VenueMatchEntry indexes...');
+    results.venueMatchEntries = await createVenueMatchEntryIndexes();
+
     console.log('✅ All indexes created successfully!');
     res.status(200).json({
       success: true,
       message: 'All indexes created successfully!',
-      results
+      results,
+      venueMatchEntryIndexGuide: VENUE_MATCH_ENTRY_INDEX_GUIDE,
     });
 
   } catch (error) {
@@ -933,6 +981,31 @@ async function createRetainedPlayerIndexes() {
   return results;
 }
 
+// VENUE MATCH ENTRY — ledger for /venue-aggregate, /venue-explorer, profile Venues
+async function createVenueMatchEntryIndexes() {
+  const specs = [
+    ...VENUE_MATCH_ENTRY_INDEX_GUIDE.singleFieldIndexes.map((e) => ({
+      index: e.fields,
+      purpose: e.purpose,
+    })),
+    ...VENUE_MATCH_ENTRY_INDEX_GUIDE.compoundIndexes.map((e) => ({
+      index: e.fields,
+      purpose: e.purpose,
+    })),
+  ];
+
+  const results = [];
+  for (const { index, purpose } of specs) {
+    try {
+      await VenueMatchEntry.collection.createIndex(index);
+      results.push({ index, purpose, status: 'created' });
+    } catch (error) {
+      results.push({ index, purpose, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
 /**
  * Sync indexes declared on Mongoose schemas (PlayerCareerSummary compound indexes, uniques, etc.).
  * Safer than raw createIndex when schema already defines indexes.
@@ -946,6 +1019,7 @@ router.post('/sync-schema-indexes', async (req, res) => {
       ['PlayerStats', PlayerStats],
       ['Fixture', Fixture],
       ['TeamHeadToHead', TeamHeadToHead],
+      ['VenueMatchEntry', VenueMatchEntry],
     ];
     const results = {};
     for (const [name, Model] of models) {
@@ -960,6 +1034,7 @@ router.post('/sync-schema-indexes', async (req, res) => {
       success: true,
       message: 'Schema indexes synced (drops extras not in schema)',
       results,
+      venueMatchEntryIndexGuide: VENUE_MATCH_ENTRY_INDEX_GUIDE,
     });
   } catch (error) {
     console.error('sync-schema-indexes error', error);
@@ -975,6 +1050,7 @@ router.get('/stats', async (req, res) => {
       'playerstats', 'playercareersummaries', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
+      'venuematchentries',
       'useractivities'
     ];
 
@@ -1021,6 +1097,7 @@ router.post('/drop-all', async (req, res) => {
       'playerstats', 'playercareersummaries', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
+      'venuematchentries',
       'useractivities'
     ];
 
