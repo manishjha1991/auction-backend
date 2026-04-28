@@ -1115,6 +1115,383 @@ router.get('/venue-aggregate', async (req, res) => {
   }
 });
 
+// GET /api/player-stats/venue-explorer
+// Optional: ?venue=EXACT_NAME for drill-down, ?scope=league|all (default all), ?tournamentId=...
+// Mobile "grounds atlas" — all venues, then team splits + record spots from VenueMatchEntry only.
+// Detail payload includes: matchScores (per-game team batting totals), lowestTeamInnings (when < highest).
+router.get('/venue-explorer', async (req, res) => {
+  try {
+    const { venue: venueQ, scope, tournamentId: rawTournamentId } = req.query;
+
+    const match = { venue: { $nin: [null, ''] } };
+    if (rawTournamentId && mongoose.Types.ObjectId.isValid(String(rawTournamentId))) {
+      match.tournamentId = new mongoose.Types.ObjectId(rawTournamentId);
+    }
+    const wantLeagueOnly = scope === 'league';
+    if (wantLeagueOnly) {
+      match.$and = [
+        { isWcScore: { $ne: true } },
+        { isPlayoffScore: { $ne: true } },
+        { $or: [{ tournamentId: null }, { tournamentId: { $exists: false } }] },
+      ];
+    }
+
+    const venueStr = venueQ != null ? String(venueQ).trim() : '';
+
+    if (!venueStr) {
+      const grouped = await VenueMatchEntry.aggregate([
+        { $match: match },
+        {
+          $addFields: {
+            _mid: { $ifNull: ['$matchId', { $toString: '$_id' }] },
+          },
+        },
+        {
+          $group: {
+            _id: '$venue',
+            totalRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+            totalWickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+            matchSet: { $addToSet: '$_mid' },
+            ledgerRows: { $sum: 1 },
+          },
+        },
+        {
+          $addFields: {
+            matches: { $size: '$matchSet' },
+            teamInnings: { $multiply: [{ $size: '$matchSet' }, 2] },
+          },
+        },
+        { $project: { matchSet: 0 } },
+        { $sort: { totalRuns: -1, _id: 1 } },
+      ]);
+      const venues = grouped.map((r) => ({
+        venue: r._id,
+        totalRuns: r.totalRuns,
+        totalWickets: r.totalWickets,
+        matches: r.matches,
+        teamInnings: r.teamInnings,
+        ledgerRows: r.ledgerRows,
+      }));
+      return res.status(200).json({ venues });
+    }
+
+    const detailMatch = { ...match, venue: venueStr };
+
+    const midField = {
+      $addFields: { _mid: { $ifNull: ['$matchId', { $toString: '$_id' }] } },
+    };
+
+    const loTeamInnLookupStages = [
+      { $lookup: { from: 'users', localField: '_id.userId', foreignField: '_id', as: 'u' } },
+      {
+        $project: {
+          runs: '$teamRuns',
+          userId: '$_id.userId',
+          matchId: '$_id.mid',
+          teamName: {
+            $ifNull: [
+              { $arrayElemAt: ['$u.teamName', 0] },
+              { $arrayElemAt: ['$u.name', 0] },
+            ],
+          },
+        },
+      },
+    ];
+
+    const [
+      totAgg,
+      teamsAgg,
+      topBatAgg,
+      topBowlAgg,
+      hiTeamInnAgg,
+      loTeamInnAgg,
+      hiTeamBowlAgg,
+      allRoundAgg,
+      matchSidesAgg,
+    ] = await Promise.all([
+      VenueMatchEntry.aggregate([
+        { $match: detailMatch },
+        midField,
+        {
+          $group: {
+            _id: null,
+            totalRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+            totalWickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+            matchSet: { $addToSet: '$_mid' },
+            ledgerRows: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            totalRuns: 1,
+            totalWickets: 1,
+            ledgerRows: 1,
+            matches: { $size: '$matchSet' },
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: detailMatch },
+        {
+          $group: {
+            _id: '$userId',
+            runs: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+            wickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+          },
+        },
+        { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'u' } },
+        {
+          $project: {
+            userId: '$_id',
+            teamName: {
+              $ifNull: [
+                { $arrayElemAt: ['$u.teamName', 0] },
+                { $arrayElemAt: ['$u.name', 0] },
+              ],
+            },
+            runs: 1,
+            wickets: 1,
+          },
+        },
+        { $sort: { runs: -1 } },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: detailMatch },
+        { $sort: { 'battingStats.runs': -1 } },
+        { $limit: 1 },
+        { $lookup: { from: 'players', localField: 'playerId', foreignField: '_id', as: 'pl' } },
+        { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'tm' } },
+        {
+          $project: {
+            runs: { $ifNull: ['$battingStats.runs', 0] },
+            balls: { $ifNull: ['$battingStats.balls', 0] },
+            playerId: '$playerId',
+            playerName: { $arrayElemAt: ['$pl.name', 0] },
+            teamName: {
+              $ifNull: [
+                { $arrayElemAt: ['$tm.teamName', 0] },
+                { $arrayElemAt: ['$tm.name', 0] },
+              ],
+            },
+            matchId: 1,
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: detailMatch },
+        { $sort: { 'bowlingStats.wickets': -1, 'bowlingStats.runsGiven': 1 } },
+        { $limit: 1 },
+        { $lookup: { from: 'players', localField: 'playerId', foreignField: '_id', as: 'pl' } },
+        { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'tm' } },
+        {
+          $project: {
+            wickets: { $ifNull: ['$bowlingStats.wickets', 0] },
+            runsGiven: { $ifNull: ['$bowlingStats.runsGiven', 0] },
+            ballsBowled: { $ifNull: ['$bowlingStats.ballsBowled', 0] },
+            playerId: '$playerId',
+            playerName: { $arrayElemAt: ['$pl.name', 0] },
+            teamName: {
+              $ifNull: [
+                { $arrayElemAt: ['$tm.teamName', 0] },
+                { $arrayElemAt: ['$tm.name', 0] },
+              ],
+            },
+            matchId: 1,
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: detailMatch },
+        midField,
+        {
+          $group: {
+            _id: { mid: '$_mid', userId: '$userId' },
+            teamRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+          },
+        },
+        { $sort: { teamRuns: -1 } },
+        { $limit: 1 },
+        ...loTeamInnLookupStages,
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: detailMatch },
+        midField,
+        {
+          $group: {
+            _id: { mid: '$_mid', userId: '$userId' },
+            teamRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+          },
+        },
+        { $match: { teamRuns: { $gt: 0 } } },
+        { $sort: { teamRuns: 1 } },
+        { $limit: 1 },
+        ...loTeamInnLookupStages,
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: detailMatch },
+        midField,
+        {
+          $group: {
+            _id: { mid: '$_mid', userId: '$userId' },
+            teamWickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+          },
+        },
+        { $sort: { teamWickets: -1 } },
+        { $limit: 1 },
+        { $lookup: { from: 'users', localField: '_id.userId', foreignField: '_id', as: 'u' } },
+        {
+          $project: {
+            wickets: '$teamWickets',
+            userId: '$_id.userId',
+            matchId: '$_id.mid',
+            teamName: {
+              $ifNull: [
+                { $arrayElemAt: ['$u.teamName', 0] },
+                { $arrayElemAt: ['$u.name', 0] },
+              ],
+            },
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: detailMatch },
+        {
+          $group: {
+            _id: '$playerId',
+            runs: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+            wickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+          },
+        },
+        { $match: { runs: { $gte: 1 }, wickets: { $gte: 1 } } },
+        {
+          $addFields: {
+            index: { $add: ['$runs', { $multiply: [20, '$wickets'] }] },
+          },
+        },
+        { $sort: { index: -1, runs: -1 } },
+        { $limit: 1 },
+        { $lookup: { from: 'players', localField: '_id', foreignField: '_id', as: 'pl' } },
+        {
+          $project: {
+            playerId: '$_id',
+            playerName: { $arrayElemAt: ['$pl.name', 0] },
+            runs: 1,
+            wickets: 1,
+            index: 1,
+          },
+        },
+      ]),
+      VenueMatchEntry.aggregate([
+        { $match: detailMatch },
+        midField,
+        {
+          $group: {
+            _id: { mid: '$_mid', userId: '$userId' },
+            runs: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+          },
+        },
+        {
+          $group: {
+            _id: '$_id.mid',
+            sides: { $push: { userId: '$_id.userId', runs: '$runs' } },
+          },
+        },
+      ]),
+    ]);
+
+    const t0 = totAgg[0];
+    const matches = t0?.matches || 0;
+    const totals = t0
+      ? {
+          runs: t0.totalRuns,
+          wickets: t0.totalWickets,
+          matches,
+          teamInnings: matches * 2,
+          ledgerRows: t0.ledgerRows,
+        }
+      : {
+          runs: 0,
+          wickets: 0,
+          matches: 0,
+          teamInnings: 0,
+          ledgerRows: 0,
+        };
+
+    const first = (arr) => (arr && arr.length ? arr[0] : null);
+    const hiBat = first(topBatAgg);
+    const hiBowl = first(topBowlAgg);
+    const hiTeamInn = first(hiTeamInnAgg);
+    const loTeamInn = first(loTeamInnAgg);
+    const hiTeamBowl = first(hiTeamBowlAgg);
+    const bestAr = first(allRoundAgg);
+
+    let lowestTeamInnings = null;
+    if (
+      loTeamInn &&
+      hiTeamInn &&
+      loTeamInn.runs > 0 &&
+      loTeamInn.runs < hiTeamInn.runs
+    ) {
+      lowestTeamInnings = loTeamInn;
+    }
+
+    const uidSet = new Set();
+    for (const doc of matchSidesAgg || []) {
+      for (const s of doc.sides || []) {
+        if (s.userId) uidSet.add(String(s.userId));
+      }
+    }
+    const uidList = [...uidSet].filter((id) => mongoose.Types.ObjectId.isValid(id));
+    const userDocs =
+      uidList.length > 0
+        ? await User.find({ _id: { $in: uidList.map((id) => new mongoose.Types.ObjectId(id)) } })
+            .select('teamName name')
+            .lean()
+        : [];
+    const userMap = new Map(
+      userDocs.map((u) => [
+        String(u._id),
+        (u.teamName && String(u.teamName).trim()) || u.name || 'Team',
+      ])
+    );
+
+    const matchScores = (matchSidesAgg || [])
+      .map((doc) => {
+        const sides = (doc.sides || [])
+          .map((s) => ({
+            userId: s.userId,
+            teamName: userMap.get(String(s.userId)) || 'Team',
+            runs: s.runs || 0,
+          }))
+          .sort((a, b) => b.runs - a.runs);
+        const matchTotal = sides.reduce((sum, s) => sum + (s.runs || 0), 0);
+        return {
+          matchId: doc._id,
+          sides,
+          matchTotal,
+        };
+      })
+      .sort((a, b) => String(a.matchId).localeCompare(String(b.matchId)));
+
+    return res.status(200).json({
+      venue: venueStr,
+      totals,
+      teams: teamsAgg,
+      matchScores,
+      highestScore: hiBat && hiBat.runs > 0 ? hiBat : null,
+      bestBowling: hiBowl && hiBowl.wickets > 0 ? hiBowl : null,
+      highestTeamInnings: hiTeamInn && hiTeamInn.runs > 0 ? hiTeamInn : null,
+      lowestTeamInnings,
+      bestTeamBowlingInnings: hiTeamBowl && hiTeamBowl.wickets > 0 ? hiTeamBowl : null,
+      bestAllrounder: bestAr || null,
+    });
+  } catch (err) {
+    console.error('venue-explorer error:', err);
+    return res.status(500).json({ message: 'Failed to load venue explorer' });
+  }
+});
+
 // GET /api/player-stats/wc-stats?tournamentId=...
 // Returns all PlayerStats entries flagged as WC scores for teams subscribed to a given tournament.
 // Used by the World Cup tournament detail view to show per-match player contributions.
