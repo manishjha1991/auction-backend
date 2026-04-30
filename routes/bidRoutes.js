@@ -132,9 +132,9 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
 
 
 // Exit From Bid
-router.post("/:playerId/exit", async (req, res) => {
+router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
   const { playerId } = req.params;
-  const { userId } = req.body;
+  const userId = req.authenticatedUser._id.toString();
 
   try {
     // Find the player
@@ -387,7 +387,7 @@ router.post("/bid/sold", async (req, res) => {
         // Get all users who have this player in their currentBids (for cleanup)
         const usersWithBidsOnThisPlayer = await User.find({
           'currentBids.playerId': pid
-        }).select('_id currentBids');
+        }).select('_id purse currentBids');
 
         // 5. Mark all bids as inactive
         await Bid.updateMany({ playerId: pid }, { $set: { isActive: false } });
@@ -762,8 +762,11 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
   }
 }
 
-router.post("/:playerId/exit-second-highest", async (req, res) => {
+router.post("/:playerId/exit-second-highest", authenticateJWT, async (req, res) => {
   try {
+    if (!req.authenticatedUser.isAdmin) {
+      return res.status(403).json({ message: "Only admin can exit the second-highest bidder." });
+    }
     const { playerId } = req.params;
     const result = await exitSecondHighestForPlayerSingle(playerId, req.app.get('io'));
     
@@ -910,7 +913,7 @@ async function sellPlayer(playerId, io = null) {
     // Get all users who have this player in their currentBids (for cleanup)
     const usersWithBidsOnThisPlayer = await User.find({
       'currentBids.playerId': playerId
-    }).select('_id currentBids');
+    }).select('_id purse currentBids');
 
     // c) Deactivate all bids
     await Bid.updateMany({ playerId: playerId }, { $set: { isActive: false } });
@@ -1360,8 +1363,11 @@ async function runBulkExitAll(io = null) {
 }
 
 // New batch endpoint
-router.post('/exit-second-highest/all', async (req, res) => {
+router.post('/exit-second-highest/all', authenticateJWT, async (req, res) => {
   try {
+    if (!req.authenticatedUser.isAdmin) {
+      return res.status(403).json({ message: "Only admin can run bulk bid exits." });
+    }
     const io = req.app.get('io');
     const result = await runBulkExitAll(io);
     return res.json(result);
