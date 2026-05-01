@@ -420,6 +420,8 @@ const normalizeWcStage = (stage) => {
   return VALID_WC_STAGES.includes(trimmed) ? trimmed : null;
 };
 
+const normalizeMatchWinnerSide = (v) => (v === 'home' || v === 'away' ? v : null);
+
 /**
  * Mirror a saved PlayerStats row into the persistent VenueMatchEntry
  * ledger. Keyed on `sourcePlayerStatsId` so re-saves of the same row
@@ -503,6 +505,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     matchName,
     matchId,
     teamInningsOrder: rawTeamInningsOrder,
+    matchWinnerSide: rawMatchWinnerSide,
   } = payload;
 
   const venue = typeof rawVenue === 'string' ? rawVenue.trim() : rawVenue || null;
@@ -640,6 +643,9 @@ const savePlayerStatsEntry = async (payload = {}) => {
     if (Object.prototype.hasOwnProperty.call(payload, 'teamInningsOrder')) {
       existingStats.teamInningsOrder = normalizedTeamInningsOrder;
     }
+    if (Object.prototype.hasOwnProperty.call(payload, 'matchWinnerSide')) {
+      existingStats.metadata.matchWinnerSide = normalizeMatchWinnerSide(rawMatchWinnerSide);
+    }
 
     await existingStats.save();
     
@@ -695,6 +701,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
       isPlayoffScore: !!isPlayoffScore,
       isWcScore: !!isWcScore,
       wcStage: isWcScore ? wcStage : null,
+      matchWinnerSide: normalizeMatchWinnerSide(rawMatchWinnerSide),
     },
   });
 
@@ -2281,6 +2288,7 @@ router.post('/bulk-store', async (req, res) => {
       wcStage: bulkWcStage,
       tournamentId: bulkTournamentId,
       venue: bulkVenue,
+      matchWinnerSide: bulkMatchWinnerSide,
     } = req.body || {};
 
     const normalizedBulkVenue = typeof bulkVenue === 'string' ? bulkVenue.trim() : bulkVenue || null;
@@ -2332,6 +2340,8 @@ router.post('/bulk-store', async (req, res) => {
       const entryTournamentId = entry.tournamentId || bulkTournamentId || null;
       const entryVenueRaw = entry.venue !== undefined ? entry.venue : normalizedBulkVenue;
       const entryVenue = typeof entryVenueRaw === 'string' ? entryVenueRaw.trim() : entryVenueRaw || null;
+      const entryMatchWinnerSideRaw =
+        entry.matchWinnerSide !== undefined ? entry.matchWinnerSide : bulkMatchWinnerSide;
 
       if (entryIsWcScore && !entryWcStage) {
         warnings.push(`Skipping WC entry for player ${entry.playerId}: wcStage must be super8 | semi | final`);
@@ -2444,6 +2454,7 @@ router.post('/bulk-store', async (req, res) => {
               ? entry.teamInningsOrder
               : null;
         }
+        statDoc.metadata.matchWinnerSide = normalizeMatchWinnerSide(entryMatchWinnerSideRaw);
 
         await statDoc.save();
         
@@ -2485,6 +2496,7 @@ router.post('/bulk-store', async (req, res) => {
             isPlayoffScore: entryIsPlayoffScore,
             isWcScore: entryIsWcScore,
             wcStage: entryIsWcScore ? entryWcStage : null,
+            matchWinnerSide: normalizeMatchWinnerSide(entryMatchWinnerSideRaw),
           },
         });
 

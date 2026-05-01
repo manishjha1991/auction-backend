@@ -89,6 +89,12 @@ const playerStatsSchema = new mongoose.Schema({
       enum: ['super8', 'semi', 'final', null],
       default: null,
     },
+    /** OCR / league: which side won the match ('home' = uploader's primary team, 'away' = opponent). */
+    matchWinnerSide: {
+      type: String,
+      enum: ['home', 'away', null],
+      default: null,
+    },
   },
   createdAt: {
     type: Date,
