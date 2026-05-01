@@ -79,6 +79,8 @@ const venueMatchEntrySchema = new mongoose.Schema(
 
     isPlayoffScore: { type: Boolean, default: false },
     isWcScore: { type: Boolean, default: false },
+    /** Mirrored from PlayerStats.isMom for venue leaderboards (MoM count per ground). */
+    isMom: { type: Boolean, default: false },
     wcStage: {
       type: String,
       enum: ['super8', 'semi', 'final', null],
@@ -107,9 +109,9 @@ const venueMatchEntrySchema = new mongoose.Schema(
 // Common analytics queries — group by venue, optionally scoped to a user / tournament.
 venueMatchEntrySchema.index({ venue: 1, createdAt: -1 });
 venueMatchEntrySchema.index({ userId: 1, venue: 1 });
-venueMatchEntrySchema.index({ tournamentId: 1, venue: 1 });
-// League-only $match (excludes WC/playoff/tournament-tagged rows) + venue grouping.
-venueMatchEntrySchema.index({ isWcScore: 1, isPlayoffScore: 1, venue: 1 });
+venueMatchEntrySchema.index({ tournamentId: 1, venue: 1, playerId: 1 });
+// Tournament drill-down: one venue, all players.
+venueMatchEntrySchema.index({ venue: 1, playerId: 1 });
 // Per-user squad breakdown: $match userId then $group by venue + playerId.
 venueMatchEntrySchema.index({ userId: 1, venue: 1, playerId: 1 });
 // Match card: team totals + batting order per match.

@@ -462,6 +462,7 @@ const upsertVenueMatchEntry = async (
           matchId: matchId || null,
           isPlayoffScore: !!meta.isPlayoffScore,
           isWcScore: !!meta.isWcScore,
+          isMom: !!playerStatsDoc.isMom,
           wcStage: meta.wcStage || null,
           battingStats: {
             runs: playerStatsDoc.battingStats?.runs || 0,
@@ -969,6 +970,112 @@ router.post('/store', async (req, res) => {
   }
 });
 
+function summarizeWcPlayerForSpotlight(p) {
+  if (!p) return null;
+  return {
+    playerId: p.playerId,
+    name: p.name,
+    profilePicture: p.profilePicture || null,
+    runs: p.totals.runs || 0,
+    wickets: p.totals.wickets || 0,
+    mom: p.totals.mom || 0,
+    matches: p.totals.matches || 0,
+  };
+}
+
+function computeWcTeamSpotlights(teamPlayers) {
+  if (!teamPlayers.length) {
+    return {
+      topRuns: null,
+      topWickets: null,
+      topMom: null,
+      topAllRounder: null,
+    };
+  }
+  const byRuns = [...teamPlayers].sort(
+    (a, b) =>
+      (b.totals.runs || 0) - (a.totals.runs || 0) ||
+      (b.totals.balls || 0) - (a.totals.balls || 0)
+  );
+  const byWickets = [...teamPlayers].sort(
+    (a, b) =>
+      (b.totals.wickets || 0) - (a.totals.wickets || 0) ||
+      (b.totals.runsGiven || 0) - (a.totals.runsGiven || 0)
+  );
+  const byMom = [...teamPlayers].sort(
+    (a, b) =>
+      (b.totals.mom || 0) - (a.totals.mom || 0) ||
+      (b.totals.runs || 0) - (a.totals.runs || 0)
+  );
+  const arScore = (p) => (p.totals.runs || 0) + 20 * (p.totals.wickets || 0);
+  const arQualified = teamPlayers.filter(
+    (p) => (p.totals.runs || 0) >= 10 && (p.totals.wickets || 0) >= 1
+  );
+  const topAR = arQualified.length
+    ? [...arQualified].sort((a, b) => arScore(b) - arScore(a))[0]
+    : null;
+
+  return {
+    topRuns: summarizeWcPlayerForSpotlight(
+      byRuns[0] && (byRuns[0].totals.runs || 0) > 0 ? byRuns[0] : null
+    ),
+    topWickets: summarizeWcPlayerForSpotlight(
+      byWickets[0] && (byWickets[0].totals.wickets || 0) > 0 ? byWickets[0] : null
+    ),
+    topMom: summarizeWcPlayerForSpotlight(
+      byMom[0] && (byMom[0].totals.mom || 0) > 0 ? byMom[0] : null
+    ),
+    topAllRounder: summarizeWcPlayerForSpotlight(topAR),
+  };
+}
+
+function ledgerRowsToWcStylePlayers(rawRows, nameById, picById) {
+  return rawRows.map((r) => ({
+    playerId: String(r.playerId),
+    name: nameById.get(String(r.playerId)) || 'Player',
+    profilePicture: picById.get(String(r.playerId)) || null,
+    team: null,
+    role: null,
+    type: null,
+    totals: {
+      runs: r.runs || 0,
+      balls: r.balls || 0,
+      wickets: r.wickets || 0,
+      runsGiven: r.runsGiven || 0,
+      ballsBowled: r.ballsBowled || 0,
+      mom: r.mom || 0,
+      matches: r.appearances || 0,
+    },
+    matches: [],
+  }));
+}
+
+function buildVenueSpotlightsFromLedgerGroups(venuePlayerAggRows, nameById, picById) {
+  const byVenue = new Map();
+  for (const row of venuePlayerAggRows) {
+    const v = row._id?.venue;
+    const pid = row._id?.playerId;
+    if (!v || !pid) continue;
+    if (!byVenue.has(v)) byVenue.set(v, []);
+    byVenue.get(v).push({
+      playerId: pid,
+      runs: row.runs || 0,
+      balls: row.balls || 0,
+      wickets: row.wickets || 0,
+      runsGiven: row.runsGiven || 0,
+      ballsBowled: row.ballsBowled || 0,
+      mom: row.mom || 0,
+      appearances: row.appearances || 0,
+    });
+  }
+  const spotlightsByVenue = new Map();
+  for (const [v, rows] of byVenue) {
+    const fakePlayers = ledgerRowsToWcStylePlayers(rows, nameById, picById);
+    spotlightsByVenue.set(v, computeWcTeamSpotlights(fakePlayers));
+  }
+  return spotlightsByVenue;
+}
+
 // GET /api/player-stats/venue-aggregate
 // Optional query: ?playerId=...&userId=...&tournamentId=...&venue=...&scope=league|all
 // Returns aggregated batting/bowling totals grouped by venue, plus per-match breakdowns.
@@ -978,7 +1085,8 @@ router.post('/store', async (req, res) => {
 //   - `matches` — distinct games (matchId cardinality).
 //   - `teamInnings` — T20 convention: 2 × matches (both sides bat once).
 //   - `playerRows` — number of ledger lines (≈ XI per side); legacy key `innings` = same.
-//   - `players` — only when `userId` is passed: each squad member's runs & wickets at that venue.
+//   - `spotlights` — per venue: topRuns, topWickets, topMom, topAllRounder (from ledger; MoM needs isMom on ledger rows).
+//   - `players` — when `userId` is passed (squad view), or when `venue` + `includeVenuePlayers=1` (full roster cap 120).
 //
 // IMPORTANT: this aggregate reads from the persistent VenueMatchEntry
 // ledger (NOT PlayerStats). PlayerStats is wiped at the end of every
@@ -1021,69 +1129,155 @@ router.get('/venue-aggregate', async (req, res) => {
       ];
     }
 
-    const grouped = await VenueMatchEntry.aggregate([
+    const includeVenuePlayers =
+      req.query.includeVenuePlayers === '1' ||
+      req.query.includeVenuePlayers === 'true';
+
+    const [facetResult] = await VenueMatchEntry.aggregate([
       { $match: match },
-      // Each ledger row is one player-innings, NOT one match. To count
-      // distinct matches we group by a stable matchId. For rows that
-      // somehow lack one, fall back to `_id` (counts that row as its
-      // own match — degenerate but avoids over-counting blowups).
       {
-        $addFields: {
-          _matchKeyForCount: {
-            $ifNull: ['$matchId', { $toString: '$_id' }],
-          },
+        $facet: {
+          byVenue: [
+            {
+              $addFields: {
+                _matchKeyForCount: {
+                  $ifNull: ['$matchId', { $toString: '$_id' }],
+                },
+              },
+            },
+            {
+              $group: {
+                _id: '$venue',
+                innings: { $sum: 1 },
+                matchSet: { $addToSet: '$_matchKeyForCount' },
+                totalRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+                totalBalls: { $sum: { $ifNull: ['$battingStats.balls', 0] } },
+                totalWicketsTaken: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+                totalRunsGiven: { $sum: { $ifNull: ['$bowlingStats.runsGiven', 0] } },
+                totalBallsBowled: { $sum: { $ifNull: ['$bowlingStats.ballsBowled', 0] } },
+              },
+            },
+            {
+              $addFields: {
+                matches: { $size: '$matchSet' },
+              },
+            },
+            { $project: { matchSet: 0 } },
+            { $sort: { matches: -1, _id: 1 } },
+          ],
+          byVenuePlayer: [
+            {
+              $group: {
+                _id: { venue: '$venue', playerId: '$playerId' },
+                runs: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+                balls: { $sum: { $ifNull: ['$battingStats.balls', 0] } },
+                wickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+                runsGiven: { $sum: { $ifNull: ['$bowlingStats.runsGiven', 0] } },
+                ballsBowled: { $sum: { $ifNull: ['$bowlingStats.ballsBowled', 0] } },
+                mom: { $sum: { $cond: [{ $eq: ['$isMom', true] }, 1, 0] } },
+                appearances: { $sum: 1 },
+              },
+            },
+          ],
         },
       },
-      {
-        $group: {
-          _id: '$venue',
-          innings: { $sum: 1 },
-          matchSet: { $addToSet: '$_matchKeyForCount' },
-          totalRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
-          totalBalls: { $sum: { $ifNull: ['$battingStats.balls', 0] } },
-          totalWicketsTaken: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
-          totalRunsGiven: { $sum: { $ifNull: ['$bowlingStats.runsGiven', 0] } },
-          totalBallsBowled: { $sum: { $ifNull: ['$bowlingStats.ballsBowled', 0] } },
-        },
-      },
-      {
-        $addFields: {
-          matches: { $size: '$matchSet' },
-        },
-      },
-      { $project: { matchSet: 0 } },
-      { $sort: { matches: -1, _id: 1 } },
     ]);
+
+    const grouped = facetResult.byVenue || [];
+    const venuePlayerAggRows = facetResult.byVenuePlayer || [];
+
+    const pidSetLedger = new Set();
+    for (const row of venuePlayerAggRows) {
+      const pid = row._id?.playerId;
+      if (pid && mongoose.Types.ObjectId.isValid(String(pid))) {
+        pidSetLedger.add(String(pid));
+      }
+    }
+    const pidListLedger = [...pidSetLedger].map((id) => new mongoose.Types.ObjectId(id));
+    const playerDocsLedger =
+      pidListLedger.length > 0
+        ? await Player.find({ _id: { $in: pidListLedger } }).select('name profilePicture').lean()
+        : [];
+    const nameByIdLedger = new Map(playerDocsLedger.map((p) => [String(p._id), p.name || 'Player']));
+    const picByIdLedger = new Map(
+      playerDocsLedger.map((p) => [String(p._id), p.profilePicture || null])
+    );
+
+    const spotlightsByVenue = buildVenueSpotlightsFromLedgerGroups(
+      venuePlayerAggRows,
+      nameByIdLedger,
+      picByIdLedger
+    );
 
     const venues = grouped.map((row) => {
       const matches = row.matches || 0;
       const playerRows = row.innings || 0;
-      // T20: each completed match has two team batting innings (side A + side B).
-      // `playerRows` is how many ledger lines (usually ~11 per side per match).
+      const vName = row._id;
+      const spotlights = spotlightsByVenue.get(vName) || {
+        topRuns: null,
+        topWickets: null,
+        topMom: null,
+        topAllRounder: null,
+      };
       return {
-      venue: row._id,
-      matches,
-      playerRows,
-      /** @deprecated use `playerRows` — kept for older clients */
-      innings: playerRows,
-      teamInnings: matches * 2,
-      batting: {
-        runs: row.totalRuns,
-        balls: row.totalBalls,
-        strikeRate: row.totalBalls
-          ? Number(((row.totalRuns / row.totalBalls) * 100).toFixed(2))
-          : 0,
-      },
-      bowling: {
-        wickets: row.totalWicketsTaken,
-        runsGiven: row.totalRunsGiven,
-        ballsBowled: row.totalBallsBowled,
-        economy: row.totalBallsBowled
-          ? Number(((row.totalRunsGiven / (row.totalBallsBowled / 6))).toFixed(2))
-          : 0,
-      },
-    };
+        venue: vName,
+        matches,
+        playerRows,
+        /** @deprecated use `playerRows` — kept for older clients */
+        innings: playerRows,
+        teamInnings: matches * 2,
+        batting: {
+          runs: row.totalRuns,
+          balls: row.totalBalls,
+          strikeRate: row.totalBalls
+            ? Number(((row.totalRuns / row.totalBalls) * 100).toFixed(2))
+            : 0,
+        },
+        bowling: {
+          wickets: row.totalWicketsTaken,
+          runsGiven: row.totalRunsGiven,
+          ballsBowled: row.totalBallsBowled,
+          economy: row.totalBallsBowled
+            ? Number(((row.totalRunsGiven / (row.totalBallsBowled / 6))).toFixed(2))
+            : 0,
+        },
+        spotlights,
+      };
     });
+
+    const venueStrTrim = venue ? String(venue).trim() : '';
+    if (venueStrTrim && includeVenuePlayers) {
+      const rowsForV = venuePlayerAggRows.filter((r) => r._id?.venue === venueStrTrim);
+      const rawRows = rowsForV.map((r) => ({
+        playerId: r._id.playerId,
+        runs: r.runs || 0,
+        balls: r.balls || 0,
+        wickets: r.wickets || 0,
+        runsGiven: r.runsGiven || 0,
+        ballsBowled: r.ballsBowled || 0,
+        mom: r.mom || 0,
+        appearances: r.appearances || 0,
+      }));
+      const fakePlayers = ledgerRowsToWcStylePlayers(rawRows, nameByIdLedger, picByIdLedger);
+      fakePlayers.sort(
+        (a, b) =>
+          (b.totals.runs || 0) - (a.totals.runs || 0) ||
+          (b.totals.wickets || 0) - (a.totals.wickets || 0)
+      );
+      const v0 = venues.find((x) => x.venue === venueStrTrim);
+      if (v0) {
+        v0.players = fakePlayers.slice(0, 120).map((p) => ({
+          playerId: p.playerId,
+          name: p.name,
+          profilePicture: p.profilePicture,
+          runs: p.totals.runs,
+          balls: p.totals.balls,
+          wickets: p.totals.wickets,
+          mom: p.totals.mom,
+          appearances: p.totals.matches,
+        }));
+      }
+    }
 
     // Per-player breakdown at each venue (squad view) — only when scoped to an owner user.
     const skipPlayers =
@@ -2043,9 +2237,26 @@ router.get('/venue-insight', async (req, res) => {
   }
 });
 
+const WC_MATCH_BUCKET_MS = 120000;
+
+/** Stable key so all PlayerStat rows from the same WC scorecard share one match outcome. */
+function buildWcMatchKey(stat) {
+  const uid = stat.userId?._id ? String(stat.userId._id) : String(stat.userId || '');
+  const oid = stat.opponentUserId?._id
+    ? String(stat.opponentUserId._id)
+    : String(stat.opponentUserId || '');
+  if (!uid || !oid || uid === 'undefined' || oid === 'undefined') return null;
+  const pair = uid < oid ? `${uid}:${oid}` : `${oid}:${uid}`;
+  const stage = stat.metadata?.wcStage || '';
+  const venue = (stat.venue || '').trim();
+  const slot = Math.floor(new Date(stat.createdAt).getTime() / WC_MATCH_BUCKET_MS);
+  return `${pair}|${stage}|${venue}|${slot}`;
+}
+
 // GET /api/player-stats/wc-stats?tournamentId=...
 // Returns all PlayerStats entries flagged as WC scores for teams subscribed to a given tournament.
 // Used by the World Cup tournament detail view to show per-match player contributions.
+// Also returns `teams`: aggregates (runs, wickets, W–L from matchWinnerSide) and per-team spotlights.
 router.get('/wc-stats', async (req, res) => {
   try {
     const { tournamentId } = req.query;
@@ -2153,10 +2364,80 @@ router.get('/wc-stats', async (req, res) => {
       return (b.totals.wickets || 0) - (a.totals.wickets || 0);
     });
 
+    const matchBuckets = new Map();
+    for (const stat of stats) {
+      const mk = buildWcMatchKey(stat);
+      if (!mk) continue;
+      if (!matchBuckets.has(mk)) {
+        matchBuckets.set(mk, {
+          userTeam: stat.userId?.teamName || null,
+          oppTeam: stat.opponentUserId?.teamName || null,
+          winnerSide: stat.metadata?.matchWinnerSide || null,
+        });
+      } else {
+        const b = matchBuckets.get(mk);
+        if (!b.winnerSide && stat.metadata?.matchWinnerSide) {
+          b.winnerSide = stat.metadata.matchWinnerSide;
+        }
+        if (!b.userTeam && stat.userId?.teamName) b.userTeam = stat.userId.teamName;
+        if (!b.oppTeam && stat.opponentUserId?.teamName) b.oppTeam = stat.opponentUserId.teamName;
+      }
+    }
+
+    const teamAgg = new Map();
+    const ensureTeam = (name) => {
+      const t = name || 'Unknown team';
+      if (!teamAgg.has(t)) {
+        teamAgg.set(t, {
+          teamName: t,
+          totalRuns: 0,
+          totalWickets: 0,
+          wins: 0,
+          losses: 0,
+        });
+      }
+      return teamAgg.get(t);
+    };
+
+    for (const p of players) {
+      const row = ensureTeam(p.team);
+      row.totalRuns += p.totals.runs || 0;
+      row.totalWickets += p.totals.wickets || 0;
+    }
+
+    for (const m of matchBuckets.values()) {
+      const { userTeam, oppTeam, winnerSide } = m;
+      if (!winnerSide || !userTeam || !oppTeam) continue;
+      const winner = winnerSide === 'home' ? userTeam : oppTeam;
+      const loser = winnerSide === 'home' ? oppTeam : userTeam;
+      ensureTeam(winner).wins += 1;
+      ensureTeam(loser).losses += 1;
+    }
+
+    const teams = Array.from(teamAgg.values())
+      .map((row) => {
+        const teamPlayers = players.filter((p) => (p.team || 'Unknown team') === row.teamName);
+        return {
+          ...row,
+          playerCount: teamPlayers.length,
+          spotlights: computeWcTeamSpotlights(teamPlayers),
+        };
+      })
+      .sort(
+        (a, b) =>
+          (b.totalRuns || 0) - (a.totalRuns || 0) ||
+          (b.wins || 0) - (a.wins || 0) ||
+          String(a.teamName).localeCompare(String(b.teamName))
+      );
+
+    const overallSpotlights = computeWcTeamSpotlights(players);
+
     return res.json({
       tournamentId,
       tournamentName: tournament.name,
       players,
+      teams,
+      overallSpotlights,
     });
   } catch (error) {
     console.error('Error fetching WC stats:', error);

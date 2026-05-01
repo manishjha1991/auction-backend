@@ -55,8 +55,12 @@ const VENUE_MATCH_ENTRY_INDEX_GUIDE = {
       purpose: 'Profile + explorer team splits: match userId then venue',
     },
     {
-      fields: { tournamentId: 1, venue: 1 },
-      purpose: 'Tournament venue leaderboards',
+      fields: { tournamentId: 1, venue: 1, playerId: 1 },
+      purpose: '$match tournament + optional venue, $group by playerId for spotlights / roster',
+    },
+    {
+      fields: { venue: 1, playerId: 1 },
+      purpose: 'Single-venue drill-down: player aggregates without tournament id',
     },
     {
       fields: { isWcScore: 1, isPlayoffScore: 1, venue: 1 },
