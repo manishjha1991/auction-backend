@@ -2,34 +2,27 @@
  * Reentrant per-player mutex: nested withPlayerBidLock for same playerId runs inline so bid queue + promotion + proxy do not deadlock.
  */
 
+const { AsyncLocalStorage } = require("async_hooks");
+
 const chains = new Map();
-const depth = new Map();
+const heldLocks = new AsyncLocalStorage();
 
 function withPlayerBidLock(playerId, fn) {
   const key = String(playerId);
-  const d = depth.get(key) || 0;
-  if (d > 0) {
-    depth.set(key, d + 1);
-    return Promise.resolve()
-      .then(() => fn())
-      .finally(() => {
-        const v = depth.get(key) - 1;
-        if (v <= 0) depth.delete(key);
-        else depth.set(key, v);
-      });
+  const currentLocks = heldLocks.getStore();
+  if (currentLocks?.has(key)) {
+    return Promise.resolve().then(() => fn());
   }
 
   const prev = chains.get(key) || Promise.resolve();
   const next = prev
+    .catch(() => {
+      // Keep the queue moving even if a prior critical section failed.
+    })
     .then(async () => {
-      depth.set(key, (depth.get(key) || 0) + 1);
-      try {
-        return await fn();
-      } finally {
-        const v = (depth.get(key) || 1) - 1;
-        if (v <= 0) depth.delete(key);
-        else depth.set(key, v);
-      }
+      const nextLocks = new Set(heldLocks.getStore() || []);
+      nextLocks.add(key);
+      return heldLocks.run(nextLocks, fn);
     })
     .catch((err) => {
       throw err;
