@@ -8,6 +8,24 @@ const path = require('path');
 const fs = require('fs');
 const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
 
+/** Full round-robin count for n teams (each pair plays once). */
+const expectedRoundRobinFixtureCount = (tournament) => {
+  const n = tournament?.subscribedTeams?.length || 0;
+  return n >= 2 ? (n * (n - 1)) / 2 : 0;
+};
+
+/** Knockout rows appended after RR, or legacy placeholder rows. */
+const tournamentHasKnockoutStage = (tournament) => {
+  const rr = expectedRoundRobinFixtureCount(tournament);
+  const fx = tournament?.tournamentFixtures || [];
+  if (rr > 0 && fx.length > rr) return true;
+  return fx.some(
+    (f) =>
+      (f.team1 && (String(f.team1).includes('Winner of') || String(f.team1).includes('Top '))) ||
+      (f.team2 && (String(f.team2).includes('Winner of') || String(f.team2).includes('Top ')))
+  );
+};
+
 // Helper function to parse score string and extract runs
 const parseRuns = (scoreString) => {
   if (!scoreString) {
@@ -618,9 +636,7 @@ router.post('/:id/subscribe', isAdmin, async (req, res) => {
     // Regenerate fixtures if they already exist (to include new team)
     if (tournament.tournamentFixtures && tournament.tournamentFixtures.length > 0) {
       // Check if fixtures are round-robin (not knockout)
-      const hasKnockoutFixtures = tournament.tournamentFixtures.some(f => 
-        f.team1?.includes('Winner of') || f.team1?.includes('Top ')
-      );
+      const hasKnockoutFixtures = tournamentHasKnockoutStage(tournament);
       
       if (!hasKnockoutFixtures) {
         // Regenerate round-robin fixtures with all subscribed teams
@@ -1064,8 +1080,7 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
     // Check if this is a knockout fixture (semi-final or final) BEFORE saving
     const currentFixture = tournament.tournamentFixtures[fixtureIndex];
     
-    // Calculate round-robin count (for 8 teams: 28 matches)
-    const roundRobinCount = 28;
+    const roundRobinCount = expectedRoundRobinFixtureCount(tournament);
     
     // Check if it's a knockout fixture by:
     // 1. Has placeholder text ("Winner of" or "Top ")
@@ -1267,39 +1282,53 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
             if (semiFinal1Index >= 0 && semiFinal2Index >= 0) {
               const semiFinal1 = updatedTournament.tournamentFixtures[semiFinal1Index];
               const semiFinal2 = updatedTournament.tournamentFixtures[semiFinal2Index];
-              
-              // Check if both semi-finals have winners
-              if (semiFinal1.winner && semiFinal2.winner) {
-                const sf1Winner = semiFinal1.winner;
-                const sf2Winner = semiFinal2.winner;
-                
-                // Only update if final still has placeholders
-                const finalFixture = updatedTournament.tournamentFixtures[finalIndex];
-                const needsUpdate = finalFixture.team1 === 'Winner of Semi-Final 1' || 
-                                   finalFixture.team1 === 'Winner of Semi-Final 2';
-                
-                if (needsUpdate) {
-            // Find userIds for winners
-            const getUserIdFromTeamName = (teamName) => {
-                    const subscribedTeam = updatedTournament.subscribedTeams.find(
-                team => team.teamName === teamName
-              );
-              return subscribedTeam?.userId || null;
-            };
-            
-                  updatedTournament.tournamentFixtures[finalIndex].team1 = sf1Winner;
-                  updatedTournament.tournamentFixtures[finalIndex].team2 = sf2Winner;
-                  updatedTournament.tournamentFixtures[finalIndex].team1UserId = getUserIdFromTeamName(sf1Winner);
-                  updatedTournament.tournamentFixtures[finalIndex].team2UserId = getUserIdFromTeamName(sf2Winner);
-                  
-                  await updatedTournament.save();
-                  console.log(`✅ Auto-updated final fixture with semi-final winners: ${sf1Winner} vs ${sf2Winner}`);
-                  
-                  // Update the response with the updated tournament
-                  tournament = updatedTournament;
+              const finalFixture = updatedTournament.tournamentFixtures[finalIndex];
+
+              const getUserIdFromTeamName = (teamName) => {
+                const want = teamName ? String(teamName).trim() : '';
+                const subscribedTeam = updatedTournament.subscribedTeams.find(
+                  (team) => String(team.teamName || '').trim() === want
+                );
+                return subscribedTeam?.userId || null;
+              };
+
+              let changed = false;
+              // Fill whichever final slot still shows the placeholder (supports normal and swapped sides)
+              if (semiFinal1.winner) {
+                if (finalFixture.team1 === 'Winner of Semi-Final 1') {
+                  finalFixture.team1 = semiFinal1.winner;
+                  finalFixture.team1UserId = getUserIdFromTeamName(semiFinal1.winner);
+                  changed = true;
+                } else if (finalFixture.team2 === 'Winner of Semi-Final 1') {
+                  finalFixture.team2 = semiFinal1.winner;
+                  finalFixture.team2UserId = getUserIdFromTeamName(semiFinal1.winner);
+                  changed = true;
                 }
+              }
+              if (semiFinal2.winner) {
+                if (finalFixture.team2 === 'Winner of Semi-Final 2') {
+                  finalFixture.team2 = semiFinal2.winner;
+                  finalFixture.team2UserId = getUserIdFromTeamName(semiFinal2.winner);
+                  changed = true;
+                } else if (finalFixture.team1 === 'Winner of Semi-Final 2') {
+                  finalFixture.team1 = semiFinal2.winner;
+                  finalFixture.team1UserId = getUserIdFromTeamName(semiFinal2.winner);
+                  changed = true;
+                }
+              }
+
+              if (changed) {
+                await updatedTournament.save();
+                tournament = updatedTournament;
+                console.log(
+                  `✅ Final matchup updated from semis → ${finalFixture.team1} vs ${finalFixture.team2}`
+                );
               } else {
-                console.log(`ℹ️  Waiting for both semi-finals to complete. SF1: ${semiFinal1.winner || 'No winner'}, SF2: ${semiFinal2.winner || 'No winner'}`);
+                console.log(
+                  `ℹ️ Semis: SF1 winner ${semiFinal1.winner || '—'}, SF2 winner ${
+                    semiFinal2.winner || '—'
+                  } — final slot(s) still waiting`
+                );
               }
             }
           }
@@ -1583,25 +1612,37 @@ router.get('/:id/round-robin-status', async (req, res) => {
       return res.status(404).json({ error: 'Tournament not found' });
     }
 
-    // Count round-robin fixtures (exclude knockout fixtures)
-    const roundRobinFixtures = tournament.tournamentFixtures.filter(f => 
-      !f.team1?.includes('Winner of') && !f.team1?.includes('Top ')
-    );
-    
-    const completedRoundRobin = roundRobinFixtures.filter(f => f.winner);
-    const allComplete = roundRobinFixtures.length > 0 && completedRoundRobin.length === roundRobinFixtures.length;
-    
-    // Check if knockout fixtures already exist
-    const hasKnockout = tournament.tournamentFixtures.some(f => 
-      f.team1?.includes('Winner of') || f.team1?.includes('Top ')
-    );
+    const rrExpected = expectedRoundRobinFixtureCount(tournament);
+    const allFx = tournament.tournamentFixtures || [];
+    const roundRobinFixtures =
+      rrExpected > 0 ? allFx.slice(0, Math.min(rrExpected, allFx.length)) : [];
+
+    const completedRoundRobin = roundRobinFixtures.filter((f) => f.winner).length;
+    const allComplete =
+      rrExpected > 0 &&
+      roundRobinFixtures.length === rrExpected &&
+      completedRoundRobin === rrExpected;
+
+    const hasKnockout = tournamentHasKnockoutStage(tournament);
+    const n = tournament.subscribedTeams?.length || 0;
+    const gamesPerTeamRequired = n >= 2 ? n - 1 : 0;
+    const minTeamsForKnockoutBracket = 4;
+    const enoughTeamsForKnockout = n >= minTeamsForKnockoutBracket;
 
     res.json({
       totalRoundRobin: roundRobinFixtures.length,
-      completedRoundRobin: completedRoundRobin.length,
+      totalRoundRobinExpected: rrExpected,
+      completedRoundRobin,
       allComplete,
       hasKnockout,
-      canGenerateKnockout: allComplete && !hasKnockout
+      gamesPerTeamRequired,
+      minTeamsForKnockoutBracket,
+      enoughTeamsForKnockout,
+      canGenerateKnockout:
+        allComplete &&
+        !hasKnockout &&
+        rrExpected > 0 &&
+        enoughTeamsForKnockout,
     });
   } catch (error) {
     console.error('Get round-robin status error:', error);
@@ -1617,22 +1658,32 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Tournament not found' });
     }
 
-    // Check if knockout fixtures already exist
-    const hasKnockoutFixtures = tournament.tournamentFixtures.some(f => 
-      f.team1?.includes('Top ') || f.team1?.includes('Winner of')
-    );
+    const hasKnockoutFixtures = tournamentHasKnockoutStage(tournament);
     if (hasKnockoutFixtures) {
       return res.status(400).json({ error: 'Knockout fixtures already generated' });
     }
 
-    // Check if round-robin is complete
-    const roundRobinFixtures = tournament.tournamentFixtures.filter(f => 
-      !f.team1?.includes('Winner of') && !f.team1?.includes('Top ')
+    const rrExpected = expectedRoundRobinFixtureCount(tournament);
+    const roundRobinFixtures = tournament.tournamentFixtures.slice(
+      0,
+      Math.min(rrExpected, tournament.tournamentFixtures.length)
     );
-    
-    const allRoundRobinComplete = roundRobinFixtures.length > 0 && roundRobinFixtures.every(f => f.winner);
+
+    const allRoundRobinComplete =
+      rrExpected > 0 &&
+      roundRobinFixtures.length === rrExpected &&
+      roundRobinFixtures.every((f) => f.winner);
     if (!allRoundRobinComplete) {
-      return res.status(400).json({ error: 'All round-robin matches must be completed first' });
+      return res
+        .status(400)
+        .json({ error: 'Every team must finish all round-robin games before knockout (top 4 from the table).' });
+    }
+
+    const subscribedCount = tournament.subscribedTeams?.length || 0;
+    if (subscribedCount < 4) {
+      return res.status(400).json({
+        error: 'Knockout needs at least 4 subscribed teams (semis are 1st vs 4th and 2nd vs 3rd on the table).',
+      });
     }
 
     // Update point table first
@@ -1669,15 +1720,26 @@ router.post('/:id/generate-knockout', isAdmin, async (req, res) => {
       return 0;
     });
 
-    const top4 = sortedPointTable.slice(0, 4);
+    // De-duplicate by team name (legacy / bad data could list the same team twice)
+    const seenNames = new Set();
+    const uniqueByTeam = [];
+    for (const row of sortedPointTable) {
+      const key = row.teamName ? String(row.teamName).trim() : '';
+      if (!key || seenNames.has(key)) continue;
+      seenNames.add(key);
+      uniqueByTeam.push(row);
+    }
+
+    const top4 = uniqueByTeam.slice(0, 4);
     if (top4.length < 4) {
       return res.status(400).json({ error: 'Need at least 4 teams in point table to generate knockout fixtures' });
     }
 
     // Find userIds for top 4 teams from subscribedTeams
     const getUserIdFromTeamName = (teamName) => {
+      const want = teamName ? String(teamName).trim() : '';
       const subscribedTeam = tournament.subscribedTeams.find(
-        team => team.teamName === teamName
+        (team) => String(team.teamName || '').trim() === want
       );
       return subscribedTeam?.userId || null;
     };
@@ -1872,3 +1934,5 @@ const updateTournamentPointTable = async (tournamentId) => {
 };
 
 module.exports = router;
+/** For maintenance scripts (e.g. repair knockout) — same logic as POST generate-knockout preamble. */
+module.exports.updateTournamentPointTable = updateTournamentPointTable;
