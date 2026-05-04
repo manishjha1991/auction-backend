@@ -80,7 +80,7 @@ async function main() {
   );
   const portraitDirAbs = path.join(process.cwd(), relPrefix);
 
-  await mongoose.connect(uri, { dbName: process.env.MONGO_DB_NAME || 'cpl_20' });
+  await mongoose.connect(uri, process.env.MONGO_DB_NAME ? { dbName: process.env.MONGO_DB_NAME } : undefined);
 
   const referenced = await collectReferencedPaths();
   console.log(`Referenced portrait paths in DB: ${referenced.size}`);

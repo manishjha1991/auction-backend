@@ -12,6 +12,12 @@ const PickHistorySchema = new mongoose.Schema(
 
 const PickRequestSchema = new mongoose.Schema(
   {
+    tournamentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Tournament',
+      default: null,
+      index: true
+    },
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     player: { type: mongoose.Schema.Types.ObjectId, ref: 'Player', required: true },
     status: { type: String, enum: ['pending', 'admin_pending', 'completed', 'rejected'], default: 'pending' },
@@ -25,6 +31,9 @@ const PickRequestSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+PickRequestSchema.index({ tournamentId: 1, user: 1, status: 1, createdAt: -1 });
+PickRequestSchema.index({ tournamentId: 1, player: 1, status: 1 });
 
 module.exports = mongoose.model('PickRequest', PickRequestSchema);
 

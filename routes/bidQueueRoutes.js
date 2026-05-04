@@ -1,13 +1,15 @@
 const express = require("express");
 const authenticateJWT = require("../middleware/authJWT");
 const bidQueueService = require("../services/bidQueueService");
+const { getTournamentIdFromRequest } = require("../utils/tournamentScope");
 
 const router = express.Router();
 
 /** Public map of playerId -> queued count (for player board badges). */
 router.get("/counts", async (req, res) => {
   try {
-    const counts = await bidQueueService.getAllQueuedCountsByPlayer();
+    const tournamentId = getTournamentIdFromRequest(req);
+    const counts = await bidQueueService.getAllQueuedCountsByPlayer(tournamentId);
     res.json(counts);
   } catch (e) {
     console.error(e);
@@ -18,10 +20,12 @@ router.get("/counts", async (req, res) => {
 /** Stop queue auto-bid while staying in the auction; manual bids allowed again. */
 router.post("/:playerId/resign-proxy", authenticateJWT, async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const io = req.app.get("io");
     const r = await bidQueueService.resignActiveProxyToManual({
       playerId: req.params.playerId,
       userId: req.authenticatedUser._id,
+      tournamentId,
       io,
     });
     if (!r.ok) {
@@ -39,9 +43,11 @@ router.post("/:playerId/resign-proxy", authenticateJWT, async (req, res) => {
 
 router.get("/:playerId", authenticateJWT, async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const state = await bidQueueService.getQueueState(
       req.params.playerId,
-      req.authenticatedUser._id
+      req.authenticatedUser._id,
+      tournamentId
     );
     res.json(state);
   } catch (e) {
@@ -52,6 +58,7 @@ router.get("/:playerId", authenticateJWT, async (req, res) => {
 
 router.post("/:playerId", authenticateJWT, async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const io = req.app.get("io");
     const maxBid = Number(req.body.maxBid);
     if (!Number.isFinite(maxBid) || maxBid <= 0) {
@@ -60,6 +67,7 @@ router.post("/:playerId", authenticateJWT, async (req, res) => {
     const r = await bidQueueService.enqueueUser({
       playerId: req.params.playerId,
       userId: req.authenticatedUser._id,
+      tournamentId,
       maxBid,
       io,
     });
@@ -75,10 +83,12 @@ router.post("/:playerId", authenticateJWT, async (req, res) => {
 
 router.delete("/:playerId", authenticateJWT, async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const io = req.app.get("io");
     const r = await bidQueueService.leaveQueue({
       playerId: req.params.playerId,
       userId: req.authenticatedUser._id,
+      tournamentId,
       io,
     });
     if (!r.ok) {
@@ -93,6 +103,7 @@ router.delete("/:playerId", authenticateJWT, async (req, res) => {
 
 router.patch("/:playerId", authenticateJWT, async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const io = req.app.get("io");
     const maxBid = Number(req.body.maxBid);
     if (!Number.isFinite(maxBid) || maxBid <= 0) {
@@ -101,6 +112,7 @@ router.patch("/:playerId", authenticateJWT, async (req, res) => {
     const r = await bidQueueService.updateQueueMax({
       playerId: req.params.playerId,
       userId: req.authenticatedUser._id,
+      tournamentId,
       maxBid,
       io,
     });

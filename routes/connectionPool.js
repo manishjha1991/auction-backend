@@ -3,6 +3,33 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 
+function getReconnectOptions() {
+  const options = {
+    maxPoolSize: 20,
+    minPoolSize: 8,
+    maxIdleTimeMS: 60000,
+    maxConnecting: 5,
+    serverSelectionTimeoutMS: 15000,
+    socketTimeoutMS: 30000,
+    connectTimeoutMS: 15000,
+    retryWrites: true,
+    retryReads: true,
+    heartbeatFrequencyMS: 5000,
+    compressors: ['zlib'],
+    zlibCompressionLevel: 6,
+    directConnection: false,
+    monitorCommands: true,
+    maxStalenessSeconds: 90,
+    readPreference: 'primaryPreferred',
+    readConcern: { level: 'local' },
+    writeConcern: { w: 1, j: true },
+  };
+  if (process.env.MONGO_DB_NAME) {
+    options.dbName = process.env.MONGO_DB_NAME;
+  }
+  return options;
+}
+
 // Get connection pool status
 router.get('/status', (req, res) => {
   try {
@@ -130,29 +157,13 @@ router.post('/refresh', async (req, res) => {
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     // Reconnect with current options
-    await mongoose.connect(process.env.MONGO_URI, {
-      dbName: 'cpl_12',
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      maxPoolSize: 20,
-      minPoolSize: 8,
-      maxIdleTimeMS: 60000,
-      maxConnecting: 5,
-      serverSelectionTimeoutMS: 15000,
-      socketTimeoutMS: 30000,
-      connectTimeoutMS: 15000,
-      retryWrites: true,
-      retryReads: true,
-      heartbeatFrequencyMS: 5000,
-      compressors: ['zlib'],
-      zlibCompressionLevel: 6,
-      directConnection: false,
-      monitorCommands: true,
-      maxStalenessSeconds: 90,
-      readPreference: 'primaryPreferred',
-      readConcern: { level: 'local' },
-      writeConcern: { w: 1, j: true }
-    });
+    if (!process.env.MONGO_URI) {
+      return res.status(500).json({
+        success: false,
+        error: 'MONGO_URI is not configured',
+      });
+    }
+    await mongoose.connect(process.env.MONGO_URI, getReconnectOptions());
     
     res.json({
       success: true,

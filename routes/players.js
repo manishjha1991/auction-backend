@@ -11,6 +11,7 @@ const { cacheConfig, invalidateCache, flushStatsOverviewCache } = require('../ut
 const multerMemory = require('../config/multerMemory');
 const { saveProfilePictureLocal } = require('../utils/saveProfilePictureLocal');
 const { removeLocalProfilePictureIfSafe } = require('../utils/removeLocalProfilePictureIfSafe');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 const router = express.Router();
 const formatPrice = (value) => {
   if (value >= 10000000) {
@@ -110,6 +111,7 @@ router.delete('/player/:playerID', async (req, res) => {
 router.get("/:playerId/bids", async (req, res) => {
   const { playerId } = req.params;
   const viewerUserId = req.query.viewerUserId || req.query.userId;
+  const tournamentId = getTournamentIdFromRequest(req);
   try {
     // 1. Check if the player exists
     // 🚀 PERFORMANCE: Use .lean() for faster queries (read-only)
@@ -130,7 +132,7 @@ router.get("/:playerId/bids", async (req, res) => {
 
     // 2. Fetch all bids for the player
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const allBids = await Bid.find({ playerId })
+    const allBids = await Bid.find(withTournamentFilter({ playerId }, tournamentId))
       .select('bidder bidAmount isBidOn timestamp')
       .populate("bidder", "name email") // Populate bidder's name and email
       .sort({ bidAmount: -1 }) // Sort by bid value (descending)
@@ -292,7 +294,9 @@ router.post(
 router.get("/players/data", async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (2 minute cache for players data)
   const includeInactive = req.query.includeInactive === 'true';
-  const cacheKey = includeInactive ? 'players:data:all' : 'players:data';
+  const tournamentId = getTournamentIdFromRequest(req);
+  const tournamentCacheSuffix = tournamentId ? `:${String(tournamentId)}` : ':global';
+  const cacheKey = `${includeInactive ? 'players:data:all' : 'players:data'}${tournamentCacheSuffix}`;
   const skipCache =
     req.query.nocache === '1' ||
     req.query.nocache === 'true' ||
@@ -308,6 +312,31 @@ router.get("/players/data", async (req, res) => {
   try {
     // Use aggregation pipeline for better performance
     const matchStage = includeInactive ? {} : { isActive: true };
+    const userPlayerLookupMatch = tournamentId
+      ? {
+          $expr: {
+            $and: [
+              { $eq: ['$playerId', '$$playerId'] },
+              { $eq: ['$isActive', true] },
+              { $eq: ['$tournamentId', tournamentId] }
+            ]
+          }
+        }
+      : {
+          $expr: { $and: [{ $eq: ['$playerId', '$$playerId'] }, { $eq: ['$isActive', true] }] }
+        };
+    const bidLookupMatch = tournamentId
+      ? {
+          $expr: { $eq: ['$playerId', '$$playerId'] },
+          isBidOn: true,
+          isActive: true,
+          tournamentId
+        }
+      : {
+          $expr: { $eq: ['$playerId', '$$playerId'] },
+          isBidOn: true,
+          isActive: true
+        };
     const players = await Player.aggregate([
       { $match: matchStage },
       {
@@ -315,7 +344,7 @@ router.get("/players/data", async (req, res) => {
           from: 'userplayers',
           let: { playerId: '$_id' },
           pipeline: [
-            { $match: { $expr: { $and: [{ $eq: ['$playerId', '$$playerId'] }, { $eq: ['$isActive', true] }] } } },
+            { $match: userPlayerLookupMatch },
             { $limit: 1 }
           ],
           as: 'userPlayer'
@@ -343,11 +372,7 @@ router.get("/players/data", async (req, res) => {
           let: { playerId: '$_id' },
           pipeline: [
             {
-              $match: {
-                $expr: { $eq: ['$playerId', '$$playerId'] },
-                isBidOn: true,
-                isActive: true
-              }
+              $match: bidLookupMatch
             },
             { $sort: { bidAmount: -1 } },
             { $limit: 1 },
@@ -481,6 +506,7 @@ router.get("/players/data", async (req, res) => {
 // Add Trade Player API
 router.post('/trade-player', async (req, res) => {
   const { player1Id, player2Id } = req.body;
+  const tournamentId = getTournamentIdFromRequest(req);
 
   if (!player1Id || !player2Id) {
     return res.status(400).json({ message: 'Player IDs are required.' });
@@ -489,8 +515,8 @@ router.post('/trade-player', async (req, res) => {
   try {
     // Fetch both players and their associated teams
     const [player1, player2] = await Promise.all([
-      UserPlayer.findOne({ playerId: player1Id, isActive: true }).populate('userId'),
-      UserPlayer.findOne({ playerId: player2Id, isActive: true }).populate('userId')
+      UserPlayer.findOne(withTournamentFilter({ playerId: player1Id, isActive: true }, tournamentId)).populate('userId'),
+      UserPlayer.findOne(withTournamentFilter({ playerId: player2Id, isActive: true }, tournamentId)).populate('userId')
     ]);
 
     if (!player1 || !player2) {
@@ -544,6 +570,7 @@ router.post('/trade-player', async (req, res) => {
 // Admin: release a player immediately
 router.post('/release-player', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { adminUserId, userId, playerId } = req.body;
     if (!adminUserId || !userId || !playerId) {
       return res.status(400).json({ message: 'Missing required fields' });
@@ -552,7 +579,7 @@ router.post('/release-player', async (req, res) => {
     if (!admin || !admin.isAdmin) {
       return res.status(403).json({ message: 'Only admin can release players' });
     }
-    const up = await UserPlayer.findOne({ userId, playerId, isActive: true });
+    const up = await UserPlayer.findOne(withTournamentFilter({ userId, playerId, isActive: true }, tournamentId));
     if (!up) {
       return res.status(404).json({ message: 'Ownership not found or already inactive' });
     }
@@ -580,7 +607,9 @@ router.post('/release-player', async (req, res) => {
     }
 
     // If a pending release request exists, mark it approved
-    const rr = await ReleaseRequest.findOne({ user: userId, player: playerId, status: { $in: ['pending', 'admin_pending'] } });
+    const rr = await ReleaseRequest.findOne(
+      withTournamentFilter({ user: userId, player: playerId, status: { $in: ['pending', 'admin_pending'] } }, tournamentId)
+    );
     if (rr) {
       rr.status = 'completed';
       rr.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note: 'Released by admin endpoint' };

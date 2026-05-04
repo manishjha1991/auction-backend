@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const playoffFixtureSchema = new mongoose.Schema({
+  tournamentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tournament',
+    default: null,
+    index: true
+  },
   matchId: {
     type: String,
     required: true,
@@ -106,5 +112,15 @@ const playoffFixtureSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+playoffFixtureSchema.index(
+  { tournamentId: 1, matchId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { tournamentId: { $type: 'objectId' } },
+    name: 'unique_playoff_match_per_tournament'
+  }
+);
+playoffFixtureSchema.index({ tournamentId: 1, isCompleted: 1, date: 1 });
 
 module.exports = mongoose.model('PlayoffFixture', playoffFixtureSchema);

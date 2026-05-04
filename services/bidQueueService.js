@@ -14,51 +14,62 @@ const { getSocketIdsForUsers } = require("../utils/socketUserMap");
 const PROXY_FINGERPRINT = "bid-queue-proxy";
 const PROXY_IP = "127.0.0.1";
 
+function queueFilter(playerId, tournamentId) {
+  if (tournamentId) return { playerId, tournamentId };
+  return { playerId };
+}
+
 function isEnabled() {
   return process.env.ENABLE_BID_QUEUE === "true";
 }
 
-async function getOrCreateDoc(playerId) {
-  let doc = await BidPlayerQueue.findOne({ playerId });
+async function getOrCreateDoc(playerId, tournamentId = null) {
+  let doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId));
   if (!doc) {
-    doc = new BidPlayerQueue({ playerId, entries: [] });
+    doc = new BidPlayerQueue({ playerId, tournamentId: tournamentId || null, entries: [] });
     await doc.save();
   }
   return doc;
 }
 
-async function getActiveBidderIds(playerId) {
-  const bids = await Bid.find({ playerId, isActive: true, isBidOn: true })
+async function getActiveBidderIds(playerId, tournamentId = null) {
+  const bidFilter = tournamentId
+    ? { playerId, tournamentId, isActive: true, isBidOn: true }
+    : { playerId, isActive: true, isBidOn: true };
+  const bids = await Bid.find(bidFilter)
     .select("bidder")
     .lean();
   return [...new Set(bids.map((b) => b.bidder.toString()))];
 }
 
-async function countQueued(playerId) {
-  const doc = await BidPlayerQueue.findOne({ playerId }).select("entries").lean();
+async function countQueued(playerId, tournamentId = null) {
+  const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId)).select("entries").lean();
   if (!doc) return 0;
   return doc.entries.filter((e) => e.status === "queued").length;
 }
 
 /** Broadcast queue depth for player list + popups (includes queueCount for clients). */
-async function emitBidQueueUpdated(io, playerId, queueCountKnown) {
+async function emitBidQueueUpdated(io, playerId, queueCountKnown, tournamentId = null) {
   if (!io) return;
   const queueCount =
     typeof queueCountKnown === "number"
       ? queueCountKnown
       : isEnabled()
-        ? await countQueued(playerId)
+        ? await countQueued(playerId, tournamentId)
         : 0;
   io.emit("bid_queue_updated", {
     playerId: playerId.toString(),
+    tournamentId: tournamentId ? tournamentId.toString() : null,
     queueCount,
   });
 }
 
 /** Map playerId string -> number of queued entries (for player board). */
-async function getAllQueuedCountsByPlayer() {
+async function getAllQueuedCountsByPlayer(tournamentId = null) {
   if (!isEnabled()) return {};
+  const matchStage = tournamentId ? [{ $match: { tournamentId } }] : [];
   const rows = await BidPlayerQueue.aggregate([
+    ...matchStage,
     { $unwind: "$entries" },
     { $match: { "entries.status": "queued" } },
     { $group: { _id: "$playerId", queueCount: { $sum: 1 } } },
@@ -70,11 +81,11 @@ async function getAllQueuedCountsByPlayer() {
   return out;
 }
 
-async function shouldBlockManualBid(playerId, bidderId) {
+async function shouldBlockManualBid(playerId, bidderId, tournamentId = null) {
   if (!isEnabled()) return false;
-  const n = await countQueued(playerId);
+  const n = await countQueued(playerId, tournamentId);
   if (n === 0) return false;
-  const active = await getActiveBidderIds(playerId);
+  const active = await getActiveBidderIds(playerId, tournamentId);
   return !active.includes(bidderId.toString());
 }
 
@@ -93,8 +104,8 @@ function emitQueuePersonal(io, userId, payload) {
   ids.forEach((sid) => io.to(sid).emit("bid_queue_personal", payload));
 }
 
-async function removeQueuedEntryById(playerId, subdocId, reason, io) {
-  const doc = await BidPlayerQueue.findOne({ playerId });
+async function removeQueuedEntryById(playerId, subdocId, reason, io, tournamentId = null) {
+  const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId));
   if (!doc) return;
   const entry = doc.entries.id(subdocId);
   if (!entry || entry.status !== "queued") return;
@@ -111,23 +122,25 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
     playerName: player?.name || "",
     refund,
   });
-  await emitBidQueueUpdated(io, playerId);
+  await emitBidQueueUpdated(io, playerId, undefined, tournamentId);
 }
 
-async function pruneQueuedOverMax(playerId, io) {
+async function pruneQueuedOverMax(playerId, io, tournamentId = null) {
   if (!isEnabled()) return;
   await withPlayerBidLock(playerId, async () => {
     const player = await Player.findById(playerId);
     if (!player) return;
 
-    const highestBid = await Bid.findOne({ playerId, isActive: true })
+    const highestBid = await Bid.findOne(
+      tournamentId ? { playerId, tournamentId, isActive: true } : { playerId, isActive: true }
+    )
       .sort({ bidAmount: -1 })
       .select("bidAmount")
       .lean();
 
     const nextBid = computeNextBidAmount(player, highestBid);
 
-    const doc = await BidPlayerQueue.findOne({ playerId });
+    const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId));
     if (!doc) return;
 
     const toPull = [];
@@ -138,7 +151,7 @@ async function pruneQueuedOverMax(playerId, io) {
       }
     }
     for (const id of toPull) {
-      await removeQueuedEntryById(playerId, id, "price_exceeded", io);
+      await removeQueuedEntryById(playerId, id, "price_exceeded", io, tournamentId);
     }
   });
 }
@@ -164,7 +177,7 @@ async function revertPreparePromotedUser(userId, playerId, nextBidAmount, locked
   await user.save();
 }
 
-async function forceExitProxyUser(userId, playerId, io) {
+async function forceExitProxyUser(userId, playerId, io, tournamentId = null) {
   const user = await User.findById(userId);
   if (!user) return;
   const bidOnPlayer = user.currentBids.find((b) => b.playerId.toString() === playerId);
@@ -176,12 +189,16 @@ async function forceExitProxyUser(userId, playerId, io) {
   user.currentBids = user.currentBids.filter((b) => b.playerId.toString() !== playerId);
   await user.save();
   await Bid.updateMany(
-    { playerId, bidder: userId },
+    tournamentId
+      ? { playerId, tournamentId, bidder: userId }
+      : { playerId, bidder: userId },
     { $set: { isActive: false, isBidOn: false } }
   );
 
   const player = await Player.findById(playerId);
-  const remaining = await Bid.find({ playerId, isActive: true, isBidOn: true })
+  const remaining = await Bid.find(
+    tournamentId ? { playerId, tournamentId, isActive: true, isBidOn: true } : { playerId, isActive: true, isBidOn: true }
+  )
     .sort({ bidAmount: -1 })
     .lean();
   if (remaining.length) {
@@ -204,14 +221,14 @@ async function forceExitProxyUser(userId, playerId, io) {
     currentBidder: player.currentBidder,
     playerName: player.name,
   });
-  await emitBidQueueUpdated(io, playerId);
+  await emitBidQueueUpdated(io, playerId, undefined, tournamentId);
 }
 
-async function runProxyContinuation(playerId, proxyUserId, io) {
+async function runProxyContinuation(playerId, proxyUserId, io, tournamentId = null) {
   for (let i = 0; i < 40; i++) {
     let outcome = "stop";
     await withPlayerBidLock(playerId, async () => {
-      const doc = await BidPlayerQueue.findOne({ playerId });
+      const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId));
       const entry = doc?.entries.find(
         (e) => e.userId.toString() === proxyUserId.toString() && e.status === "active_proxy"
       );
@@ -221,7 +238,9 @@ async function runProxyContinuation(playerId, proxyUserId, io) {
       }
 
       const player = await Player.findById(playerId);
-      const highest = await Bid.findOne({ playerId, isActive: true })
+      const highest = await Bid.findOne(
+        tournamentId ? { playerId, tournamentId, isActive: true } : { playerId, isActive: true }
+      )
         .sort({ bidAmount: -1 })
         .lean();
       if (!highest) {
@@ -246,6 +265,7 @@ async function runProxyContinuation(playerId, proxyUserId, io) {
       const res = await placeBidCore({
         playerId,
         bidderId: proxyUserId,
+        tournamentId,
         clientIP: PROXY_IP,
         deviceFingerprint: PROXY_FINGERPRINT,
         isSuspiciousIP: false,
@@ -254,30 +274,30 @@ async function runProxyContinuation(playerId, proxyUserId, io) {
       if (!res.ok) {
         doc.entries.pull(entry._id);
         await doc.save();
-        await forceExitProxyUser(proxyUserId, playerId, io);
+        await forceExitProxyUser(proxyUserId, playerId, io, tournamentId);
         outcome = "promote";
         return;
       }
       outcome = "bid";
     });
 
-    await afterBidPlaced(playerId, io);
+    await afterBidPlaced(playerId, io, tournamentId);
 
     if (outcome === "stop") return;
     if (outcome === "promote") {
-      await tryPromoteNextQueued(playerId, io);
+      await tryPromoteNextQueued(playerId, io, tournamentId);
       return;
     }
   }
 }
 
-async function tryPromoteNextQueued(playerId, io) {
+async function tryPromoteNextQueued(playerId, io, tournamentId = null) {
   if (!isEnabled()) return;
 
   let proxyUserId = null;
 
   await withPlayerBidLock(playerId, async () => {
-    const activeBidders = await getActiveBidderIds(playerId);
+    const activeBidders = await getActiveBidderIds(playerId, tournamentId);
     if (activeBidders.length !== 1) return;
 
     const player = await Player.findById(playerId);
@@ -285,19 +305,21 @@ async function tryPromoteNextQueued(playerId, io) {
 
     /* eslint-disable no-await-in-loop */
     while (true) {
-      const doc = await BidPlayerQueue.findOne({ playerId });
+      const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId));
       if (!doc) return;
 
       const head = doc.entries.find((e) => e.status === "queued");
       if (!head) return;
 
-      const highestBid = await Bid.findOne({ playerId, isActive: true })
+      const highestBid = await Bid.findOne(
+        tournamentId ? { playerId, tournamentId, isActive: true } : { playerId, isActive: true }
+      )
         .sort({ bidAmount: -1 })
         .lean();
 
       const nextBid = computeNextBidAmount(player, highestBid);
       if (nextBid > head.maxBid) {
-        await removeQueuedEntryById(playerId, head._id, "price_exceeded", io);
+        await removeQueuedEntryById(playerId, head._id, "price_exceeded", io, tournamentId);
         continue;
       }
 
@@ -311,6 +333,7 @@ async function tryPromoteNextQueued(playerId, io) {
       const res = await placeBidCore({
         playerId,
         bidderId: head.userId,
+        tournamentId,
         clientIP: PROXY_IP,
         deviceFingerprint: PROXY_FINGERPRINT,
         isSuspiciousIP: false,
@@ -324,7 +347,7 @@ async function tryPromoteNextQueued(playerId, io) {
         return;
       }
 
-      await emitBidQueueUpdated(io, playerId);
+      await emitBidQueueUpdated(io, playerId, undefined, tournamentId);
       emitQueuePersonal(io, head.userId, {
         type: "promoted",
         playerId: playerId.toString(),
@@ -338,22 +361,22 @@ async function tryPromoteNextQueued(playerId, io) {
   });
 
   if (proxyUserId) {
-    await afterBidPlaced(playerId, io);
-    await runProxyContinuation(playerId, proxyUserId, io);
+    await afterBidPlaced(playerId, io, tournamentId);
+    await runProxyContinuation(playerId, proxyUserId, io, tournamentId);
   }
 }
 
-async function triggerProxyAfterOpponentBid(playerId, io) {
+async function triggerProxyAfterOpponentBid(playerId, io, tournamentId = null) {
   if (!isEnabled()) return;
-  const doc = await BidPlayerQueue.findOne({ playerId }).select("entries").lean();
+  const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId)).select("entries").lean();
   if (!doc?.entries?.length) return;
   const proxy = doc.entries.find((e) => e.status === "active_proxy");
   if (!proxy) return;
   const proxyUserId = proxy.userId.toString();
-  await runProxyContinuation(playerId, proxyUserId, io);
+  await runProxyContinuation(playerId, proxyUserId, io, tournamentId);
 }
 
-async function enqueueUser({ playerId, userId, maxBid, io }) {
+async function enqueueUser({ playerId, userId, maxBid, io, tournamentId = null }) {
   if (!isEnabled()) {
     return { ok: false, status: 503, message: "Bid queue feature is disabled." };
   }
@@ -363,7 +386,7 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       return { ok: false, status: 404, message: "Player not found or sold." };
     }
 
-    const slotCheck = await assertQueueJoinSlotLimits(userId, playerId);
+    const slotCheck = await assertQueueJoinSlotLimits(userId, playerId, tournamentId);
     if (!slotCheck.ok) {
       return { ok: false, status: 400, message: slotCheck.message };
     }
@@ -373,7 +396,7 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       return { ok: false, status: 403, message: "Cannot join queue." };
     }
 
-    const activeBidders = await getActiveBidderIds(playerId);
+    const activeBidders = await getActiveBidderIds(playerId, tournamentId);
     if (activeBidders.length !== 2) {
       return {
         ok: false,
@@ -390,12 +413,14 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       };
     }
 
-    const doc = await getOrCreateDoc(playerId);
+    const doc = await getOrCreateDoc(playerId, tournamentId);
     if (doc.entries.some((e) => e.userId.toString() === userId && e.status === "queued")) {
       return { ok: false, status: 400, message: "You are already in the queue for this player." };
     }
 
-    const highestBid = await Bid.findOne({ playerId, isActive: true })
+    const highestBid = await Bid.findOne(
+      tournamentId ? { playerId, tournamentId, isActive: true } : { playerId, isActive: true }
+    )
       .sort({ bidAmount: -1 })
       .lean();
     const nextBid = computeNextBidAmount(player, highestBid);
@@ -432,18 +457,18 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       maxBid,
     });
     const qn = doc.entries.filter((e) => e.status === "queued").length;
-    await emitBidQueueUpdated(io, playerId, qn);
+    await emitBidQueueUpdated(io, playerId, qn, tournamentId);
 
     return { ok: true, queueCount: qn };
   });
 }
 
-async function leaveQueue({ playerId, userId, io }) {
+async function leaveQueue({ playerId, userId, io, tournamentId = null }) {
   if (!isEnabled()) {
     return { ok: false, status: 503, message: "Bid queue feature is disabled." };
   }
   return withPlayerBidLock(playerId, async () => {
-    const doc = await BidPlayerQueue.findOne({ playerId });
+    const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId));
     if (!doc) {
       return { ok: false, status: 404, message: "No queue for this player." };
     }
@@ -462,12 +487,12 @@ async function leaveQueue({ playerId, userId, io }) {
   });
 }
 
-async function updateQueueMax({ playerId, userId, maxBid, io }) {
+async function updateQueueMax({ playerId, userId, maxBid, io, tournamentId = null }) {
   if (!isEnabled()) {
     return { ok: false, status: 503, message: "Bid queue feature is disabled." };
   }
   return withPlayerBidLock(playerId, async () => {
-    const doc = await BidPlayerQueue.findOne({ playerId });
+    const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId));
     if (!doc) return { ok: false, status: 404, message: "No queue." };
     const entry = doc.entries.find((e) => e.userId.toString() === userId && e.status === "queued");
     if (!entry) {
@@ -475,7 +500,9 @@ async function updateQueueMax({ playerId, userId, maxBid, io }) {
     }
 
     const player = await Player.findById(playerId);
-    const highestBid = await Bid.findOne({ playerId, isActive: true })
+    const highestBid = await Bid.findOne(
+      tournamentId ? { playerId, tournamentId, isActive: true } : { playerId, isActive: true }
+    )
       .sort({ bidAmount: -1 })
       .lean();
     const nextBid = computeNextBidAmount(player, highestBid);
@@ -504,7 +531,7 @@ async function updateQueueMax({ playerId, userId, maxBid, io }) {
     await user.save();
     await doc.save();
 
-    await emitBidQueueUpdated(io, playerId);
+    await emitBidQueueUpdated(io, playerId, undefined, tournamentId);
     return { ok: true };
   });
 }
@@ -512,9 +539,13 @@ async function updateQueueMax({ playerId, userId, maxBid, io }) {
 /**
  * All queue / proxy rows for this user (for auction hub).
  */
-async function listMyQueueMemberships(userId) {
+async function listMyQueueMemberships(userId, tournamentId = null) {
   const uid = userId.toString();
-  const docs = await BidPlayerQueue.find({ "entries.userId": userId })
+  const docs = await BidPlayerQueue.find(
+    tournamentId
+      ? { "entries.userId": userId, tournamentId }
+      : { "entries.userId": userId }
+  )
     .populate("playerId", "name type profilePicture")
     .lean();
 
@@ -553,8 +584,8 @@ async function listMyQueueMemberships(userId) {
   return out;
 }
 
-async function getQueueState(playerId, viewerUserId) {
-  const activeBidderIds = await getActiveBidderIds(playerId);
+async function getQueueState(playerId, viewerUserId, tournamentId = null) {
+  const activeBidderIds = await getActiveBidderIds(playerId, tournamentId);
   const activeBidderCount = activeBidderIds.length;
   const queueJoinAllowed = activeBidderCount === 2;
 
@@ -572,7 +603,7 @@ async function getQueueState(playerId, viewerUserId) {
       activeBidderCount,
     };
   }
-  const doc = await BidPlayerQueue.findOne({ playerId })
+  const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId))
     .populate("entries.userId", "name teamName")
     .lean();
   const queuedRaw = doc?.entries.filter((e) => e.status === "queued") || [];
@@ -636,9 +667,9 @@ async function getQueueState(playerId, viewerUserId) {
   };
 }
 
-async function isPromotedProxyBidder(playerId, userId) {
+async function isPromotedProxyBidder(playerId, userId, tournamentId = null) {
   if (!isEnabled()) return false;
-  const doc = await BidPlayerQueue.findOne({ playerId }).select("entries").lean();
+  const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId)).select("entries").lean();
   if (!doc?.entries?.length) return false;
   const uid = userId.toString();
   return doc.entries.some(
@@ -650,12 +681,12 @@ async function isPromotedProxyBidder(playerId, userId) {
  * Promoted (active_proxy) user stays in the auction but stops auto-bid; manual Place Bid allowed again.
  * To use auto-bid later they must exit, join queue again, and get promoted.
  */
-async function resignActiveProxyToManual({ playerId, userId, io }) {
+async function resignActiveProxyToManual({ playerId, userId, io, tournamentId = null }) {
   if (!isEnabled()) {
     return { ok: false, status: 503, message: "Bid queue feature is disabled." };
   }
   return withPlayerBidLock(playerId, async () => {
-    const doc = await BidPlayerQueue.findOne({ playerId });
+    const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId));
     if (!doc) {
       return { ok: false, status: 404, message: "No queue for this player." };
     }
@@ -671,6 +702,7 @@ async function resignActiveProxyToManual({ playerId, userId, io }) {
     }
     const activeBid = await Bid.findOne({
       playerId,
+      ...(tournamentId ? { tournamentId } : {}),
       bidder: userId,
       isActive: true,
       isBidOn: true,
@@ -694,19 +726,21 @@ async function resignActiveProxyToManual({ playerId, userId, io }) {
       type: "proxy_resigned_manual",
       playerId: playerId.toString(),
     });
-    await emitBidQueueUpdated(io, playerId);
+    await emitBidQueueUpdated(io, playerId, undefined, tournamentId);
     return { ok: true };
   });
 }
 
-async function afterBidPlaced(playerId, io) {
+async function afterBidPlaced(playerId, io, tournamentId = null) {
   if (!isEnabled()) return;
-  await pruneQueuedOverMax(playerId, io);
+  await pruneQueuedOverMax(playerId, io, tournamentId);
 
-  const doc = await BidPlayerQueue.findOne({ playerId });
+  const doc = await BidPlayerQueue.findOne(queueFilter(playerId, tournamentId));
   if (!doc) return;
   const player = await Player.findById(playerId);
-  const highestBid = await Bid.findOne({ playerId, isActive: true })
+  const highestBid = await Bid.findOne(
+    tournamentId ? { playerId, tournamentId, isActive: true } : { playerId, isActive: true }
+  )
     .sort({ bidAmount: -1 })
     .lean();
 
@@ -724,7 +758,7 @@ async function afterBidPlaced(playerId, io) {
     }
   }
   if (changed) await doc.save();
-  await emitBidQueueUpdated(io, playerId);
+  await emitBidQueueUpdated(io, playerId, undefined, tournamentId);
 }
 
 module.exports = {

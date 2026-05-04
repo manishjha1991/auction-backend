@@ -19,6 +19,7 @@ const {
   autoRejectTradesInvolvingPlayers,
   TRADE_LOCK_HOURS,
 } = require('../utils/tradeApprovalShared');
+const { getTournamentIdFromRequest, withTournamentFilter, attachTournamentId } = require('../utils/tournamentScope');
 
 const CRORE = 10_000_000;
 
@@ -65,9 +66,10 @@ router.get('/teams', async (req, res) => {
 
 router.get('/team/:userId/players', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(req.query.adminUserId);
     const { userId } = req.params;
-    const ups = await UserPlayer.find({ userId, isActive: true })
+    const ups = await UserPlayer.find(withTournamentFilter({ userId, isActive: true }, tournamentId))
       .populate('playerId', 'name type role basePrice')
       .lean();
     const list = ups
@@ -119,14 +121,15 @@ router.get('/unsold', async (req, res) => {
 router.post('/trade/preview', async (req, res) => {
   try {
     const { adminUserId, player1Id, player2Id } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
     if (!player1Id || !player2Id || String(player1Id) === String(player2Id)) {
       return res.status(400).json({ message: 'Two different player IDs required' });
     }
 
     const [up1, up2] = await Promise.all([
-      UserPlayer.findOne({ playerId: player1Id, isActive: true }).populate('userId').populate('playerId', 'name type'),
-      UserPlayer.findOne({ playerId: player2Id, isActive: true }).populate('userId').populate('playerId', 'name type'),
+      UserPlayer.findOne(withTournamentFilter({ playerId: player1Id, isActive: true }, tournamentId)).populate('userId').populate('playerId', 'name type'),
+      UserPlayer.findOne(withTournamentFilter({ playerId: player2Id, isActive: true }, tournamentId)).populate('userId').populate('playerId', 'name type'),
     ]);
     if (!up1 || !up2) {
       return res.status(404).json({ message: 'One or both players are not on an active roster' });
@@ -196,14 +199,15 @@ router.post('/trade/preview', async (req, res) => {
 router.post('/trade/execute', async (req, res) => {
   try {
     const { adminUserId, player1Id, player2Id } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
     if (!player1Id || !player2Id) {
       return res.status(400).json({ message: 'player1Id and player2Id required' });
     }
 
     const [up1, up2] = await Promise.all([
-      UserPlayer.findOne({ playerId: player1Id, isActive: true }).populate('userId').populate('playerId', 'name type'),
-      UserPlayer.findOne({ playerId: player2Id, isActive: true }).populate('userId').populate('playerId', 'name type'),
+      UserPlayer.findOne(withTournamentFilter({ playerId: player1Id, isActive: true }, tournamentId)).populate('userId').populate('playerId', 'name type'),
+      UserPlayer.findOne(withTournamentFilter({ playerId: player2Id, isActive: true }, tournamentId)).populate('userId').populate('playerId', 'name type'),
     ]);
     if (!up1 || !up2) {
       return res.status(404).json({ message: 'One or both players not found on active rosters' });
@@ -256,6 +260,7 @@ router.post('/trade/execute', async (req, res) => {
       adminUserId,
       [player1Id, player2Id],
       null,
+      tournamentId,
     );
 
     res.json({
@@ -318,12 +323,13 @@ router.post('/pick/preview', async (req, res) => {
 router.post('/pick/execute', async (req, res) => {
   try {
     const { adminUserId, teamUserId, playerId } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
     if (!teamUserId || !playerId) {
       return res.status(400).json({ message: 'teamUserId and playerId required' });
     }
 
-    const existing = await UserPlayer.findOne({ playerId, isActive: true });
+    const existing = await UserPlayer.findOne(withTournamentFilter({ playerId, isActive: true }, tournamentId));
     if (existing) {
       return res.status(400).json({ message: 'Player already assigned to a team' });
     }
@@ -344,12 +350,12 @@ router.post('/pick/execute', async (req, res) => {
     }
     await user.save();
 
-    await UserPlayer.create({
+    await UserPlayer.create(attachTournamentId({
       playerId,
       userId: teamUserId,
       bidValue: basePrice,
       isActive: true,
-    });
+    }, tournamentId));
 
     // Persist bid fields even if not on strict Player schema (matches bid/sold behaviour)
     await Player.collection.updateOne(
@@ -364,7 +370,7 @@ router.post('/pick/execute', async (req, res) => {
       },
     );
 
-    await Bid.deleteMany({ playerId });
+    await Bid.deleteMany(withTournamentFilter({ playerId }, tournamentId));
 
     await setTradeLockOnPlayers([playerId]);
 
@@ -386,12 +392,13 @@ router.post('/pick/execute', async (req, res) => {
 router.post('/release/preview', async (req, res) => {
   try {
     const { adminUserId, teamUserId, playerId } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
     if (!teamUserId || !playerId) {
       return res.status(400).json({ message: 'teamUserId and playerId required' });
     }
 
-    const up = await UserPlayer.findOne({ userId: teamUserId, playerId, isActive: true })
+    const up = await UserPlayer.findOne(withTournamentFilter({ userId: teamUserId, playerId, isActive: true }, tournamentId))
       .populate('playerId', 'name type role')
       .lean();
     if (!up) return res.status(404).json({ message: 'Team does not own this player' });
@@ -408,7 +415,9 @@ router.post('/release/preview', async (req, res) => {
     const refund = Number(up.bidValue || 0);
     const purse = purseNum(user);
     const after = purse + refund;
-    const activeCount = await UserPlayer.countDocuments({ userId: teamUserId, isActive: true });
+    const activeCount = await UserPlayer.countDocuments(
+      withTournamentFilter({ userId: teamUserId, isActive: true }, tournamentId)
+    );
 
     res.json({
       ok: true,
@@ -436,9 +445,12 @@ router.post('/release/preview', async (req, res) => {
 router.post('/release/execute', async (req, res) => {
   try {
     const { adminUserId, teamUserId, playerId } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
 
-    const up = await UserPlayer.findOne({ userId: teamUserId, playerId, isActive: true });
+    const up = await UserPlayer.findOne(
+      withTournamentFilter({ userId: teamUserId, playerId, isActive: true }, tournamentId)
+    );
     if (!up) return res.status(404).json({ message: 'Ownership not found' });
 
     const playerDoc = await Player.findById(playerId).lean();
@@ -471,7 +483,7 @@ router.post('/release/execute', async (req, res) => {
     });
 
     await User.findByIdAndUpdate(teamUserId, { $pull: { boughtPlayers: playerId } });
-    await Bid.deleteMany({ playerId });
+    await Bid.deleteMany(withTournamentFilter({ playerId }, tournamentId));
 
     const user = await User.findById(teamUserId);
     res.json({

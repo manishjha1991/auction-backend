@@ -7,6 +7,7 @@ const Player = require('../models/Player');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
 const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 const router = express.Router();
 
@@ -15,7 +16,9 @@ const router = express.Router();
 router.get('/', async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (2 minute cache for fixtures)
   const mode = req.query.mode || 'normal';
-  const cacheKey = `fixtures:${mode}`;
+  const tournamentId = getTournamentIdFromRequest(req);
+  const tournamentKey = tournamentId ? tournamentId.toString() : 'legacy';
+  const cacheKey = `fixtures:${mode}:${tournamentKey}`;
   const cached = cacheConfig.medium.get(cacheKey);
   if (cached) {
     return res.status(200).json(cached);
@@ -38,7 +41,7 @@ router.get('/', async (req, res) => {
 
     // 2) Fetch all active fixtures (which store team1/team2 as strings)
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const existingFixtures = await Fixture.find({ isActive: true }).lean();
+    const existingFixtures = await Fixture.find(withTournamentFilter({ isActive: true }, tournamentId)).lean();
 
     // Deduplicate existing fixtures - batch delete duplicates (no winner) in one call
     const uniqueFixtureMap = new Set();
@@ -57,12 +60,12 @@ router.get('/', async (req, res) => {
       }
     }
     if (duplicateIdsToDelete.length > 0) {
-      await Fixture.deleteMany({ _id: { $in: duplicateIdsToDelete } });
+      await Fixture.deleteMany(withTournamentFilter({ _id: { $in: duplicateIdsToDelete } }, tournamentId));
     }
 
     // 3) Re-fetch cleaned active fixtures
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const cleanedFixtures = await Fixture.find({ isActive: true }).lean();
+    const cleanedFixtures = await Fixture.find(withTournamentFilter({ isActive: true }, tournamentId)).lean();
 
     // 4) Separate teams by groups
     const groupA = teams.filter(team => team.group === 'A');
@@ -106,6 +109,7 @@ router.get('/', async (req, res) => {
               newFixtures.push({ 
                 team1: t1, 
                 team2: t2,
+                tournamentId: tournamentId || null,
                 team1UserId: t1Id, // userId-based
                 team2UserId: t2Id, // userId-based
                 group: 'A',
@@ -134,6 +138,7 @@ router.get('/', async (req, res) => {
               newFixtures.push({ 
                 team1: t1, 
                 team2: t2,
+                tournamentId: tournamentId || null,
                 team1UserId: t1Id, // userId-based
                 team2UserId: t2Id, // userId-based
                 group: 'B',
@@ -162,6 +167,7 @@ router.get('/', async (req, res) => {
               newFixtures.push({ 
                 team1: t1, 
                 team2: t2,
+                tournamentId: tournamentId || null,
                 team1UserId: t1Id, // userId-based
                 team2UserId: t2Id, // userId-based
                 group: null,
@@ -196,6 +202,7 @@ router.get('/', async (req, res) => {
             newFixtures.push({ 
               team1: t1, 
               team2: t2,
+              tournamentId: tournamentId || null,
               team1UserId: t1Id, // userId-based
               team2UserId: t2Id, // userId-based
               group: null,
@@ -214,12 +221,12 @@ router.get('/', async (req, res) => {
     }
     
     // 7.5) Log total fixture count
-    const totalActiveFixtures = await Fixture.countDocuments({ isActive: true });
+    const totalActiveFixtures = await Fixture.countDocuments(withTournamentFilter({ isActive: true }, tournamentId));
     if (process.env.NODE_ENV !== 'production') console.log(`📊 Total active fixtures: ${totalActiveFixtures}`);
 
     // 8) Fetch *all* active fixtures sorted by createdAt
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const allFixtures = await Fixture.find({ isActive: true })
+    const allFixtures = await Fixture.find(withTournamentFilter({ isActive: true }, tournamentId))
       .sort({ createdAt: 1 })
       .lean();
 
@@ -319,6 +326,7 @@ const isAdmin = async (req, res, next) => {
 router.post('/save', isAdmin, async (req, res) => {
   let oldWinnerBeforeSave = null;
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     if (process.env.NODE_ENV !== 'production') console.log('📥 Fixture save:', req.body._id);
     
     const {
@@ -371,6 +379,9 @@ router.post('/save', isAdmin, async (req, res) => {
       try {
         // Note: Don't use .lean() here because we need to modify and save this fixture
         fixture = await Fixture.findById(_id);
+        if (fixture && tournamentId && (!fixture.tournamentId || String(fixture.tournamentId) !== String(tournamentId))) {
+          fixture = null;
+        }
         if (!fixture && process.env.NODE_ENV !== 'production') console.log(`⚠️ Fixture not found: ${_id}`);
       } catch (idError) {
         console.error(`❌ Error finding fixture by _id ${_id}:`, idError.message);
@@ -400,14 +411,14 @@ router.post('/save', isAdmin, async (req, res) => {
             { team1UserId: userId1, team2UserId: userId2 },
             { team1UserId: userId2, team2UserId: userId1 }
           ],
-          isActive: true
+          ...withTournamentFilter({ isActive: true }, tournamentId)
         });
       }
       
       // Fall back to teamName if not found by userId
       if (!fixture) {
         // Note: Don't use .lean() here because we need to modify and save this fixture
-        fixture = await Fixture.findOne({ team1, team2, isActive: true });
+        fixture = await Fixture.findOne(withTournamentFilter({ team1, team2, isActive: true }, tournamentId));
       }
       // Note: fixture is already a Mongoose document (not lean) so we can save it directly
     }
@@ -432,6 +443,7 @@ router.post('/save', isAdmin, async (req, res) => {
       }
       
       fixture = new Fixture({
+        tournamentId: tournamentId || null,
         team1,
         team2,
         team1UserId: finalUserId1, // userId-based
@@ -544,10 +556,10 @@ router.post('/save', isAdmin, async (req, res) => {
         // Head-to-head: if winner changed on update, mark unsynced, revert old winner, then re-sync
         if (oldWinnerBeforeSave && oldWinnerBeforeSave !== fixture.winner && headToHeadModule.revertAndResyncForRecord) {
           Fixture.updateOne({ _id: fixture._id }, { $set: { headToHeadSynced: false } })
-            .then(() => headToHeadModule.revertAndResyncForRecord(fixture.team1, fixture.team2, oldWinnerBeforeSave))
+            .then(() => headToHeadModule.revertAndResyncForRecord(fixture.team1, fixture.team2, oldWinnerBeforeSave, tournamentId))
             .catch((err) => console.error('Head-to-head sync:', err));
         } else if (headToHeadModule.syncHeadToHead) {
-          headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
+          headToHeadModule.syncHeadToHead(tournamentId).catch((err) => console.error('Head-to-head sync:', err));
         }
 
         const shouldBumpCareer =
@@ -609,9 +621,10 @@ router.post('/save', isAdmin, async (req, res) => {
 // Get fixtures filtered by group or match type
 router.get('/filter', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { group, matchType } = req.query;
     
-    let query = { isActive: true };
+    let query = withTournamentFilter({ isActive: true }, tournamentId);
     
     if (group) {
       query.group = group;
@@ -634,11 +647,12 @@ router.get('/filter', async (req, res) => {
 // Get group stage fixtures only
 router.get('/group-stage', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const fixtures = await Fixture.find({ 
+    const fixtures = await Fixture.find(withTournamentFilter({ 
       isActive: true, 
       matchType: 'group' 
-    }).sort({ createdAt: 1 }).lean();
+    }, tournamentId)).sort({ createdAt: 1 }).lean();
     
     res.status(200).json(fixtures);
   } catch (error) {
@@ -650,11 +664,12 @@ router.get('/group-stage', async (req, res) => {
 // Get normal fixtures only
 router.get('/normal', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const fixtures = await Fixture.find({ 
+    const fixtures = await Fixture.find(withTournamentFilter({ 
       isActive: true, 
       matchType: 'normal' 
-    }).sort({ createdAt: 1 }).lean();
+    }, tournamentId)).sort({ createdAt: 1 }).lean();
     
     res.status(200).json(fixtures);
   } catch (error) {

@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const RetainedPlayerSchema = new mongoose.Schema({
+  tournamentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tournament',
+    default: null,
+    index: true
+  },
   playerId: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Player', 
@@ -52,6 +58,8 @@ const RetainedPlayerSchema = new mongoose.Schema({
 RetainedPlayerSchema.index({ userId: 1, isActive: 1 });
 RetainedPlayerSchema.index({ playerId: 1, isActive: 1 });
 RetainedPlayerSchema.index({ userId: 1, playerType: 1 });
+RetainedPlayerSchema.index({ tournamentId: 1, userId: 1, isActive: 1 });
+RetainedPlayerSchema.index({ tournamentId: 1, playerId: 1, isActive: 1 });
 
 module.exports = mongoose.model('RetainedPlayer', RetainedPlayerSchema);
 

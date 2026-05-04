@@ -2,6 +2,12 @@
 const mongoose = require('mongoose');
 
 const FixtureSchema = new mongoose.Schema({
+  tournamentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tournament',
+    default: null,
+    index: true
+  },
   // Team names (kept for backward compatibility and display)
   team1: { type: String, required: true },
   team2: { type: String, required: true },
@@ -52,5 +58,7 @@ FixtureSchema.index({ team2: 1, isActive: 1 });
 FixtureSchema.index({ team1UserId: 1, isActive: 1 });
 FixtureSchema.index({ team2UserId: 1, isActive: 1 });
 FixtureSchema.index({ isActive: 1, createdAt: 1 });
+FixtureSchema.index({ tournamentId: 1, isActive: 1, createdAt: 1 });
+FixtureSchema.index({ tournamentId: 1, team1UserId: 1, team2UserId: 1 });
 
 module.exports = mongoose.model('Fixture', FixtureSchema);

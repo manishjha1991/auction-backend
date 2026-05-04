@@ -14,10 +14,12 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 // Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
 router.get('/unsold', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 10));
     const type = req.query.type; // optional: Sapphire|Gold|Emerald|Silver
@@ -51,11 +53,11 @@ router.get('/unsold', async (req, res) => {
 
     // Check which players have active bids (like in user section)
     const playerIds = allItems.map(item => item._id);
-    const activeBids = await Bid.find({
+    const activeBids = await Bid.find(withTournamentFilter({
       playerId: { $in: playerIds },
       isActive: true,
       isBidOn: true
-    }).select('playerId');
+    }, tournamentId)).select('playerId');
 
     const playersWithActiveBids = new Set(activeBids.map(bid => bid.playerId.toString()));
 
@@ -88,6 +90,7 @@ router.get('/unsold', async (req, res) => {
 // Create pick request
 router.post('/', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { userId, playerId } = req.body;
     if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
     const [player, user] = await Promise.all([
@@ -120,7 +123,14 @@ router.post('/', async (req, res) => {
     await user.save();
 
     // Create a live bid
-    const newBid = new Bid({ playerId: player._id, bidder: user._id, bidAmount: basePrice, isActive: true, isBidOn: true });
+    const newBid = new Bid({
+      tournamentId: tournamentId || null,
+      playerId: player._id,
+      bidder: user._id,
+      bidAmount: basePrice,
+      isActive: true,
+      isBidOn: true
+    });
     await newBid.save();
 
     // Reflect current bid on player
@@ -128,7 +138,13 @@ router.post('/', async (req, res) => {
     player.currentBidder = user._id;
     await player.save();
 
-    const pr = await PickRequest.create({ user: userId, player: playerId, status: 'pending', history: [{ byUser: userId, action: 'propose' }] });
+    const pr = await PickRequest.create({
+      tournamentId: tournamentId || null,
+      user: userId,
+      player: playerId,
+      status: 'pending',
+      history: [{ byUser: userId, action: 'propose' }]
+    });
     res.status(201).json(pr);
   } catch (e) {
     console.error('Pick create error', e);
@@ -139,8 +155,11 @@ router.post('/', async (req, res) => {
 // User: my pick requests
 router.get('/user/:userId', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { userId } = req.params;
-    const picks = await PickRequest.find({ user: userId }).populate('player', 'name type role').sort({ createdAt: -1 });
+    const picks = await PickRequest.find(withTournamentFilter({ user: userId }, tournamentId))
+      .populate('player', 'name type role')
+      .sort({ createdAt: -1 });
     res.json(picks);
   } catch (e) {
     console.error('Pick list error', e);
@@ -151,7 +170,10 @@ router.get('/user/:userId', async (req, res) => {
 // Admin: pending picks
 router.get('/admin/pending', async (req, res) => {
   try {
-    const picks = await PickRequest.find({ status: { $in: ['pending', 'admin_pending'] } })
+    const tournamentId = getTournamentIdFromRequest(req);
+    const picks = await PickRequest.find(
+      withTournamentFilter({ status: { $in: ['pending', 'admin_pending'] } }, tournamentId)
+    )
       .populate('user', 'name teamName')
       .populate('player', 'name type role basePrice')
       .sort({ updatedAt: -1 });
@@ -165,9 +187,10 @@ router.get('/admin/pending', async (req, res) => {
 // Admin: decide pick
 router.post('/admin/:pickId/decide', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { pickId } = req.params;
     const { adminUserId, decision, note } = req.body;
-    const item = await PickRequest.findById(pickId);
+    const item = await PickRequest.findOne(withTournamentFilter({ _id: pickId }, tournamentId));
     if (!item) return res.status(404).json({ message: 'Pick request not found' });
 
     if (decision === 'approve') {
@@ -260,7 +283,7 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       
       // Mark the bid as inactive
       await Bid.updateMany(
-        { playerId: item.player, bidder: item.user }, 
+        withTournamentFilter({ playerId: item.player, bidder: item.user }, tournamentId), 
         { $set: { isActive: false, isBidOn: false } }
       );
       
@@ -308,7 +331,10 @@ router.post('/admin/:pickId/decide', async (req, res) => {
 // Admin: pick history
 router.get('/admin/history', async (req, res) => {
   try {
-    const picks = await PickRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
+    const tournamentId = getTournamentIdFromRequest(req);
+    const picks = await PickRequest.find(
+      withTournamentFilter({ 'adminDecision.status': { $in: ['approved', 'rejected'] } }, tournamentId)
+    )
       .populate('user', 'name teamName')
       .populate('player', 'name type role basePrice')
       .populate('adminDecision.decidedBy', 'name email')

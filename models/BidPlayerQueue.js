@@ -19,15 +19,30 @@ const QueueEntrySchema = new mongoose.Schema(
 );
 
 const BidPlayerQueueSchema = new mongoose.Schema({
+  tournamentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Tournament",
+    default: null,
+    index: true,
+  },
   playerId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Player",
     required: true,
-    unique: true,
   },
   entries: [QueueEntrySchema],
   updatedAt: { type: Date, default: Date.now },
 });
+
+BidPlayerQueueSchema.index({ playerId: 1 });
+BidPlayerQueueSchema.index(
+  { tournamentId: 1, playerId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { tournamentId: { $type: "objectId" } },
+    name: "unique_queue_player_per_tournament",
+  }
+);
 
 BidPlayerQueueSchema.pre("save", function (next) {
   this.updatedAt = new Date();

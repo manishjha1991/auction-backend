@@ -8,6 +8,7 @@
  */
 
 const mongoose = require('mongoose');
+const Tournament = require('../models/Tournament');
 
 const norm = (s) => String(s || '').trim().toLowerCase();
 
@@ -25,17 +26,17 @@ function dateKey(d) {
   return dt.toISOString().slice(0, 10);
 }
 
-function dedupeKey(dbName, team1, team2, date) {
+function dedupeKey(scopeKey, team1, team2, date) {
   const pair = normalizePair(team1, team2);
   if (!pair) return null;
-  return `${dbName}|${pair[0]}|${pair[1]}|${dateKey(date)}`;
+  return `${scopeKey}|${pair[0]}|${pair[1]}|${dateKey(date)}`;
 }
 
 /**
  * Lower priority wins when merging (fixture preferred over match result, etc.)
  */
-function mergeRecord(merged, dbName, row) {
-  const k = dedupeKey(dbName, row.team1, row.team2, row.date);
+function mergeRecord(merged, scopeKey, row) {
+  const k = dedupeKey(scopeKey, row.team1, row.team2, row.date);
   if (!k) return;
   const prev = merged.get(k);
   if (!prev || row.priority < prev.priority) {
@@ -95,6 +96,11 @@ function resolveCareerDbNames() {
 }
 
 const PARALLEL_DBS = Math.max(1, Math.min(12, parseInt(process.env.CPL_TEAM_CAREER_PARALLEL || '6', 10) || 6));
+
+function useLegacyCareerMode() {
+  const mode = String(process.env.CPL_TEAM_CAREER_SOURCE || '').toLowerCase();
+  return mode === 'legacy-db' || mode === 'legacy-dbs' || mode === 'legacy';
+}
 
 async function loadMergedMatchesForDb(dbName) {
   const conn = mongoose.connection.useDb(dbName, { useCache: true });
@@ -187,6 +193,104 @@ async function loadMergedMatchesForDb(dbName) {
   return merged;
 }
 
+async function resolveCareerTournamentIds() {
+  const explicit = String(process.env.CPL_TEAM_CAREER_TOURNAMENT_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (explicit.length) return explicit;
+  const rows = await Tournament.find({ isActive: true })
+    .select('_id endDate updatedAt')
+    .sort({ endDate: -1, updatedAt: -1 })
+    .lean();
+  return rows.map((r) => String(r._id));
+}
+
+async function loadMergedMatchesForTournament(tournamentId) {
+  const merged = new Map();
+  const db = mongoose.connection.db;
+  const tid = new mongoose.Types.ObjectId(String(tournamentId));
+  const scopeKey = `t:${String(tournamentId)}`;
+
+  const fixtures = await db
+    .collection('fixtures')
+    .find({
+      tournamentId: tid,
+      isActive: { $ne: false },
+      winner: { $exists: true, $nin: [null, '', 'tie', 'no_result', 'TBD', 'tbd'] },
+    })
+    .project({ team1: 1, team2: 1, winner: 1, createdAt: 1 })
+    .toArray();
+  fixtures.forEach((f) => {
+    mergeRecord(merged, scopeKey, {
+      team1: f.team1,
+      team2: f.team2,
+      date: f.createdAt,
+      winnerRaw: f.winner,
+      source: 'fixture',
+      priority: 0,
+    });
+  });
+
+  const mrs = await db
+    .collection('matchresults')
+    .find({ tournamentId: tid })
+    .project({ team1: 1, team2: 1, winner: 1, matchDate: 1 })
+    .toArray();
+  mrs.forEach((m) => {
+    if (!m.winner || m.winner === 'tie' || m.winner === 'no_result') return;
+    mergeRecord(merged, scopeKey, {
+      team1: m.team1,
+      team2: m.team2,
+      date: m.matchDate,
+      winnerRaw: m.winner,
+      source: 'matchresult',
+      priority: 1,
+    });
+  });
+
+  const pfs = await db
+    .collection('playofffixtures')
+    .find({
+      tournamentId: tid,
+      isCompleted: true,
+      winner: { $exists: true, $nin: [null, '', 'TBD', 'tbd'] },
+    })
+    .project({ team1: 1, team2: 1, winner: 1, date: 1, createdAt: 1 })
+    .toArray();
+  pfs.forEach((p) => {
+    mergeRecord(merged, scopeKey, {
+      team1: p.team1,
+      team2: p.team2,
+      date: p.date || p.createdAt,
+      winnerRaw: p.winner,
+      source: 'playoff',
+      priority: 2,
+    });
+  });
+
+  const wcTournament = await db.collection('tournaments').findOne({
+    _id: tid,
+    name: { $regex: /^World Cup/i },
+    tournamentFixtures: { $exists: true, $ne: [] },
+  });
+  if (wcTournament) {
+    (wcTournament.tournamentFixtures || []).forEach((fx) => {
+      if (!fx.winner || norm(fx.winner) === 'tie' || norm(fx.winner) === 'no_result') return;
+      mergeRecord(merged, scopeKey, {
+        team1: fx.team1,
+        team2: fx.team2,
+        date: fx.createdAt || wcTournament.startDate,
+        winnerRaw: fx.winner,
+        source: 'tournament_wc',
+        priority: 3,
+      });
+    });
+  }
+
+  return merged;
+}
+
 async function mapWithConcurrency(items, limit, fn) {
   const out = [];
   for (let i = 0; i < items.length; i += limit) {
@@ -210,18 +314,34 @@ async function aggregateCareerStatsForTeams(teamNames) {
   if (uniqueKeys.length === 0) return totals;
   if (mongoose.connection.readyState !== 1) return totals;
 
-  const dbNames = resolveCareerDbNames();
+  if (useLegacyCareerMode()) {
+    const dbNames = resolveCareerDbNames();
+    await mapWithConcurrency(dbNames, PARALLEL_DBS, async (dbName) => {
+      try {
+        const merged = await loadMergedMatchesForDb(dbName);
+        uniqueKeys.forEach((tk) => {
+          const { played, wins } = countForTeam(merged, tk);
+          totals[tk].careerPlayed += played;
+          totals[tk].careerWins += wins;
+        });
+      } catch (e) {
+        console.warn(`[teamCareerStats] skip ${dbName}:`, e.message);
+      }
+    });
+    return totals;
+  }
 
-  await mapWithConcurrency(dbNames, PARALLEL_DBS, async (dbName) => {
+  const tournamentIds = await resolveCareerTournamentIds();
+  await mapWithConcurrency(tournamentIds, PARALLEL_DBS, async (tournamentId) => {
     try {
-      const merged = await loadMergedMatchesForDb(dbName);
+      const merged = await loadMergedMatchesForTournament(tournamentId);
       uniqueKeys.forEach((tk) => {
         const { played, wins } = countForTeam(merged, tk);
         totals[tk].careerPlayed += played;
         totals[tk].careerWins += wins;
       });
     } catch (e) {
-      console.warn(`[teamCareerStats] skip ${dbName}:`, e.message);
+      console.warn(`[teamCareerStats] skip tournament ${tournamentId}:`, e.message);
     }
   });
 
@@ -253,6 +373,7 @@ async function getCachedCareerStatsForTeams(teamNames) {
 
 module.exports = {
   resolveCareerDbNames,
+  resolveCareerTournamentIds,
   aggregateCareerStatsForTeams,
   getCachedCareerStatsForTeams,
   norm,

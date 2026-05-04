@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const PickRequest = require('../models/PickRequest');
+const { withTournamentFilter } = require('./tournamentScope');
 
 const TIERS = ['Sapphire', 'Gold', 'Emerald', 'Silver'];
 
@@ -39,8 +40,8 @@ function unpairedReleaseFilter() {
   };
 }
 
-async function pickIsAlreadyPairedToARelease(pickId) {
-  return ReleaseRequest.exists({ pairedPickRequest: pickId });
+async function pickIsAlreadyPairedToARelease(pickId, tournamentId = null) {
+  return ReleaseRequest.exists(withTournamentFilter({ pairedPickRequest: pickId }, tournamentId));
 }
 
 /**

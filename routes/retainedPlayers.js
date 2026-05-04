@@ -18,6 +18,7 @@ const Schedule = require('../models/Schedule');
 const TradeRequest = require('../models/TradeRequest');
 const AppSettings = require('../models/AppSettings');
 const { invalidateCache } = require('../utils/cache');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 /* ──────────────────────────────────────────────────────────────────────
  * ⚠️  DO NOT WIPE `VenueMatchEntry` IN ANY RESET FLOW BELOW.
@@ -53,6 +54,7 @@ const getOriginalBasePrice = (playerType) => {
 // NEW: Fix all player base prices to correct values
 router.post('/fix-base-prices', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     console.log('🔧 Starting comprehensive base price fix...');
     
     // Get all players
@@ -85,7 +87,9 @@ router.post('/fix-base-prices', async (req, res) => {
     }
     
     // Update UserPlayer bidValue for sold players
-    const userPlayers = await UserPlayer.find({ isActive: true }).populate('playerId');
+    const userPlayers = await UserPlayer.find(
+      withTournamentFilter({ isActive: true }, tournamentId)
+    ).populate('playerId');
     for (const userPlayer of userPlayers) {
       if (userPlayer.playerId) {
         const correctBasePrice = getOriginalBasePrice(userPlayer.playerId.type);
@@ -333,6 +337,7 @@ router.get('/all', async (req, res) => {
 // Release all other players (admin only)
 router.post('/release-all-others', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { adminUserId } = req.body;
     
     // Verify admin
@@ -342,7 +347,9 @@ router.post('/release-all-others', async (req, res) => {
     }
 
     // Get all retained player IDs
-    const retainedPlayers = await RetainedPlayer.find({ isActive: true });
+    const retainedPlayers = await RetainedPlayer.find(
+      withTournamentFilter({ isActive: true }, tournamentId)
+    );
     const initialRetainedPlayerIds = retainedPlayers.map(rp => rp.playerId);
 
     // Get all sold players that are NOT retained
@@ -358,10 +365,10 @@ router.post('/release-all-others', async (req, res) => {
     for (const player of playersToRelease) {
       try {
         // Find the user who owns this player
-        const userPlayer = await UserPlayer.findOne({ 
+        const userPlayer = await UserPlayer.findOne(withTournamentFilter({ 
           playerId: player._id, 
           isActive: true 
-        });
+        }, tournamentId));
         
         if (userPlayer) {
           const user = await User.findById(userPlayer.userId);
@@ -396,8 +403,8 @@ router.post('/release-all-others', async (req, res) => {
 
         // Clean up related data
         await Promise.all([
-          Bid.deleteMany({ playerId: player._id }),
-          BidHistory.deleteMany({ playerId: player._id }),
+          Bid.deleteMany(withTournamentFilter({ playerId: player._id }, tournamentId)),
+          BidHistory.deleteMany(withTournamentFilter({ playerId: player._id }, tournamentId)),
           Notification.deleteMany({ 
             $or: [
               { 'metadata.playerId': player._id },
@@ -405,16 +412,16 @@ router.post('/release-all-others', async (req, res) => {
             ]
           }),
           Comment.deleteMany({ playerId: player._id }),
-          PickRequest.deleteMany({ playerId: player._id }),
-          PlayerStats.deleteMany({ playerId: player._id }),
+          PickRequest.deleteMany(withTournamentFilter({ playerId: player._id }, tournamentId)),
+          PlayerStats.deleteMany(withTournamentFilter({ playerId: player._id }, tournamentId)),
           PostLike.deleteMany({ playerId: player._id }),
-          ReleaseRequest.deleteMany({ player: player._id }),
-          TradeRequest.deleteMany({ 
+          ReleaseRequest.deleteMany(withTournamentFilter({ player: player._id }, tournamentId)),
+          TradeRequest.deleteMany(withTournamentFilter({ 
             $or: [
               { playerId: player._id },
               { requestedPlayerId: player._id }
             ]
-          })
+          }, tournamentId))
         ]);
 
         releasedCount++;
@@ -435,7 +442,9 @@ router.post('/release-all-others', async (req, res) => {
     });
 
     // Now deduct retention costs from users who have retained players
-    const allRetainedPlayers = await RetainedPlayer.find({ isActive: true });
+    const allRetainedPlayers = await RetainedPlayer.find(
+      withTournamentFilter({ isActive: true }, tournamentId)
+    );
     const retentionCostPerPlayer = 170000000; // 17 crores per player
     
     for (const retained of allRetainedPlayers) {
@@ -467,9 +476,9 @@ router.post('/release-all-others', async (req, res) => {
 
     // Clear all fixtures, schedules, and playoff fixtures
     await Promise.all([
-      Fixture.deleteMany({}),
-      Schedule.deleteMany({}),
-      PlayoffFixture.deleteMany({})
+      Fixture.deleteMany(withTournamentFilter({}, tournamentId)),
+      Schedule.deleteMany(withTournamentFilter({}, tournamentId)),
+      PlayoffFixture.deleteMany(withTournamentFilter({}, tournamentId))
     ]);
 
     // COMPREHENSIVE BID CLEANUP: Remove ALL bids except for retained players
@@ -484,13 +493,13 @@ router.post('/release-all-others', async (req, res) => {
     // Clean up ALL bid data except for retained players
     const bidCleanupResults = await Promise.all([
       // Delete all bids except for retained players
-      Bid.deleteMany({ 
+      Bid.deleteMany(withTournamentFilter({ 
         playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all bid history except for retained players
-      BidHistory.deleteMany({ 
+      BidHistory.deleteMany(withTournamentFilter({ 
         playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all bid notifications except for retained players
       Notification.deleteMany({
         $and: [
@@ -503,28 +512,28 @@ router.post('/release-all-others', async (req, res) => {
         playerId: { $nin: cleanupRetainedPlayerIds } 
       }),
       // Delete all pick requests except for retained players
-      PickRequest.deleteMany({ 
+      PickRequest.deleteMany(withTournamentFilter({ 
         playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all player stats except for retained players
-      PlayerStats.deleteMany({ 
+      PlayerStats.deleteMany(withTournamentFilter({ 
         playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all post likes except for retained players
       PostLike.deleteMany({ 
         playerId: { $nin: cleanupRetainedPlayerIds } 
       }),
       // Delete all release requests except for retained players
-      ReleaseRequest.deleteMany({ 
+      ReleaseRequest.deleteMany(withTournamentFilter({ 
         player: { $nin: cleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all trade requests except for retained players
-      TradeRequest.deleteMany({ 
+      TradeRequest.deleteMany(withTournamentFilter({ 
         $or: [
           { playerId: { $nin: cleanupRetainedPlayerIds } },
           { requestedPlayerId: { $nin: cleanupRetainedPlayerIds } }
         ]
-      })
+      }, tournamentId))
     ]);
     
     console.log('Bid cleanup results:', {
@@ -572,11 +581,11 @@ router.post('/release-all-others', async (req, res) => {
     // NOTE: do NOT add VenueMatchEntry to this list — it is the
     // persistent venue-analytics ledger and is preserved across seasons.
     console.log('Clearing all PlayerStats data...');
-    const playerStatsResult = await PlayerStats.deleteMany({});
+    const playerStatsResult = await PlayerStats.deleteMany(withTournamentFilter({}, tournamentId));
     console.log(`Deleted ${playerStatsResult.deletedCount} PlayerStats records`);
 
     console.log('Clearing all Fixture data...');
-    const fixtureResult = await Fixture.deleteMany({});
+    const fixtureResult = await Fixture.deleteMany(withTournamentFilter({}, tournamentId));
     console.log(`Deleted ${fixtureResult.deletedCount} Fixture records`);
 
     res.json({
@@ -730,7 +739,10 @@ router.post('/withdraw/:retainedPlayerId', async (req, res) => {
 // Get withdrawal requests (admin only)
 router.get('/withdrawals', async (req, res) => {
   try {
-    const withdrawals = await RetainedPlayer.find({ status: 'withdrawn' })
+    const tournamentId = getTournamentIdFromRequest(req);
+    const withdrawals = await RetainedPlayer.find(
+      withTournamentFilter({ status: 'withdrawn' }, tournamentId)
+    )
       .populate('userId', 'teamName email')
       .populate('playerId', 'name type role basePrice')
       .sort({ withdrawnAt: -1 });
@@ -745,6 +757,7 @@ router.get('/withdrawals', async (req, res) => {
 // Approve withdrawal and release all other players (admin only)
 router.post('/approve-withdrawal/:retainedPlayerId', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { retainedPlayerId } = req.params;
     const { adminUserId } = req.body;
 
@@ -769,15 +782,17 @@ router.post('/approve-withdrawal/:retainedPlayerId', async (req, res) => {
     }
 
     // Get all active retained players
-    const allRetainedPlayers = await RetainedPlayer.find({ isActive: true });
+    const allRetainedPlayers = await RetainedPlayer.find(
+      withTournamentFilter({ isActive: true }, tournamentId)
+    );
     const retainedPlayerIds = allRetainedPlayers.map(rp => rp.playerId);
 
     // COMPREHENSIVE DATA CLEANUP: Remove ALL data except for retained players
     console.log('Starting comprehensive data cleanup after withdrawal approval...');
     const cleanupResults = await Promise.all([
       // Remove bids for non-retained players
-      Bid.deleteMany({ playerId: { $nin: retainedPlayerIds } }),
-      BidHistory.deleteMany({ playerId: { $nin: retainedPlayerIds } }),
+      Bid.deleteMany(withTournamentFilter({ playerId: { $nin: retainedPlayerIds } }, tournamentId)),
+      BidHistory.deleteMany(withTournamentFilter({ playerId: { $nin: retainedPlayerIds } }, tournamentId)),
       
       // Remove notifications for non-retained players
       Notification.deleteMany({
@@ -789,16 +804,16 @@ router.post('/approve-withdrawal/:retainedPlayerId', async (req, res) => {
       
       // Remove other related data
       Comment.deleteMany({ playerId: { $nin: retainedPlayerIds } }),
-      PickRequest.deleteMany({ playerId: { $nin: retainedPlayerIds } }),
-      PlayerStats.deleteMany({ playerId: { $nin: retainedPlayerIds } }),
+      PickRequest.deleteMany(withTournamentFilter({ playerId: { $nin: retainedPlayerIds } }, tournamentId)),
+      PlayerStats.deleteMany(withTournamentFilter({ playerId: { $nin: retainedPlayerIds } }, tournamentId)),
       PostLike.deleteMany({ playerId: { $nin: retainedPlayerIds } }),
-      ReleaseRequest.deleteMany({ player: { $nin: retainedPlayerIds } }),
-      TradeRequest.deleteMany({
+      ReleaseRequest.deleteMany(withTournamentFilter({ player: { $nin: retainedPlayerIds } }, tournamentId)),
+      TradeRequest.deleteMany(withTournamentFilter({
         $or: [
           { playerId: { $nin: retainedPlayerIds } },
           { requestedPlayerId: { $nin: retainedPlayerIds } }
         ]
-      })
+      }, tournamentId))
     ]);
 
     // Set all non-retained players as not sold (releasedAt blocks pick-from-unsold for 48h)
@@ -932,6 +947,7 @@ router.delete('/:retainedPlayerId', async (req, res) => {
 // Release all players for a specific team (admin only)
 router.post('/release-team-players', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     console.log('=== RELEASE TEAM PLAYERS START ===');
     const { adminUserId, teamId, teamName } = req.body;
     
@@ -966,16 +982,16 @@ router.post('/release-team-players', async (req, res) => {
     console.log('Team found successfully:', team.teamName);
 
     // Get retained players for this team
-    const retainedPlayers = await RetainedPlayer.find({ 
+    const retainedPlayers = await RetainedPlayer.find(withTournamentFilter({ 
       userId: teamId, 
       isActive: true 
-    });
+    }, tournamentId));
 
     // Get all active players for this team
-    const userPlayers = await UserPlayer.find({ 
+    const userPlayers = await UserPlayer.find(withTournamentFilter({ 
       userId: teamId, 
       isActive: true 
-    }).populate('playerId');
+    }, tournamentId)).populate('playerId');
 
     // Get retained player IDs
     const teamRetainedPlayerIds = retainedPlayers.map(rp => rp.playerId.toString());
@@ -1021,8 +1037,8 @@ router.post('/release-team-players', async (req, res) => {
 
         // Clean up related data for this player
         await Promise.all([
-          Bid.deleteMany({ playerId: player._id }),
-          BidHistory.deleteMany({ playerId: player._id }),
+          Bid.deleteMany(withTournamentFilter({ playerId: player._id }, tournamentId)),
+          BidHistory.deleteMany(withTournamentFilter({ playerId: player._id }, tournamentId)),
           Notification.deleteMany({ 
             $or: [
               { 'metadata.playerId': player._id },
@@ -1030,16 +1046,16 @@ router.post('/release-team-players', async (req, res) => {
             ]
           }),
           Comment.deleteMany({ playerId: player._id }),
-          PickRequest.deleteMany({ playerId: player._id }),
-          PlayerStats.deleteMany({ playerId: player._id }),
+          PickRequest.deleteMany(withTournamentFilter({ playerId: player._id }, tournamentId)),
+          PlayerStats.deleteMany(withTournamentFilter({ playerId: player._id }, tournamentId)),
           PostLike.deleteMany({ playerId: player._id }),
-          ReleaseRequest.deleteMany({ player: player._id }),
-          TradeRequest.deleteMany({ 
+          ReleaseRequest.deleteMany(withTournamentFilter({ player: player._id }, tournamentId)),
+          TradeRequest.deleteMany(withTournamentFilter({ 
             $or: [
               { playerId: player._id },
               { requestedPlayerId: player._id }
             ]
-          })
+          }, tournamentId))
         ]);
 
         releasedCount++;
@@ -1138,19 +1154,21 @@ router.post('/release-team-players', async (req, res) => {
     console.log('Starting comprehensive bid cleanup for team release...');
     
     // Get all retained player IDs (reuse existing retainedPlayers)
-    const allRetainedPlayersForCleanup = await RetainedPlayer.find({ isActive: true });
+    const allRetainedPlayersForCleanup = await RetainedPlayer.find(
+      withTournamentFilter({ isActive: true }, tournamentId)
+    );
     const teamCleanupRetainedPlayerIds = allRetainedPlayersForCleanup.map(rp => rp.playerId);
     
     // Clean up ALL bid data except for retained players
     const bidCleanupResults = await Promise.all([
       // Delete all bids except for retained players
-      Bid.deleteMany({ 
+      Bid.deleteMany(withTournamentFilter({ 
         playerId: { $nin: teamCleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all bid history except for retained players
-      BidHistory.deleteMany({ 
+      BidHistory.deleteMany(withTournamentFilter({ 
         playerId: { $nin: teamCleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all bid notifications except for retained players
       Notification.deleteMany({
         $and: [
@@ -1163,28 +1181,28 @@ router.post('/release-team-players', async (req, res) => {
         playerId: { $nin: teamCleanupRetainedPlayerIds } 
       }),
       // Delete all pick requests except for retained players
-      PickRequest.deleteMany({ 
+      PickRequest.deleteMany(withTournamentFilter({ 
         playerId: { $nin: teamCleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all player stats except for retained players
-      PlayerStats.deleteMany({ 
+      PlayerStats.deleteMany(withTournamentFilter({ 
         playerId: { $nin: teamCleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all post likes except for retained players
       PostLike.deleteMany({ 
         playerId: { $nin: teamCleanupRetainedPlayerIds } 
       }),
       // Delete all release requests except for retained players
-      ReleaseRequest.deleteMany({ 
+      ReleaseRequest.deleteMany(withTournamentFilter({ 
         player: { $nin: teamCleanupRetainedPlayerIds } 
-      }),
+      }, tournamentId)),
       // Delete all trade requests except for retained players
-      TradeRequest.deleteMany({ 
+      TradeRequest.deleteMany(withTournamentFilter({ 
         $or: [
           { playerId: { $nin: teamCleanupRetainedPlayerIds } },
           { requestedPlayerId: { $nin: teamCleanupRetainedPlayerIds } }
         ]
-      })
+      }, tournamentId))
     ]);
     
     console.log('Team release bid cleanup results:', {
@@ -1213,11 +1231,11 @@ router.post('/release-team-players', async (req, res) => {
     // NOTE: do NOT add VenueMatchEntry to this list — it is the
     // persistent venue-analytics ledger and is preserved across seasons.
     console.log('Clearing all PlayerStats data...');
-    const playerStatsResult = await PlayerStats.deleteMany({});
+    const playerStatsResult = await PlayerStats.deleteMany(withTournamentFilter({}, tournamentId));
     console.log(`Deleted ${playerStatsResult.deletedCount} PlayerStats records`);
 
     console.log('Clearing all Fixture data...');
-    const fixtureResult = await Fixture.deleteMany({});
+    const fixtureResult = await Fixture.deleteMany(withTournamentFilter({}, tournamentId));
     console.log(`Deleted ${fixtureResult.deletedCount} Fixture records`);
 
     res.json({ 

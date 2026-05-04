@@ -4,6 +4,7 @@
  */
 
 const mongoose = require('mongoose');
+const Tournament = require('../models/Tournament');
 const { fetchPointTableFromConnection } = require('./cplHistoryHelpers');
 
 const CPL_FORMULAS = [
@@ -139,6 +140,76 @@ function buildCompositeRows(seasonResults) {
   return { rows, dbOrder };
 }
 
+function normalizeReportRowsFromTournamentPointTable(pointTable = []) {
+  const rows = (Array.isArray(pointTable) ? pointTable : []).map((r) => ({
+    rank: Number(r.rank) || 0,
+    teamName: r.teamName || 'Unknown',
+    teamKey: String(r.teamName || '').trim().toUpperCase(),
+    points: Number(r.points) || 0,
+    nrr: Number(r.nrr) || 0,
+    fairness: Number(r.fairness) || 0,
+    matchesPlayed: Number(r.matches) || 0,
+    wins: Number(r.won) || Math.floor((Number(r.points) || 0) / 2),
+    losses:
+      Number(r.lost) ||
+      Math.max((Number(r.matches) || 0) - Math.floor((Number(r.points) || 0) / 2), 0),
+  }));
+
+  rows.sort((a, b) => {
+    if (b.points !== a.points) return b.points - a.points;
+    if ((b.nrr || 0) !== (a.nrr || 0)) return (b.nrr || 0) - (a.nrr || 0);
+    if ((b.fairness || 0) !== (a.fairness || 0)) return (b.fairness || 0) - (a.fairness || 0);
+    return (a.teamName || '').localeCompare(b.teamName || '');
+  });
+
+  rows.forEach((row, idx) => {
+    row.rank = idx + 1;
+  });
+  return rows;
+}
+
+async function loadOneReportTournament(tournament) {
+  try {
+    const db = mongoose.connection.db;
+    const tournamentId = tournament._id;
+    const rawRows = normalizeReportRowsFromTournamentPointTable(tournament.pointTable || []);
+    const indexed = addSeasonIndices(rawRows);
+    const fixtureCount = await db.collection('fixtures').countDocuments({
+      tournamentId,
+      isActive: true,
+      winner: { $ne: null, $exists: true },
+    });
+    return {
+      ok: true,
+      dbName: `tournament:${String(tournamentId)}`,
+      label: tournament.name || `Tournament ${String(tournamentId).slice(-6)}`,
+      fixtureCount,
+      table: indexed.map((r) => ({
+        rank: r.rank,
+        teamName: r.teamName,
+        teamKey: r.teamKey,
+        points: r.points,
+        nrr: r.nrr,
+        fairness: r.fairness,
+        matchesPlayed: r.matchesPlayed,
+        wins: r.wins,
+        losses: r.losses,
+        seasonIndex: r.seasonIndex,
+      })),
+      indexed,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      dbName: `tournament:${String(tournament?._id || '')}`,
+      label: tournament?.name || 'Tournament',
+      error: e.message || String(e),
+      table: [],
+      indexed: [],
+    };
+  }
+}
+
 async function loadOneReportSeason(base, dbName) {
   try {
     if (mongoose.connection?.readyState !== 1) {
@@ -240,6 +311,49 @@ async function buildMilestonesSummary() {
     }
   }
   return { dbNames, perDb, totalHundreds, totalFifties };
+}
+
+async function buildMilestonesSummaryFromTournaments(tournaments) {
+  const db = mongoose.connection.db;
+  const perDb = [];
+  let totalHundreds = 0;
+  let totalFifties = 0;
+  for (const tournament of tournaments) {
+    const tournamentId = tournament._id;
+    try {
+      const [hundreds, fifties] = await Promise.all([
+        db.collection('playerstats').countDocuments({
+          tournamentId,
+          playerId: { $exists: true, $ne: null },
+          userId: { $exists: true, $ne: null },
+          'battingStats.runs': { $gte: 100 },
+        }),
+        db.collection('playerstats').countDocuments({
+          tournamentId,
+          playerId: { $exists: true, $ne: null },
+          userId: { $exists: true, $ne: null },
+          'battingStats.runs': { $gte: 50, $lt: 100 },
+        }),
+      ]);
+      const row = {
+        dbName: `tournament:${String(tournamentId)}`,
+        label: tournament.name || `Tournament ${String(tournamentId).slice(-6)}`,
+        hundreds,
+        fifties,
+      };
+      perDb.push(row);
+      totalHundreds += hundreds;
+      totalFifties += fifties;
+    } catch (_) {
+      perDb.push({
+        dbName: `tournament:${String(tournamentId)}`,
+        label: tournament.name || `Tournament ${String(tournamentId).slice(-6)}`,
+        hundreds: 0,
+        fifties: 0,
+      });
+    }
+  }
+  return { dbNames: perDb.map((p) => p.dbName), perDb, totalHundreds, totalFifties };
 }
 
 function normName(name) {
@@ -385,7 +499,59 @@ async function buildCplCareerPlayerSummary() {
   };
 }
 
-async function buildCplReportSnapshot() {
+async function buildCplReportSnapshot(options = {}) {
+  const source = String(options.source || '').toLowerCase();
+  const forceLegacyDbMode = source === 'legacy-db' || source === 'legacy-dbs' || source === 'legacy';
+  if (!forceLegacyDbMode) {
+    const tournaments = await Tournament.find({
+      isActive: true,
+      status: 'completed',
+    })
+      .select('_id name pointTable endDate updatedAt')
+      .sort({ endDate: -1, updatedAt: -1 })
+      .lean();
+
+    if (tournaments.length) {
+      const seasons = [];
+      for (const t of tournaments) {
+        seasons.push(await loadOneReportTournament(t));
+      }
+
+      const okSeasons = seasons.filter((s) => s.ok && s.indexed.length);
+      const composite =
+        okSeasons.length > 0
+          ? buildCompositeRows(okSeasons.map((s) => ({ dbName: s.dbName, indexed: s.indexed })))
+          : { rows: [], dbOrder: [] };
+      const milestones = await buildMilestonesSummaryFromTournaments(tournaments);
+
+      return {
+        ok: true,
+        source: 'single-db',
+        generatedAt: new Date().toISOString(),
+        currentSeasonDb: mongoose.connection?.name || null,
+        runningDbHint: getRunningCplDbNameHint() || null,
+        reportDatabases: tournaments.map((t) => `tournament:${String(t._id)}`),
+        formulas: CPL_FORMULAS,
+        worldCupNotes: CPL_WORLD_CUP_NOTES,
+        milestones,
+        seasons,
+        composite: {
+          columns: composite.dbOrder.map((d) => {
+            const hit = seasons.find((s) => s.dbName === d);
+            return { dbName: d, label: hit?.label || d };
+          }),
+          rows: composite.rows.map((r, i) => ({
+            rank: i + 1,
+            teamName: r.teamName,
+            teamKey: r.teamKey,
+            byDb: r.byDb,
+            finalAvg: r.finalAvg,
+          })),
+        },
+      };
+    }
+  }
+
   const base = getReportBaseUri();
   if (!base) {
     return {

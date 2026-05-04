@@ -30,10 +30,15 @@ const CAREER_SUMMARY_LIST_PROJECTION = {
   total: 1,
 };
 
-async function getReportSnapshotOrCached() {
+async function getReportSnapshotOrCached({ source = '' } = {}) {
+  const forceLegacy = String(source || '').toLowerCase() === 'legacy-db' || String(source || '').toLowerCase() === 'legacy-dbs' || String(source || '').toLowerCase() === 'legacy';
+  if (forceLegacy) {
+    const data = await buildCplReportSnapshot({ source });
+    return { data, cacheHit: false };
+  }
   const hit = getCachedReportSnapshot();
   if (hit) return { data: hit, cacheHit: true };
-  const data = await buildCplReportSnapshot();
+  const data = await buildCplReportSnapshot({ source });
   if (data.ok) setCachedReportSnapshot(data);
   return { data, cacheHit: false };
 }
@@ -114,9 +119,9 @@ async function getCareerSummaryOrCached({ refresh = false, includeInactive = tru
  * GET /api/cpl-report/snapshot
  * Live point tables for CPL_REPORT_DBS (default cpl_19,cpl_18,cpl_17), methodology + WC notes, composite index.
  */
-router.get('/snapshot', async (_req, res) => {
+router.get('/snapshot', async (req, res) => {
   try {
-    const { data, cacheHit } = await getReportSnapshotOrCached();
+    const { data, cacheHit } = await getReportSnapshotOrCached({ source: req.query.source });
     if (!data.ok) {
       return res.status(503).json(data);
     }
@@ -134,9 +139,9 @@ router.get('/snapshot', async (_req, res) => {
  * GET /api/cpl-report/pdf
  * PDF export — same data as /snapshot at request time (static file once downloaded).
  */
-router.get('/pdf', async (_req, res) => {
+router.get('/pdf', async (req, res) => {
   try {
-    const { data, cacheHit } = await getReportSnapshotOrCached();
+    const { data, cacheHit } = await getReportSnapshotOrCached({ source: req.query.source });
     if (!data.ok) {
       return res.status(503).json(data);
     }

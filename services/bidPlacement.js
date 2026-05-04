@@ -17,10 +17,14 @@ const TYPE_LIMIT = {
 };
 
 /** Per-user queued rows (status queued) for slot limits — one row per player lot. */
-async function countQueuedSlotsForUser(userId, excludePlayerId = null) {
+async function countQueuedSlotsForUser(userId, excludePlayerId = null, tournamentId = null) {
   const uid = userId.toString();
   const excl = excludePlayerId ? String(excludePlayerId) : null;
-  const docs = await BidPlayerQueue.find({ "entries.userId": userId })
+  const docs = await BidPlayerQueue.find(
+    tournamentId
+      ? { "entries.userId": userId, tournamentId }
+      : { "entries.userId": userId }
+  )
     .populate("playerId", "type")
     .lean();
 
@@ -46,7 +50,7 @@ async function countQueuedSlotsForUser(userId, excludePlayerId = null) {
 /**
  * Same engagement rules as placeBidCore, counting existing bid-queue rows as using a slot.
  */
-async function assertQueueJoinSlotLimits(userId, playerId) {
+async function assertQueueJoinSlotLimits(userId, playerId, tournamentId = null) {
   const player = await Player.findById(playerId);
   if (!player) {
     return { ok: false, message: "Player not found." };
@@ -56,7 +60,7 @@ async function assertQueueJoinSlotLimits(userId, playerId) {
     return { ok: false, message: "User not found." };
   }
 
-  const { totalQueued, byType, esQueued } = await countQueuedSlotsForUser(userId, null);
+  const { totalQueued, byType, esQueued } = await countQueuedSlotsForUser(userId, null, tournamentId);
   const queuedOfThisType = byType[player.type] || 0;
   const combinedESLimit = 5;
 
@@ -121,6 +125,7 @@ async function assertQueueJoinSlotLimits(userId, playerId) {
 async function placeBidCore({
   playerId,
   bidderId,
+  tournamentId = null,
   clientIP,
   deviceFingerprint,
   isSuspiciousIP,
@@ -160,6 +165,7 @@ async function placeBidCore({
         }),
         RetainedPlayer.countDocuments({
           userId: user._id,
+          ...(tournamentId ? { tournamentId } : {}),
           playerType: player.type,
           isActive: true,
         }),
@@ -200,7 +206,9 @@ async function placeBidCore({
       };
     }
 
-    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
+    const activeBids = await Bid.find(
+      tournamentId ? { playerId, tournamentId, isActive: true, isBidOn: true } : { playerId, isActive: true, isBidOn: true }
+    )
       .select("bidder bidAmount isActive isBidOn")
       .lean();
 
@@ -224,6 +232,7 @@ async function placeBidCore({
         }),
         RetainedPlayer.countDocuments({
           userId: user._id,
+          ...(tournamentId ? { tournamentId } : {}),
           playerType: player.type,
           isActive: true,
         }),
@@ -250,7 +259,9 @@ async function placeBidCore({
       }
     }
 
-    const highestBid = await Bid.findOne({ playerId, isActive: true })
+    const highestBid = await Bid.findOne(
+      tournamentId ? { playerId, tournamentId, isActive: true } : { playerId, isActive: true }
+    )
       .select("bidder bidAmount")
       .sort({ bidAmount: -1 })
       .lean();
@@ -285,6 +296,7 @@ async function placeBidCore({
     }
 
     const newBid = new Bid({
+      tournamentId: tournamentId || null,
       playerId,
       bidder: bidderId,
       bidAmount,
@@ -343,7 +355,9 @@ async function placeBidCore({
     const newNotification = new BidNotification(notificationData);
     await newNotification.save();
 
-    const currentActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
+    const currentActiveBids = await Bid.find(
+      tournamentId ? { playerId, tournamentId, isActive: true, isBidOn: true } : { playerId, isActive: true, isBidOn: true }
+    )
       .select("bidder")
       .lean();
     const currentActiveBidders = [...new Set(currentActiveBids.map((bid) => bid.bidder.toString()))];

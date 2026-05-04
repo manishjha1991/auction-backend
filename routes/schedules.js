@@ -3,6 +3,7 @@ const router = express.Router();
 const Schedule = require('../models/Schedule');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 // Get all teams for dropdown
 router.get('/teams', async (req, res) => {
@@ -18,6 +19,7 @@ router.get('/teams', async (req, res) => {
 // Get all schedules for a user
 router.get('/', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     // Get team name from query parameter
     const { teamName } = req.query;
     
@@ -25,12 +27,12 @@ router.get('/', async (req, res) => {
       return res.status(400).json({ message: 'Team name is required' });
     }
 
-    const schedules = await Schedule.find({
+    const schedules = await Schedule.find(withTournamentFilter({
       $or: [
         { requester: teamName },
         { opponent: teamName }
       ]
-    }).sort({ createdAt: -1 });
+    }, tournamentId)).sort({ createdAt: -1 });
     
     res.json(schedules);
   } catch (error) {
@@ -42,6 +44,7 @@ router.get('/', async (req, res) => {
 // Create a new schedule
 router.post('/', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { opponent, date, time, timezone, requester } = req.body;
     
     // For now, use requester from request body since we don't have auth middleware
@@ -57,6 +60,7 @@ router.post('/', async (req, res) => {
 
     // Create schedule
     const schedule = new Schedule({
+      tournamentId: tournamentId || null,
       requester: requester,
       opponent,
       date: new Date(date),
@@ -99,7 +103,8 @@ router.post('/', async (req, res) => {
 // Accept a schedule
 router.post('/:id/accept', async (req, res) => {
   try {
-    const schedule = await Schedule.findById(req.params.id);
+    const tournamentId = getTournamentIdFromRequest(req);
+    const schedule = await Schedule.findOne(withTournamentFilter({ _id: req.params.id }, tournamentId));
     if (!schedule) {
       return res.status(404).json({ message: 'Schedule not found' });
     }
@@ -141,8 +146,9 @@ router.post('/:id/accept', async (req, res) => {
 // Reject a schedule with new time slot
 router.post('/:id/reject', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { newTimeSlot, newDate, newTimezone } = req.body;
-    const schedule = await Schedule.findById(req.params.id);
+    const schedule = await Schedule.findOne(withTournamentFilter({ _id: req.params.id }, tournamentId));
     
     if (!schedule) {
       return res.status(404).json({ message: 'Schedule not found' });
@@ -195,8 +201,9 @@ router.post('/:id/reject', async (req, res) => {
 // Update schedule with new time slot
 router.put('/:id/update-time', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { newTime, newDate } = req.body;
-    const schedule = await Schedule.findById(req.params.id);
+    const schedule = await Schedule.findOne(withTournamentFilter({ _id: req.params.id }, tournamentId));
     
     if (!schedule) {
       return res.status(404).json({ message: 'Schedule not found' });

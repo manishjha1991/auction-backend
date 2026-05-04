@@ -50,8 +50,8 @@ app.set('io', io);
 // 🚀 OPTIMIZED MongoDB Connection Pooling Configuration
 const poolMax = parseInt(process.env.MONGO_MAX_POOL_SIZE || '10', 10);
 const poolMin = parseInt(process.env.MONGO_MIN_POOL_SIZE || '0', 10);
+const configuredDbName = process.env.MONGO_DB_NAME || undefined;
 const mongooseOptions = {
-  dbName: 'cpl_20',
   useNewUrlParser: true,
   useUnifiedTopology: true,
   
@@ -86,11 +86,19 @@ const mongooseOptions = {
   readConcern: { level: 'local' },    // Fastest read concern
   writeConcern: { w: 1, j: true },    // Acknowledge writes, journaled
 };
+if (configuredDbName) {
+  mongooseOptions.dbName = configuredDbName;
+}
 
 const startServer = () => {
   const PORT = process.env.PORT || 3000;
   server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 };
+
+if (!process.env.MONGO_URI) {
+  console.error('❌ MONGO_URI is required');
+  process.exit(1);
+}
 
 mongoose.connect(process.env.MONGO_URI, mongooseOptions)
   .then(() => {

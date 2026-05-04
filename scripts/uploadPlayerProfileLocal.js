@@ -33,7 +33,7 @@ async function main() {
     console.error('Set MONGO_URI');
     process.exit(1);
   }
-  await mongoose.connect(uri, { dbName: process.env.MONGO_DB_NAME || 'cpl_20' });
+  await mongoose.connect(uri, process.env.MONGO_DB_NAME ? { dbName: process.env.MONGO_DB_NAME } : undefined);
   const buf = fs.readFileSync(abs);
   const ext = path.extname(abs).toLowerCase();
   const mime =

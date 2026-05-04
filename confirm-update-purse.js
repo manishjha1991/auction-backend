@@ -5,14 +5,25 @@ require('dotenv').config();
 const User = require('./models/User');
 const UserPlayer = require('./models/UserPlayer');
 
+const args = process.argv.slice(2);
+const tournamentArgIndex = args.indexOf('--tournamentId');
+const tournamentIdRaw =
+  (tournamentArgIndex >= 0 ? args[tournamentArgIndex + 1] : undefined) ||
+  process.env.TOURNAMENT_ID ||
+  null;
+const tournamentId =
+  tournamentIdRaw && mongoose.Types.ObjectId.isValid(String(tournamentIdRaw))
+    ? new mongoose.Types.ObjectId(String(tournamentIdRaw))
+    : null;
+
 // MongoDB connection
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI, {
-      dbName: 'cpl_18',
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
+    if (!process.env.MONGO_URI) throw new Error('MONGO_URI is required');
+    await mongoose.connect(
+      process.env.MONGO_URI,
+      process.env.MONGO_DB_NAME ? { dbName: process.env.MONGO_DB_NAME } : undefined
+    );
     console.log('✅ MongoDB Connected Successfully');
   } catch (error) {
     console.error('❌ MongoDB Connection Error:', error);
@@ -25,15 +36,30 @@ const updatePurseTo100MinusPlayers = async () => {
   try {
     console.log('🚀 Starting purse update to 100 - players value...');
     
-    // Get all users (excluding admins)
-    const users = await User.find({ isAdmin: { $ne: true } })
+    // Get all users (excluding admins); optionally scoped to one tournament's subscribed teams.
+    let userFilter = { isAdmin: { $ne: true } };
+    if (tournamentId) {
+      const tournament = await mongoose.connection.db
+        .collection('tournaments')
+        .findOne({ _id: tournamentId }, { projection: { subscribedTeams: 1 } });
+      const userIds = (tournament?.subscribedTeams || [])
+        .map((t) => t?.userId)
+        .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)))
+        .map((id) => new mongoose.Types.ObjectId(String(id)));
+      userFilter = { ...userFilter, _id: { $in: userIds } };
+      console.log(`🎯 Tournament scope enabled for ${String(tournamentId)} (${userIds.length} team users)`);
+    }
+
+    const users = await User.find(userFilter)
       .select('_id name teamName purse')
       .lean();
     
     console.log(`📊 Found ${users.length} users to process\n`);
     
     // Get all active user players with bid values
-    const userPlayers = await UserPlayer.find({ isActive: true })
+    const userPlayers = await UserPlayer.find(
+      tournamentId ? { isActive: true, tournamentId } : { isActive: true }
+    )
       .select('userId bidValue')
       .lean();
     

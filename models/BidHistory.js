@@ -1,6 +1,12 @@
 const mongoose = require("mongoose");
 
 const BidHistorySchema = new mongoose.Schema({
+  tournamentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Tournament",
+    default: null,
+    index: true
+  },
   playerId: { type: mongoose.Schema.Types.ObjectId, ref: "Player", required: true },
   bidID: { type: mongoose.Schema.Types.ObjectId, required: true },
   bids: [
@@ -13,5 +19,8 @@ const BidHistorySchema = new mongoose.Schema({
     },
   ],
 });
+
+BidHistorySchema.index({ tournamentId: 1, playerId: 1 });
+BidHistorySchema.index({ tournamentId: 1, bidID: 1 });
 
 module.exports = mongoose.model("BidHistory", BidHistorySchema);

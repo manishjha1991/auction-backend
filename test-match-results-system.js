@@ -27,7 +27,10 @@ async function testMatchResultsSystem() {
       process.exit(1);
     }
 
-    await mongoose.connect(process.env.MONGO_URI, { dbName: 'cpl_14' });
+    await mongoose.connect(
+      process.env.MONGO_URI,
+      process.env.MONGO_DB_NAME ? { dbName: process.env.MONGO_DB_NAME } : undefined
+    );
     console.log('🔗 Connected to MongoDB for match results testing');
 
     console.log('\n🧪 TESTING ENHANCED MATCH RESULTS SYSTEM');

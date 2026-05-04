@@ -21,13 +21,14 @@ const {
   getTradeApprovalBlockers,
   validateTradeForAdminApproval,
 } = require('../utils/tradeApprovalBlockers');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
 
-async function getUserTypeCounts(userId) {
+async function getUserTypeCounts(userId, tournamentId = null) {
   // 🚀 PERFORMANCE: Use .lean() for read-only query
-  const ups = await UserPlayer.find({ userId, isActive: true }).populate('playerId', 'type').lean();
+  const ups = await UserPlayer.find(withTournamentFilter({ userId, isActive: true }, tournamentId)).populate('playerId', 'type').lean();
   const counts = { Sapphire: 0, Gold: 0, Emerald: 0, Silver: 0 };
   for (const up of ups) {
     const t = up.playerId?.type;
@@ -46,21 +47,25 @@ function wouldExceedTypeLimits(counts) {
 }
 
 // Helper: ensure player ownership
-async function getOwnerOfPlayer(playerId) {
+async function getOwnerOfPlayer(playerId, tournamentId = null) {
   // 🚀 PERFORMANCE: Use .lean() for read-only query
-  const up = await UserPlayer.findOne({ playerId, isActive: true }).populate('userId').lean();
+  const up = await UserPlayer.findOne(withTournamentFilter({ playerId, isActive: true }, tournamentId)).populate('userId').lean();
   return up ? up.userId : null;
 }
 
 router.get('/insights/:userId', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { userId } = req.params;
     if (!userId) {
       return res.status(400).json({ message: 'userId is required' });
     }
 
-    const balance = await analyzeTeamBalance(userId);
-    const recommendations = await generateTradeRecommendations(userId, { limit: 3 });
+    const balance = await analyzeTeamBalance(userId, tournamentId ? { tournamentId } : undefined);
+    const recommendations = await generateTradeRecommendations(userId, {
+      limit: 3,
+      ...(tournamentId ? { tournamentId } : {}),
+    });
 
     res.json({ balance, recommendations });
   } catch (error) {
@@ -74,6 +79,7 @@ router.get('/insights/:userId', async (req, res) => {
 // POST create trade request
 router.post('/', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { fromUserId, offeredPlayerId, requestedPlayerId } = req.body;
     if (!fromUserId || !offeredPlayerId || !requestedPlayerId) {
       return res.status(400).json({ message: 'Missing required fields.' });
@@ -82,10 +88,10 @@ router.post('/', async (req, res) => {
     const rules = await getTradeRules();
 
     // Enforce max active outgoing trade requests per user (same cap as season trades)
-    const activeCount = await TradeRequest.countDocuments({
+    const activeCount = await TradeRequest.countDocuments(withTournamentFilter({
       fromUser: fromUserId,
       status: { $in: ['pending', 'counter', 'admin_pending'] }
-    });
+    }, tournamentId));
     if (activeCount >= rules.maxActiveOutgoingTrades) {
       return res.status(400).json({
         message: `Trade limit reached: You can have at most ${rules.maxActiveOutgoingTrades} active trade requests.`,
@@ -100,7 +106,7 @@ router.post('/', async (req, res) => {
     }
 
     // Prevent duplicate/parallel trade requests for the same players while active
-    const activeTrade = await TradeRequest.findOne({
+    const activeTrade = await TradeRequest.findOne(withTournamentFilter({
       status: { $in: ['pending', 'counter', 'admin_pending'] },
       $or: [
         { offeredPlayer: offeredPlayerId },
@@ -108,7 +114,7 @@ router.post('/', async (req, res) => {
         { offeredPlayer: requestedPlayerId },
         { requestedPlayer: offeredPlayerId }
       ]
-    }).lean();
+    }, tournamentId)).lean();
     if (activeTrade) {
       return res.status(409).json({
         message: 'One or both players already have an active trade request. Please wait for admin decision or withdraw the existing request.'
@@ -117,8 +123,8 @@ router.post('/', async (req, res) => {
 
     const [fromUser, offeredOwner, requestedOwner] = await Promise.all([
       User.findById(fromUserId), // Not using .lean() - might be modified later
-      getOwnerOfPlayer(offeredPlayerId),
-      getOwnerOfPlayer(requestedPlayerId)
+      getOwnerOfPlayer(offeredPlayerId, tournamentId),
+      getOwnerOfPlayer(requestedPlayerId, tournamentId)
     ]);
 
     if (!fromUser || !offeredOwner || !requestedOwner) {
@@ -150,8 +156,8 @@ router.post('/', async (req, res) => {
       // 🚀 PERFORMANCE: Use .lean() for read-only queries
       Player.findById(offeredPlayerId).lean(),
       Player.findById(requestedPlayerId).lean(),
-      UserPlayer.findOne({ playerId: offeredPlayerId, isActive: true }).populate('userId').lean(),
-      UserPlayer.findOne({ playerId: requestedPlayerId, isActive: true }).populate('userId').lean()
+      UserPlayer.findOne(withTournamentFilter({ playerId: offeredPlayerId, isActive: true }, tournamentId)).populate('userId').lean(),
+      UserPlayer.findOne(withTournamentFilter({ playerId: requestedPlayerId, isActive: true }, tournamentId)).populate('userId').lean()
     ]);
 
     if (!offeredUP || !requestedUP) {
@@ -175,6 +181,7 @@ router.post('/', async (req, res) => {
     // This allows users to propose trades that might be invalid, but admin will catch them
 
     const trade = await TradeRequest.create({
+      tournamentId: tournamentId || null,
       fromUser: fromUser._id,
       toUser: requestedOwner._id,
       offeredPlayer: offeredPlayer._id,
@@ -204,9 +211,10 @@ router.post('/', async (req, res) => {
 // POST respond to trade (accept/reject)
 router.post('/:tradeId/respond', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { tradeId } = req.params;
     const { byUserId, decision, message } = req.body; // decision: accept|reject
-    const trade = await TradeRequest.findById(tradeId);
+    const trade = await TradeRequest.findOne(withTournamentFilter({ _id: tradeId }, tournamentId));
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
     // Allow recipient to respond to initial proposals, and proposer to respond to counters
     const isRecipientResponding = String(trade.toUser) === String(byUserId) && trade.status === 'pending';
@@ -253,9 +261,10 @@ router.post('/:tradeId/negotiate', async (_req, res) => {
 // POST withdraw own trade proposal (only proposer can withdraw if not completed/rejected)
 router.post('/:tradeId/withdraw', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { tradeId } = req.params;
     const { byUserId } = req.body;
-    const trade = await TradeRequest.findById(tradeId);
+    const trade = await TradeRequest.findOne(withTournamentFilter({ _id: tradeId }, tournamentId));
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
     if (String(trade.fromUser) !== String(byUserId)) {
       return res.status(403).json({ message: 'Only the proposer can withdraw this trade.' });
@@ -281,8 +290,9 @@ router.post('/:tradeId/withdraw', async (req, res) => {
 // GET trades for a user (inbox + outbox)
 router.get('/user/:userId', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { userId } = req.params;
-    const trades = await TradeRequest.find({ $or: [{ fromUser: userId }, { toUser: userId }] })
+    const trades = await TradeRequest.find(withTournamentFilter({ $or: [{ fromUser: userId }, { toUser: userId }] }, tournamentId))
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role profilePicture')
@@ -313,7 +323,8 @@ router.get('/user/:userId', async (req, res) => {
 // GET trades pending admin approval
 router.get('/admin/pending', async (req, res) => {
   try {
-    const trades = await TradeRequest.find({ status: 'admin_pending' })
+    const tournamentId = getTournamentIdFromRequest(req);
+    const trades = await TradeRequest.find(withTournamentFilter({ status: 'admin_pending' }, tournamentId))
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role profilePicture')
@@ -329,7 +340,10 @@ router.get('/admin/pending', async (req, res) => {
 // GET trades history for admin (completed, rejected, withdrawn)
 router.get('/admin/history', async (req, res) => {
   try {
-    const trades = await TradeRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
+    const tournamentId = getTournamentIdFromRequest(req);
+    const trades = await TradeRequest.find(
+      withTournamentFilter({ 'adminDecision.status': { $in: ['approved', 'rejected'] } }, tournamentId)
+    )
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role profilePicture')
@@ -346,9 +360,10 @@ router.get('/admin/history', async (req, res) => {
 // POST admin decision
 router.post('/admin/:tradeId/decide', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { tradeId } = req.params;
     const { adminUserId, decision, note } = req.body; // decision: approve|reject
-    const trade = await TradeRequest.findById(tradeId);
+    const trade = await TradeRequest.findOne(withTournamentFilter({ _id: tradeId }, tournamentId));
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
 
     if (decision === 'approve') {

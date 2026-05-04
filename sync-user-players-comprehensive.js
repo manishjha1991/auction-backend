@@ -6,14 +6,25 @@ const User = require('./models/User');
 const Player = require('./models/Player');
 const UserPlayer = require('./models/UserPlayer');
 
+const args = process.argv.slice(2);
+const tournamentArgIndex = args.indexOf('--tournamentId');
+const tournamentIdRaw =
+  (tournamentArgIndex >= 0 ? args[tournamentArgIndex + 1] : undefined) ||
+  process.env.TOURNAMENT_ID ||
+  null;
+const tournamentId =
+  tournamentIdRaw && mongoose.Types.ObjectId.isValid(String(tournamentIdRaw))
+    ? new mongoose.Types.ObjectId(String(tournamentIdRaw))
+    : null;
+
 // MongoDB connection
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI, {
-      dbName: 'cpl_18',
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
+    if (!process.env.MONGO_URI) throw new Error('MONGO_URI is required');
+    await mongoose.connect(
+      process.env.MONGO_URI,
+      process.env.MONGO_DB_NAME ? { dbName: process.env.MONGO_DB_NAME } : undefined
+    );
     console.log('✅ MongoDB Connected Successfully');
   } catch (error) {
     console.error('❌ MongoDB Connection Error:', error);
@@ -26,8 +37,20 @@ const syncUserPlayersComprehensive = async () => {
   try {
     console.log('🚀 Starting comprehensive user-player sync...');
     
-    // Find all users
-    const users = await User.find({}).select('_id name teamName boughtPlayers');
+    // Find all users (optionally only subscribed teams of one tournament)
+    let userFilter = {};
+    if (tournamentId) {
+      const tournament = await mongoose.connection.db
+        .collection('tournaments')
+        .findOne({ _id: tournamentId }, { projection: { subscribedTeams: 1 } });
+      const userIds = (tournament?.subscribedTeams || [])
+        .map((t) => t?.userId)
+        .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)))
+        .map((id) => new mongoose.Types.ObjectId(String(id)));
+      userFilter = { _id: { $in: userIds } };
+      console.log(`🎯 Tournament scope enabled for ${String(tournamentId)} (${userIds.length} team users)`);
+    }
+    const users = await User.find(userFilter).select('_id name teamName boughtPlayers');
     console.log(`📊 Found ${users.length} users to process`);
     
     let totalUsersProcessed = 0;
@@ -43,7 +66,8 @@ const syncUserPlayersComprehensive = async () => {
       // Get all userPlayer records for this user (only active ones)
       const userPlayerRecords = await UserPlayer.find({ 
         userId: user._id,
-        isActive: true
+        isActive: true,
+        ...(tournamentId ? { tournamentId } : {})
       }).select('playerId bidValue isActive');
       
       console.log(`📦 Found ${userPlayerRecords.length} userPlayer records`);
@@ -167,7 +191,11 @@ const verifySyncResults = async () => {
     // Check for players that are in userPlayer but not in boughtPlayers
     let mismatches = 0;
     for (const user of usersWithBoughtPlayers) {
-      const userPlayerRecords = await UserPlayer.find({ userId: user._id, isActive: true }).select('playerId');
+      const userPlayerRecords = await UserPlayer.find({
+        userId: user._id,
+        isActive: true,
+        ...(tournamentId ? { tournamentId } : {}),
+      }).select('playerId');
       const userPlayerIds = userPlayerRecords.map(up => up.playerId.toString());
       const boughtPlayerIds = user.boughtPlayers.map(bp => bp.toString());
       

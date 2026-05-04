@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const scheduleSchema = new mongoose.Schema({
+  tournamentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tournament',
+    default: null,
+    index: true
+  },
   requester: {
     type: String,
     required: true
@@ -53,5 +59,8 @@ const scheduleSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+scheduleSchema.index({ tournamentId: 1, status: 1, date: 1 });
+scheduleSchema.index({ tournamentId: 1, requester: 1, opponent: 1 });
 
 module.exports = mongoose.model('Schedule', scheduleSchema);

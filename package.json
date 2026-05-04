@@ -13,7 +13,9 @@
     "profile:save-local": "node scripts/uploadPlayerProfileLocal.js",
     "portraits:prune-dry": "node scripts/pruneOrphanPlayerPortraits.js",
     "portraits:prune": "node scripts/pruneOrphanPlayerPortraits.js --delete",
-    "sync:team-career": "node scripts/syncTeamCareerFromAllDbs.js"
+    "sync:team-career": "node scripts/syncTeamCareerFromAllDbs.js",
+    "tournament:repair-knockout": "node scripts/repairTournamentKnockout.js",
+    "tournament:recreate-fixtures": "node scripts/recreateTournamentFixtures.js"
   },
   "keywords": [],
   "author": "",

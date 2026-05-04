@@ -4,12 +4,13 @@ const PickRequest = require('../models/PickRequest');
 const TradeRequest = require('../models/TradeRequest');
 const { getTradeRules } = require('./tradeRules');
 const { clampTradesUsed } = require('./tradeConstants');
+const { withTournamentFilter } = require('./tournamentScope');
 
 /**
  * Per-team trade slot accounting: completed trades + releases + standalone picks (picks not linked from a release).
  * Compare to User.tradesUsed for drift detection.
  */
-async function getTeamTradeUsageRows() {
+async function getTeamTradeUsageRows(tournamentId = null) {
   const tradeRules = await getTradeRules();
   const TRADE_CAP = tradeRules.tradeSeasonCap;
 
@@ -22,29 +23,29 @@ async function getTeamTradeUsageRows() {
 
   const [releaseCounts, pickCounts, pairedPickCounts, tradeAsFrom, tradeAsTo] = await Promise.all([
     ReleaseRequest.aggregate([
-      { $match: { user: { $in: teamIds }, status: 'completed' } },
+      { $match: withTournamentFilter({ user: { $in: teamIds }, status: 'completed' }, tournamentId) },
       { $group: { _id: '$user', count: { $sum: 1 } } },
     ]),
     PickRequest.aggregate([
-      { $match: { user: { $in: teamIds }, status: 'completed' } },
+      { $match: withTournamentFilter({ user: { $in: teamIds }, status: 'completed' }, tournamentId) },
       { $group: { _id: '$user', count: { $sum: 1 } } },
     ]),
     ReleaseRequest.aggregate([
       {
-        $match: {
+        $match: withTournamentFilter({
           user: { $in: teamIds },
           status: 'completed',
           pairedPickRequest: { $exists: true, $ne: null },
-        },
+        }, tournamentId),
       },
       { $group: { _id: '$user', count: { $sum: 1 } } },
     ]),
     TradeRequest.aggregate([
-      { $match: { status: 'completed' } },
+      { $match: withTournamentFilter({ status: 'completed' }, tournamentId) },
       { $group: { _id: '$fromUser', count: { $sum: 1 } } },
     ]),
     TradeRequest.aggregate([
-      { $match: { status: 'completed' } },
+      { $match: withTournamentFilter({ status: 'completed' }, tournamentId) },
       { $group: { _id: '$toUser', count: { $sum: 1 } } },
     ]),
   ]);

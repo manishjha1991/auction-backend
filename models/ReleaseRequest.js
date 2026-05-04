@@ -12,6 +12,12 @@ const ReleaseHistorySchema = new mongoose.Schema(
 
 const ReleaseRequestSchema = new mongoose.Schema(
   {
+    tournamentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Tournament',
+      default: null,
+      index: true
+    },
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     player: { type: mongoose.Schema.Types.ObjectId, ref: 'Player', required: true },
     /** Tier of the released player (set on admin approve); used to pair one unsold pick of the same tier without a second tradesUsed. */
@@ -29,6 +35,9 @@ const ReleaseRequestSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+ReleaseRequestSchema.index({ tournamentId: 1, user: 1, status: 1, createdAt: -1 });
+ReleaseRequestSchema.index({ tournamentId: 1, player: 1, status: 1 });
 
 module.exports = mongoose.model('ReleaseRequest', ReleaseRequestSchema);
 

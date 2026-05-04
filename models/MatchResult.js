@@ -1,10 +1,15 @@
 const mongoose = require('mongoose');
 
 const matchResultSchema = new mongoose.Schema({
+  tournamentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tournament',
+    default: null,
+    index: true
+  },
   matchNumber: {
     type: String,
-    required: true,
-    unique: true
+    required: true
   },
   matchTitle: {
     type: String,
@@ -168,5 +173,18 @@ matchResultSchema.virtual('momSummary').get(function() {
   }
   return summary;
 });
+
+// One tournament can reuse match numbers from another tournament.
+// Apply uniqueness only when tournamentId is present (backward compatible for legacy docs).
+matchResultSchema.index(
+  { tournamentId: 1, matchNumber: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { tournamentId: { $type: 'objectId' } },
+    name: 'unique_match_number_per_tournament'
+  }
+);
+matchResultSchema.index({ matchNumber: 1 });
+matchResultSchema.index({ tournamentId: 1, matchDate: -1 });
 
 module.exports = mongoose.model('MatchResult', matchResultSchema);

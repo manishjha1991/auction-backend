@@ -32,6 +32,7 @@ const {
   previewMigratePlayerTotals,
   executeMigratePlayerTotals,
 } = require('../utils/migratePlayerTotalsFromHistoricalDbs');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 const AUCTION_RESET_COLLECTIONS = [
   'bidhistories',
@@ -82,12 +83,12 @@ const normalizeType = (type) => {
   return lower.charAt(0).toUpperCase() + lower.slice(1);
 };
 
-const buildSyncPlan = async () => {
+const buildSyncPlan = async (tournamentId = null) => {
   const [users, userPlayers] = await Promise.all([
     User.find({})
       .select('_id name teamName boughtPlayers')
       .lean(),
-    UserPlayer.find({ isActive: true })
+    UserPlayer.find(withTournamentFilter({ isActive: true }, tournamentId))
       .select('userId playerId')
       .lean(),
   ]);
@@ -181,11 +182,11 @@ const collectionExists = async (name) => {
   return await cursor.hasNext();
 };
 
-const runAuctionReset = async () => {
-  const retainedPlayers = await RetainedPlayer.find({
+const runAuctionReset = async (tournamentId = null) => {
+  const retainedPlayers = await RetainedPlayer.find(withTournamentFilter({
     isActive: true,
     status: { $in: ['approved', 'active'] },
-  })
+  }, tournamentId))
     .select('userId playerId')
     .lean();
 
@@ -194,6 +195,7 @@ const runAuctionReset = async () => {
   const retainedPairs = retainedPlayers.map((rp) => ({
     userId: rp.userId,
     playerId: rp.playerId,
+    ...(tournamentId ? { tournamentId } : {}),
   }));
 
   await mongoose.connection.collection('users').updateMany(
@@ -238,16 +240,16 @@ const runAuctionReset = async () => {
   }
 
   if (retainedPairs.length > 0) {
-    await UserPlayer.deleteMany({ $nor: retainedPairs });
+    await UserPlayer.deleteMany(withTournamentFilter({ $nor: retainedPairs }, tournamentId));
   } else {
-    await UserPlayer.deleteMany({});
+    await UserPlayer.deleteMany(withTournamentFilter({}, tournamentId));
   }
 
   if (retainedPairs.length > 0) {
-    const existingPairs = await UserPlayer.find({
+    const existingPairs = await UserPlayer.find(withTournamentFilter({
       userId: { $in: retainedUserIds },
       playerId: { $in: retainedPlayerIds },
-    })
+    }, tournamentId))
       .select('userId playerId')
       .lean();
 
@@ -266,12 +268,13 @@ const runAuctionReset = async () => {
           playerId: rp.playerId,
           bidValue: 170000000,
           isActive: true,
+          ...(tournamentId ? { tournamentId } : {}),
         }))
       );
     }
 
     await UserPlayer.updateMany(
-      { userId: { $in: retainedUserIds }, playerId: { $in: retainedPlayerIds } },
+      withTournamentFilter({ userId: { $in: retainedUserIds }, playerId: { $in: retainedPlayerIds } }, tournamentId),
       { $set: { bidValue: 170000000, isActive: true } }
     );
   }
@@ -302,13 +305,27 @@ const runAuctionReset = async () => {
   );
 
   const cleared = [];
+  const tournamentScopedCollections = new Set([
+    'bidhistories',
+    'bids',
+    'fixtures',
+    'pickrequests',
+    'playerstats',
+    'playofffixtures',
+    'releaserequests',
+    'schedules',
+    'traderequests',
+  ]);
+
   for (const name of AUCTION_RESET_COLLECTIONS) {
     const exists = await collectionExists(name);
     if (!exists) {
       cleared.push({ name, deletedCount: 0, skipped: true });
       continue;
     }
-    const result = await mongoose.connection.collection(name).deleteMany({});
+    const deleteFilter =
+      tournamentId && tournamentScopedCollections.has(name) ? { tournamentId } : {};
+    const result = await mongoose.connection.collection(name).deleteMany(deleteFilter);
     cleared.push({ name, deletedCount: result.deletedCount || 0, skipped: false });
   }
 
@@ -351,6 +368,7 @@ router.post('/clear-all-cache', async (req, res) => {
 router.get('/team-trade-activity/search', async (req, res) => {
   try {
     const { adminUserId, q } = req.query;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
 
     const query = (q || '').trim();
@@ -383,28 +401,28 @@ router.get('/team-trade-activity/search', async (req, res) => {
     // 3. User IDs from releases, picks, trades involving these players
     const [releaseUsers, pickUsers, tradeFromUsers, tradeToUsers] = await Promise.all([
       playerIds.length > 0
-        ? ReleaseRequest.find({ player: { $in: playerIds }, status: 'completed' }).distinct('user')
+        ? ReleaseRequest.find(withTournamentFilter({ player: { $in: playerIds }, status: 'completed' }, tournamentId)).distinct('user')
         : [],
       playerIds.length > 0
-        ? PickRequest.find({ player: { $in: playerIds }, status: 'completed' }).distinct('user')
+        ? PickRequest.find(withTournamentFilter({ player: { $in: playerIds }, status: 'completed' }, tournamentId)).distinct('user')
         : [],
       playerIds.length > 0
-        ? TradeRequest.find({
+        ? TradeRequest.find(withTournamentFilter({
             status: 'completed',
             $or: [
               { offeredPlayer: { $in: playerIds } },
               { requestedPlayer: { $in: playerIds } }
             ]
-          }).distinct('fromUser')
+          }, tournamentId)).distinct('fromUser')
         : [],
       playerIds.length > 0
-        ? TradeRequest.find({
+        ? TradeRequest.find(withTournamentFilter({
             status: 'completed',
             $or: [
               { offeredPlayer: { $in: playerIds } },
               { requestedPlayer: { $in: playerIds } }
             ]
-          }).distinct('toUser')
+          }, tournamentId)).distinct('toUser')
         : []
     ]);
 
@@ -424,8 +442,9 @@ router.get('/team-trade-activity/search', async (req, res) => {
 router.get('/team-trade-activity', async (req, res) => {
   try {
     const { adminUserId } = req.query;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
-    const teams = await getTeamTradeUsageRows();
+    const teams = await getTeamTradeUsageRows(tournamentId);
     res.json({ teams });
   } catch (error) {
     console.error('team-trade-activity error', error);
@@ -439,8 +458,9 @@ router.get('/team-trade-activity', async (req, res) => {
 router.get('/trades-used-reconcile/preview', async (req, res) => {
   try {
     const { adminUserId } = req.query;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
-    const rows = await getTeamTradeUsageRows();
+    const rows = await getTeamTradeUsageRows(tournamentId);
     const under = rows.filter((r) => r.usageDrift < 0);
     res.json({
       teams: under.map((r) => ({
@@ -468,8 +488,9 @@ router.get('/trades-used-reconcile/preview', async (req, res) => {
 router.post('/trades-used-reconcile/execute', async (req, res) => {
   try {
     const { adminUserId, userIds } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
-    const rows = await getTeamTradeUsageRows();
+    const rows = await getTeamTradeUsageRows(tournamentId);
     const filter =
       Array.isArray(userIds) && userIds.length > 0 ? new Set(userIds.map(String)) : null;
     const results = [];
@@ -502,8 +523,9 @@ router.post('/trades-used-reconcile/execute', async (req, res) => {
 router.get('/release-pick-repair/preview', async (req, res) => {
   try {
     const { adminUserId } = req.query;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
-    const data = await buildFullRepairPreview();
+    const data = await buildFullRepairPreview(tournamentId);
     res.json(data);
   } catch (error) {
     console.error('release-pick-repair preview error', error);
@@ -517,10 +539,11 @@ router.get('/release-pick-repair/preview', async (req, res) => {
 router.post('/release-pick-repair/execute', async (req, res) => {
   try {
     const { adminUserId, userIds } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
     const filter =
       Array.isArray(userIds) && userIds.length > 0 ? new Set(userIds.map(String)) : null;
-    const out = await executeReleasePickRepairs(filter);
+    const out = await executeReleasePickRepairs(filter, tournamentId);
     try {
       invalidateCache('players:data');
       invalidateCache('user-purses');
@@ -539,6 +562,7 @@ router.get('/team-trade-activity/:userId/details', async (req, res) => {
   try {
     const { userId } = req.params;
     const { adminUserId } = req.query;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
 
     const uid = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null;
@@ -547,21 +571,21 @@ router.get('/team-trade-activity/:userId/details', async (req, res) => {
     }
 
     const [releases, picks, tradesAsFrom, tradesAsTo] = await Promise.all([
-      ReleaseRequest.find({ user: uid, status: 'completed' })
+      ReleaseRequest.find(withTournamentFilter({ user: uid, status: 'completed' }, tournamentId))
         .populate('player', 'name type role')
         .sort({ updatedAt: -1 })
         .lean(),
-      PickRequest.find({ user: uid, status: 'completed' })
+      PickRequest.find(withTournamentFilter({ user: uid, status: 'completed' }, tournamentId))
         .populate('player', 'name type role')
         .sort({ updatedAt: -1 })
         .lean(),
-      TradeRequest.find({ fromUser: uid, status: 'completed' })
+      TradeRequest.find(withTournamentFilter({ fromUser: uid, status: 'completed' }, tournamentId))
         .populate('offeredPlayer', 'name type role')
         .populate('requestedPlayer', 'name type role')
         .populate('toUser', 'teamName name')
         .sort({ updatedAt: -1 })
         .lean(),
-      TradeRequest.find({ toUser: uid, status: 'completed' })
+      TradeRequest.find(withTournamentFilter({ toUser: uid, status: 'completed' }, tournamentId))
         .populate('offeredPlayer', 'name type role')
         .populate('requestedPlayer', 'name type role')
         .populate('fromUser', 'teamName name')
@@ -652,8 +676,9 @@ router.post('/player-type/toggle', async (req, res) => {
 router.post('/auction/reset', async (req, res) => {
   try {
     const { adminUserId } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
-    const result = await runAuctionReset();
+    const result = await runAuctionReset(tournamentId);
     res.json({
       message: 'Auction reset completed',
       ...result,
@@ -669,8 +694,9 @@ router.post('/auction/reset', async (req, res) => {
 router.post('/scripts/purse/preview', async (req, res) => {
   try {
     const { adminUserId } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
-    const plan = await buildPurseUpdatePlan();
+    const plan = await buildPurseUpdatePlan(tournamentId);
     res.json(plan);
   } catch (error) {
     console.error('purse preview error', error);
@@ -683,8 +709,9 @@ router.post('/scripts/purse/preview', async (req, res) => {
 router.post('/scripts/purse/execute', async (req, res) => {
   try {
     const { adminUserId } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
-    const plan = await buildPurseUpdatePlan();
+    const plan = await buildPurseUpdatePlan(tournamentId);
     const result = await executePursePlan(plan);
     res.json(result);
   } catch (error) {
@@ -698,8 +725,9 @@ router.post('/scripts/purse/execute', async (req, res) => {
 router.post('/scripts/sync/preview', async (req, res) => {
   try {
     const { adminUserId } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
-    const plan = await buildSyncPlan();
+    const plan = await buildSyncPlan(tournamentId);
     res.json(plan);
   } catch (error) {
     console.error('sync preview error', error);
@@ -807,8 +835,9 @@ router.post('/scripts/career-history-sync/execute', async (req, res) => {
 router.post('/scripts/sync/execute', async (req, res) => {
   try {
     const { adminUserId } = req.body;
+    const tournamentId = getTournamentIdFromRequest(req);
     await requireAdmin(adminUserId);
-    const plan = await buildSyncPlan();
+    const plan = await buildSyncPlan(tournamentId);
 
     const userOps = plan.users
       .filter((user) => user.missingPlayers.length > 0)

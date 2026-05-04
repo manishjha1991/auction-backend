@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Cricket squad portraits (CPL-style roster = cricketers only):
- * 1) Connect to Mongo database cpl_20 (override with MONGO_DB_NAME).
+ * 1) Connect to Mongo database from MONGO_URI (optionally override with MONGO_DB_NAME).
  * 2) For each Player, fetch a portrait from English Wikipedia using cricket-focused search.
  * 3) Save files under ./cricket-player-portraits/<safe-name>.<ext> (folder configurable).
  * 4) Set Player.profilePicture to that relative path (e.g. cricket-player-portraits/Pat_Cummins.jpg).
@@ -15,7 +15,7 @@
  *
  * Env:
  *   MONGO_URI            required
- *   MONGO_DB_NAME        default cpl_20
+ *   MONGO_DB_NAME        optional
  *   PLAYER_PORTRAIT_DIR  subfolder under cwd, default cricket-player-portraits
  *   PROFILE_PIC_DB_PREFIX stored in Mongo (path prefix), default cricket-player-portraits
  */
@@ -27,7 +27,7 @@ const mongoose = require('mongoose');
 const axios = require('axios');
 const Player = require('../models/Player');
 
-const DB_NAME = process.env.MONGO_DB_NAME || 'cpl_20';
+const DB_NAME = process.env.MONGO_DB_NAME || null;
 const DEFAULT_CRICKET_FOLDER = 'cricket-player-portraits';
 const OUT_DIR = path.join(process.cwd(), process.env.PLAYER_PORTRAIT_DIR || DEFAULT_CRICKET_FOLDER);
 const DB_PREFIX = (process.env.PROFILE_PIC_DB_PREFIX || DEFAULT_CRICKET_FOLDER).replace(/^\/+|\/+$/g, '');
@@ -170,11 +170,11 @@ async function main() {
   if (!dryRun) {
     await fs.mkdir(OUT_DIR, { recursive: true });
   }
-  console.log('Database:', DB_NAME, '(cricket roster → Wikipedia cricket-focused lookup)');
+  console.log('Database:', DB_NAME || '(from MONGO_URI/default)', '(cricket roster → Wikipedia cricket-focused lookup)');
   console.log('Download folder:', OUT_DIR);
   console.log('profilePicture prefix in DB:', DB_PREFIX);
 
-  await mongoose.connect(process.env.MONGO_URI, { dbName: DB_NAME });
+  await mongoose.connect(process.env.MONGO_URI, DB_NAME ? { dbName: DB_NAME } : undefined);
   console.log('Connected. Collection: players');
 
   const usedNames = new Set();

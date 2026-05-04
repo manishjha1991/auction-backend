@@ -7,6 +7,7 @@ const AppSettings = require('../models/AppSettings');
 const Fixture = require('../models/Fixture');
 const headToHeadModule = require('./headToHead');
 const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 // Helper function to parse score string and extract runs
 const parseRuns = (scoreString) => {
@@ -198,6 +199,7 @@ const calculateNRR = (fixtures, teamName, userId) => {
 // Get all playoff fixtures
 router.get('/', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     // Check if World Cup mode is enabled
     const settings = await AppSettings.findOne().lean();
     const isWorldCupMode = settings?.worldCupMode === true;
@@ -265,7 +267,7 @@ router.get('/', async (req, res) => {
       }
     } else {
       // Normal mode: fetch regular playoff fixtures
-      playoffFixtures = await PlayoffFixture.find().sort({ matchId: 1 }).lean();
+      playoffFixtures = await PlayoffFixture.find(withTournamentFilter({}, tournamentId)).sort({ matchId: 1 }).lean();
       console.log('Fetching playoff fixtures:', playoffFixtures.map(f => `${f.matchId}: ${f.team1} vs ${f.team2}`));
     }
     
@@ -279,6 +281,7 @@ router.get('/', async (req, res) => {
 // Initialize playoff fixtures - different logic based on mode
 router.post('/initialize', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { mode } = req.body; // Get mode from request body
     console.log('Playoff initialization mode:', mode); // Debug log
 
@@ -375,11 +378,12 @@ router.post('/initialize', async (req, res) => {
       console.log('Group B teams:', groupBTeams.map(t => ({ name: t.teamName, points: t.points, group: t.group })));
 
       // Clear existing playoff fixtures
-      await PlayoffFixture.deleteMany({});
+      await PlayoffFixture.deleteMany(withTournamentFilter({}, tournamentId));
 
       // Create playoff fixtures according to new groups format
       const playoffFixtures = [
         {
+          tournamentId: tournamentId || null,
           matchId: 'Q1',
           stage: 'QUALIFIER 1',
           team1: A2.teamName, // A2
@@ -391,6 +395,7 @@ router.post('/initialize', async (req, res) => {
           description: 'A2 vs B3'
         },
         {
+          tournamentId: tournamentId || null,
           matchId: 'Q2',
           stage: 'QUALIFIER 2',
           team1: B2.teamName, // B2
@@ -402,6 +407,7 @@ router.post('/initialize', async (req, res) => {
           description: 'B2 vs A3'
         },
         {
+          tournamentId: tournamentId || null,
           matchId: 'SF1',
           stage: 'SEMI-FINAL 1',
           team1: A1.teamName, // A1
@@ -413,6 +419,7 @@ router.post('/initialize', async (req, res) => {
           description: 'A1 vs Winner of Q1'
         },
         {
+          tournamentId: tournamentId || null,
           matchId: 'SF2',
           stage: 'SEMI-FINAL 2',
           team1: B1.teamName, // B1
@@ -424,6 +431,7 @@ router.post('/initialize', async (req, res) => {
           description: 'B1 vs Winner of Q2'
         },
         {
+          tournamentId: tournamentId || null,
           matchId: 'F',
           stage: 'FINAL',
           team1: 'Winner of Semi-Final 1',
@@ -514,11 +522,12 @@ router.post('/initialize', async (req, res) => {
       const [team1, team2, team3, team4, team5, team6] = teams;
 
       // Clear existing playoff fixtures
-      await PlayoffFixture.deleteMany({});
+      await PlayoffFixture.deleteMany(withTournamentFilter({}, tournamentId));
 
       // Create playoff fixtures according to original format
       const playoffFixtures = [
         {
+          tournamentId: tournamentId || null,
           matchId: 'A',
           stage: 'ELIMINATOR ROUND',
           team1: team3.teamName,
@@ -529,6 +538,7 @@ router.post('/initialize', async (req, res) => {
           team2Score: 'TBD'
         },
         {
+          tournamentId: tournamentId || null,
           matchId: 'B',
           stage: 'ELIMINATOR ROUND',
           team1: team4.teamName,
@@ -539,6 +549,7 @@ router.post('/initialize', async (req, res) => {
           team2Score: 'TBD'
         },
         {
+          tournamentId: tournamentId || null,
           matchId: 'C',
           stage: 'QUALIFIER 1',
           team1: team1.teamName,
@@ -549,6 +560,7 @@ router.post('/initialize', async (req, res) => {
           team2Score: 'TBD'
         },
         {
+          tournamentId: tournamentId || null,
           matchId: 'D',
           stage: 'ELIMINATOR 2',
           team1: 'Winner of Match A',
@@ -559,6 +571,7 @@ router.post('/initialize', async (req, res) => {
           team2Score: 'TBD'
         },
         {
+          tournamentId: tournamentId || null,
           matchId: 'E',
           stage: 'QUALIFIER 2',
           team1: 'Loser of Match C',
@@ -569,6 +582,7 @@ router.post('/initialize', async (req, res) => {
           team2Score: 'TBD'
         },
         {
+          tournamentId: tournamentId || null,
           matchId: 'F',
           stage: 'FINALS',
           team1: 'Winner of Match C',
@@ -596,8 +610,9 @@ router.post('/initialize', async (req, res) => {
 // Update playoff fixture
 router.post('/update/:matchId', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { matchId } = req.params;
-    const existing = await PlayoffFixture.findOne({ matchId }).lean();
+    const existing = await PlayoffFixture.findOne(withTournamentFilter({ matchId }, tournamentId)).lean();
     const updateData = { ...req.body };
 
     // If winner is being updated, also update winnerUserId
@@ -628,7 +643,7 @@ router.post('/update/:matchId', async (req, res) => {
 
     console.log(`Updating playoff fixture ${matchId} with data:`, updateData);
     const playoffFixture = await PlayoffFixture.findOneAndUpdate(
-      { matchId },
+      withTournamentFilter({ matchId }, tournamentId),
       updateData,
       { new: true }
     );
@@ -644,7 +659,7 @@ router.post('/update/:matchId', async (req, res) => {
     
     if (updateData.winner && updateData.isCompleted) {
       console.log(`✅ Updating dependent matches for ${matchId} with winner: ${updateData.winner}`);
-      await updateDependentMatches(matchId, updateData.winner);
+      await updateDependentMatches(matchId, updateData.winner, tournamentId);
 
       // Head-to-head: update when playoff fixture has winner
       const t1 = playoffFixture.team1;
@@ -658,12 +673,12 @@ router.post('/update/:matchId', async (req, res) => {
         const oldT2 = existing?.team2;
         const oldValid = oldT1 && oldT2 && !String(oldT1).includes('Winner of') && !String(oldT1).includes('Loser of') &&
           !String(oldT2).includes('Winner of') && !String(oldT2).includes('Loser of');
-        await PlayoffFixture.updateOne({ matchId }, { $set: { headToHeadSynced: false } });
+        await PlayoffFixture.updateOne(withTournamentFilter({ matchId }, tournamentId), { $set: { headToHeadSynced: false } });
         if (oldWinner && oldWinner !== newWinner && oldValid && headToHeadModule.revertAndResyncForRecord) {
-          headToHeadModule.revertAndResyncForRecord(oldT1, oldT2, oldWinner)
+          headToHeadModule.revertAndResyncForRecord(oldT1, oldT2, oldWinner, tournamentId)
             .catch((err) => console.error('Head-to-head sync:', err));
         } else if (headToHeadModule.syncHeadToHead) {
-          headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
+          headToHeadModule.syncHeadToHead(tournamentId).catch((err) => console.error('Head-to-head sync:', err));
         }
 
         const shouldBumpCareer =
@@ -682,7 +697,7 @@ router.post('/update/:matchId', async (req, res) => {
 
       // Log the updated dependent matches
       // 🚀 PERFORMANCE: Use .lean() for read-only query
-      const updatedFixtures = await PlayoffFixture.find({}).sort({ matchId: 1 }).lean();
+      const updatedFixtures = await PlayoffFixture.find(withTournamentFilter({}, tournamentId)).sort({ matchId: 1 }).lean();
       console.log('All playoff fixtures after update:', updatedFixtures.map(f => `${f.matchId}: ${f.team1} vs ${f.team2}`));
     } else {
       console.log(`❌ Not updating dependent matches - winner: ${updateData.winner}, isCompleted: ${updateData.isCompleted}`);
@@ -706,7 +721,7 @@ async function getUserIdFromTeamName(teamName) {
 }
 
 // Helper function to update dependent matches
-async function updateDependentMatches(matchId, winner) {
+async function updateDependentMatches(matchId, winner, tournamentId = null) {
   try {
     // Get winner userId
     const winnerUserId = await getUserIdFromTeamName(winner);
@@ -718,7 +733,7 @@ async function updateDependentMatches(matchId, winner) {
     
     // For 'F' matchId, check the stage to distinguish between modes
     if (matchId === 'F') {
-      const finalMatch = await PlayoffFixture.findOne({ matchId: 'F' });
+      const finalMatch = await PlayoffFixture.findOne(withTournamentFilter({ matchId: 'F' }, tournamentId));
       isGroupsMode = finalMatch && finalMatch.stage === 'FINAL';
     }
     
@@ -733,7 +748,7 @@ async function updateDependentMatches(matchId, winner) {
           // Update Semi-Final 1 team2 (Winner of Qualifier 1)
           console.log(`Updating SF1 team2 to: ${winner} (userId: ${winnerUserId})`);
           const sf1Update = await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'SF1' },
+            withTournamentFilter({ matchId: 'SF1' }, tournamentId),
             { 
               team2: winner,
               team2UserId: winnerUserId // userId-based
@@ -746,7 +761,7 @@ async function updateDependentMatches(matchId, winner) {
           // Update Semi-Final 2 team2 (Winner of Qualifier 2)
           console.log(`Updating SF2 team2 to: ${winner} (userId: ${winnerUserId})`);
           const sf2Update = await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'SF2' },
+            withTournamentFilter({ matchId: 'SF2' }, tournamentId),
             { 
               team2: winner,
               team2UserId: winnerUserId // userId-based
@@ -759,7 +774,7 @@ async function updateDependentMatches(matchId, winner) {
           // Update Final team1 (Winner of Semi-Final 1)
           console.log(`Updating F team1 to: ${winner} (userId: ${winnerUserId})`);
           await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'F' },
+            withTournamentFilter({ matchId: 'F' }, tournamentId),
             { 
               team1: winner,
               team1UserId: winnerUserId // userId-based
@@ -770,7 +785,7 @@ async function updateDependentMatches(matchId, winner) {
           // Update Final team2 (Winner of Semi-Final 2)
           console.log(`Updating F team2 to: ${winner} (userId: ${winnerUserId})`);
           await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'F' },
+            withTournamentFilter({ matchId: 'F' }, tournamentId),
             { 
               team2: winner,
               team2UserId: winnerUserId // userId-based
@@ -784,7 +799,7 @@ async function updateDependentMatches(matchId, winner) {
         case 'A':
           // Update Match D team1
           await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'D' },
+            withTournamentFilter({ matchId: 'D' }, tournamentId),
             { 
               team1: winner,
               team1UserId: winnerUserId // userId-based
@@ -794,7 +809,7 @@ async function updateDependentMatches(matchId, winner) {
         case 'B':
           // Update Match D team2
           await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'D' },
+            withTournamentFilter({ matchId: 'D' }, tournamentId),
             { 
               team2: winner,
               team2UserId: winnerUserId // userId-based
@@ -803,19 +818,19 @@ async function updateDependentMatches(matchId, winner) {
           break;
         case 'C':
           // Update Match E team1 (loser) and Match F team1 (winner)
-          const matchC = await PlayoffFixture.findOne({ matchId: 'C' });
+          const matchC = await PlayoffFixture.findOne(withTournamentFilter({ matchId: 'C' }, tournamentId));
           const loser = matchC.team1 === winner ? matchC.team2 : matchC.team1;
           const loserUserId = await getUserIdFromTeamName(loser);
           
           await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'E' },
+            withTournamentFilter({ matchId: 'E' }, tournamentId),
             { 
               team1: loser,
               team1UserId: loserUserId // userId-based
             }
           );
           await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'F' },
+            withTournamentFilter({ matchId: 'F' }, tournamentId),
             { 
               team1: winner,
               team1UserId: winnerUserId // userId-based
@@ -825,7 +840,7 @@ async function updateDependentMatches(matchId, winner) {
         case 'D':
           // Update Match E team2
           await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'E' },
+            withTournamentFilter({ matchId: 'E' }, tournamentId),
             { 
               team2: winner,
               team2UserId: winnerUserId // userId-based
@@ -835,7 +850,7 @@ async function updateDependentMatches(matchId, winner) {
         case 'E':
           // Update Match F team2
           await PlayoffFixture.findOneAndUpdate(
-            { matchId: 'F' },
+            withTournamentFilter({ matchId: 'F' }, tournamentId),
             { 
               team2: winner,
               team2UserId: winnerUserId // userId-based
@@ -853,16 +868,17 @@ async function updateDependentMatches(matchId, winner) {
 // Test endpoint to manually trigger dependent match updates
 router.post('/test-update/:matchId', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { matchId } = req.params;
     const { winner } = req.body;
     
     console.log(`Testing updateDependentMatches for ${matchId} with winner: ${winner}`);
     
     // Call the updateDependentMatches function directly
-    await updateDependentMatches(matchId, winner);
+    await updateDependentMatches(matchId, winner, tournamentId);
     
     // Fetch and return all playoff fixtures
-    const playoffFixtures = await PlayoffFixture.find().sort({ matchId: 1 });
+    const playoffFixtures = await PlayoffFixture.find(withTournamentFilter({}, tournamentId)).sort({ matchId: 1 });
     console.log('Playoff fixtures after test update:', playoffFixtures.map(f => `${f.matchId}: ${f.team1} vs ${f.team2}`));
     
     res.json({ 

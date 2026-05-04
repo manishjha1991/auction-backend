@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
+const { withTournamentFilter } = require('./tournamentScope');
 
 const toNumber = (value) => {
   if (!value) return 0;
@@ -12,12 +13,12 @@ const toNumber = (value) => {
   }
 };
 
-async function buildPurseUpdatePlan() {
+async function buildPurseUpdatePlan(tournamentId = null) {
   const [users, userPlayers] = await Promise.all([
     User.find({ isAdmin: { $ne: true } })
       .select('_id name teamName purse')
       .lean(),
-    UserPlayer.find({ isActive: true })
+    UserPlayer.find(withTournamentFilter({ isActive: true }, tournamentId))
       .select('userId bidValue')
       .lean(),
   ]);
@@ -104,8 +105,8 @@ async function executePursePlan(plan) {
   };
 }
 
-async function runPurseAutoFix() {
-  const plan = await buildPurseUpdatePlan();
+async function runPurseAutoFix(tournamentId = null) {
+  const plan = await buildPurseUpdatePlan(tournamentId);
   if (!plan.updates.some((op) => Math.abs(op.differenceCr) > 0.01)) {
     return {
       executed: false,

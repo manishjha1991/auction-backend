@@ -14,6 +14,17 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const Fixture = require('./models/Fixture');
 
+const args = process.argv.slice(2);
+const tournamentArgIndex = args.indexOf('--tournamentId');
+const tournamentIdRaw =
+  (tournamentArgIndex >= 0 ? args[tournamentArgIndex + 1] : undefined) ||
+  process.env.TOURNAMENT_ID ||
+  null;
+const tournamentId =
+  tournamentIdRaw && mongoose.Types.ObjectId.isValid(String(tournamentIdRaw))
+    ? new mongoose.Types.ObjectId(String(tournamentIdRaw))
+    : null;
+
 async function cleanupFixtures() {
   try {
     // Check if MONGO_URI is set
@@ -25,18 +36,17 @@ async function cleanupFixtures() {
     }
 
     // Connect to database using the same configuration as server
-    const mongooseOptions = {
-      dbName: 'cpl_14',
-    };
+    const mongooseOptions = process.env.MONGO_DB_NAME ? { dbName: process.env.MONGO_DB_NAME } : undefined;
 
-    console.log(`🔗 Connecting to: ${process.env.MONGO_URI} (DB: cpl_14)`);
+    console.log(`🔗 Connecting to: ${process.env.MONGO_URI}`);
     await mongoose.connect(process.env.MONGO_URI, mongooseOptions);
 
     console.log('🔗 Connected to MongoDB');
     console.log('🧹 Starting fixture cleanup...');
 
-    // Get all active fixtures
-    const existingFixtures = await Fixture.find({ isActive: true });
+    // Get all active fixtures (optionally scoped by tournamentId)
+    const fixtureFilter = tournamentId ? { isActive: true, tournamentId } : { isActive: true };
+    const existingFixtures = await Fixture.find(fixtureFilter);
     console.log(`📊 Found ${existingFixtures.length} active fixtures`);
 
     const fixtureMap = new Map();
@@ -44,7 +54,8 @@ async function cleanupFixtures() {
     let duplicatePairs = 0;
 
     for (const fixture of existingFixtures) {
-      const sortedKey = [fixture.team1, fixture.team2].sort().join('-');
+      const scopeKey = tournamentId ? String(tournamentId) : String(fixture.tournamentId || 'global');
+      const sortedKey = `${scopeKey}:${[fixture.team1, fixture.team2].sort().join('-')}`;
       
       if (fixtureMap.has(sortedKey)) {
         duplicatePairs++;
@@ -99,7 +110,7 @@ async function cleanupFixtures() {
     }
 
     // Final summary
-    const finalCount = await Fixture.countDocuments({ isActive: true });
+    const finalCount = await Fixture.countDocuments(fixtureFilter);
     console.log('\n📋 Cleanup Summary:');
     console.log(`  - Initial fixtures: ${existingFixtures.length}`);
     console.log(`  - Duplicate pairs found: ${duplicatePairs}`);

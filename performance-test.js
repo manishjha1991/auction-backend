@@ -12,11 +12,10 @@ const PlayerStats = require('./models/PlayerStats');
 async function testPerformance() {
   try {
     // Connect to MongoDB
-    await mongoose.connect(process.env.MONGO_URI, { 
-      dbName: 'cpl_12',
-      useNewUrlParser: true, 
-      useUnifiedTopology: true 
-    });
+    await mongoose.connect(
+      process.env.MONGO_URI,
+      process.env.MONGO_DB_NAME ? { dbName: process.env.MONGO_DB_NAME } : undefined
+    );
     console.log('✅ Connected to MongoDB');
 
     console.log('🚀 Starting performance tests...\n');

@@ -1,6 +1,33 @@
 // 🚀 Enhanced Database Health Check with Connection Pooling
 const mongoose = require('mongoose');
 
+function getReconnectOptions() {
+  const options = {
+    maxPoolSize: 20,
+    minPoolSize: 8,
+    maxIdleTimeMS: 60000,
+    maxConnecting: 5,
+    serverSelectionTimeoutMS: 15000,
+    socketTimeoutMS: 30000,
+    connectTimeoutMS: 15000,
+    retryWrites: true,
+    retryReads: true,
+    heartbeatFrequencyMS: 5000,
+    compressors: ['zlib'],
+    zlibCompressionLevel: 6,
+    directConnection: false,
+    monitorCommands: true,
+    maxStalenessSeconds: 90,
+    readPreference: 'primaryPreferred',
+    readConcern: { level: 'local' },
+    writeConcern: { w: 1, j: true },
+  };
+  if (process.env.MONGO_DB_NAME) {
+    options.dbName = process.env.MONGO_DB_NAME;
+  }
+  return options;
+}
+
 // Connection health check with pool monitoring
 const checkDBHealth = (req, res, next) => {
   const connectionState = mongoose.connection.readyState;
@@ -13,31 +40,15 @@ const checkDBHealth = (req, res, next) => {
     // If connection is lost, try to reconnect with optimized settings
     if (connectionState === 0) {
       console.log('🔄 Attempting to reconnect to MongoDB with optimized pooling...');
-      mongoose.connect(process.env.MONGO_URI, {
-        dbName: 'cpl_12',
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-        maxPoolSize: 20,
-        minPoolSize: 8,
-        maxIdleTimeMS: 60000,
-        maxConnecting: 5,
-        serverSelectionTimeoutMS: 15000,
-        socketTimeoutMS: 30000,
-        connectTimeoutMS: 15000,
-        retryWrites: true,
-        retryReads: true,
-        heartbeatFrequencyMS: 5000,
-        compressors: ['zlib'],
-        zlibCompressionLevel: 6,
-        directConnection: false,
-        monitorCommands: true,
-        maxStalenessSeconds: 90,
-        readPreference: 'primaryPreferred',
-        readConcern: { level: 'local' },
-        writeConcern: { w: 1, j: true }
-      }).catch(err => {
-        console.error('❌ Reconnection failed:', err.message);
-      });
+      if (!process.env.MONGO_URI) {
+        console.error('❌ Reconnection skipped: MONGO_URI is missing');
+      } else {
+        mongoose
+          .connect(process.env.MONGO_URI, getReconnectOptions())
+          .catch((err) => {
+            console.error('❌ Reconnection failed:', err.message);
+          });
+      }
     }
   }
   

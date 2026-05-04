@@ -9,6 +9,7 @@ const MatchResult = require('../models/MatchResult');
 const PlayoffFixture = require('../models/PlayoffFixture');
 const TeamHeadToHead = require('../models/TeamHeadToHead');
 const User = require('../models/User');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 // Normalize pair: always store smaller userId first for consistent lookup
 const normalizePair = (id1, id2) => {
@@ -23,7 +24,7 @@ const normalizeTeamName = (name) =>
   String(name || '').replace(/\p{Emoji}/gu, '').trim().toLowerCase().replace(/\s+(xi|11|cpl)$/i, '').trim();
 
 // Compute head-to-head from Fixture, MatchResult, PlayoffFixture
-const computeHeadToHeadFromSource = async () => {
+const computeHeadToHeadFromSource = async (tournamentId = null) => {
   const users = await User.find({ isActive: true, teamName: { $exists: true, $ne: null } }).select('_id teamName').lean();
   const teamNameToUser = new Map();
   users.forEach((u) => {
@@ -68,9 +69,13 @@ const computeHeadToHeadFromSource = async () => {
   };
 
   const [fixtures, matchResults, playoffs] = await Promise.all([
-    Fixture.find({ isActive: true, winner: { $exists: true, $ne: null, $ne: '' } }).select('team1 team2 team1UserId team2UserId winner').lean(),
-    MatchResult.find({ winner: { $in: ['team1', 'team2'] } }).select('team1 team2 winner').lean(),
-    PlayoffFixture.find({ isCompleted: true, winner: { $exists: true, $ne: null, $ne: '' } })
+    Fixture.find(withTournamentFilter({ isActive: true, winner: { $exists: true, $ne: null, $ne: '' } }, tournamentId))
+      .select('team1 team2 team1UserId team2UserId winner')
+      .lean(),
+    MatchResult.find(withTournamentFilter({ winner: { $in: ['team1', 'team2'] } }, tournamentId))
+      .select('team1 team2 winner')
+      .lean(),
+    PlayoffFixture.find(withTournamentFilter({ isCompleted: true, winner: { $exists: true, $ne: null, $ne: '' } }, tournamentId))
       .select('team1 team2 team1UserId team2UserId winner')
       .lean(),
   ]);
@@ -106,11 +111,12 @@ const computeHeadToHeadFromSource = async () => {
 };
 
 // Sync head-to-head: rebuild TeamHeadToHead from Fixture, MatchResult, PlayoffFixture. No duplicates.
-const syncHeadToHead = async () => {
-  const records = await computeHeadToHeadFromSource();
-  await TeamHeadToHead.deleteMany({});
+const syncHeadToHead = async (tournamentId = null) => {
+  const records = await computeHeadToHeadFromSource(tournamentId);
+  await TeamHeadToHead.deleteMany(withTournamentFilter({}, tournamentId));
   if (records.length > 0) {
     await TeamHeadToHead.insertMany(records.map((r) => ({
+      tournamentId: tournamentId || null,
       team1UserId: r.team1UserId,
       team2UserId: r.team2UserId,
       team1Name: r.team1Name,
@@ -124,14 +130,16 @@ const syncHeadToHead = async () => {
 };
 
 // No-op: full rebuild on sync handles winner changes
-const revertAndResyncForRecord = async () => syncHeadToHead();
+const revertAndResyncForRecord = async (_team1, _team2, _oldWinner, tournamentId = null) =>
+  syncHeadToHead(tournamentId);
 
 // GET /api/head-to-head - Read from TeamHeadToHead (sync runs when fixture/match/playoff saved)
 router.get('/', async (req, res) => {
   try {
-    const count = await TeamHeadToHead.countDocuments();
-    const synced = count === 0 ? await syncHeadToHead() : 0;
-    const records = await TeamHeadToHead.find()
+    const tournamentId = getTournamentIdFromRequest(req);
+    const count = await TeamHeadToHead.countDocuments(withTournamentFilter({}, tournamentId));
+    const synced = count === 0 ? await syncHeadToHead(tournamentId) : 0;
+    const records = await TeamHeadToHead.find(withTournamentFilter({}, tournamentId))
       .populate('team1UserId', 'teamName')
       .populate('team2UserId', 'teamName')
       .sort({ team1Name: 1, team2Name: 1 })
@@ -159,6 +167,7 @@ router.get('/', async (req, res) => {
 // GET /api/head-to-head/matches/:team1Id/:team2Id - All matches between two teams (scorecard)
 router.get('/matches/:team1Id/:team2Id', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { team1Id, team2Id } = req.params;
     const [u1, u2] = await Promise.all([
       User.findById(team1Id).select('teamName').lean(),
@@ -177,23 +186,25 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
 
     // Fetch from all sources - use broad queries then filter in memory for reliable matching
     const [allFixtures, allMatchResults, allPlayoffFixtures] = await Promise.all([
-      Fixture.find({
+      Fixture.find(withTournamentFilter({
         isActive: true,
         $or: [
           { winner: { $exists: true, $ne: null, $ne: '' } },
           { team1Score: { $exists: true, $ne: null, $ne: '' }, team2Score: { $exists: true, $ne: null, $ne: '' } },
         ],
-      })
+      }, tournamentId))
         .sort({ createdAt: -1 })
         .lean(),
-      MatchResult.find({ winner: { $in: ['team1', 'team2'] } }).sort({ matchDate: -1 }).lean(),
-      PlayoffFixture.find({
+      MatchResult.find(withTournamentFilter({ winner: { $in: ['team1', 'team2'] } }, tournamentId))
+        .sort({ matchDate: -1 })
+        .lean(),
+      PlayoffFixture.find(withTournamentFilter({
         isCompleted: true,
         $or: [
           { winner: { $exists: true, $ne: null, $ne: '' } },
           { team1Score: { $exists: true, $ne: null, $ne: '' }, team2Score: { $exists: true, $ne: null, $ne: '' } },
         ],
-      })
+      }, tournamentId))
         .sort({ date: -1 })
         .lean(),
     ]);
@@ -296,7 +307,8 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
 // POST /api/head-to-head/sync - Manually trigger sync (e.g. after bulk fixture update)
 router.post('/sync', async (req, res) => {
   try {
-    const synced = await syncHeadToHead();
+    const tournamentId = getTournamentIdFromRequest(req);
+    const synced = await syncHeadToHead(tournamentId);
     res.json({ message: `Synced ${synced} new results`, syncedCount: synced });
   } catch (error) {
     console.error('Head-to-head sync error:', error);
@@ -307,8 +319,9 @@ router.post('/sync', async (req, res) => {
 // POST /api/head-to-head/reset - Clear TeamHeadToHead and re-sync from Fixture, MatchResult, PlayoffFixture
 router.post('/reset', async (req, res) => {
   try {
-    await TeamHeadToHead.deleteMany({});
-    const synced = await syncHeadToHead();
+    const tournamentId = getTournamentIdFromRequest(req);
+    await TeamHeadToHead.deleteMany(withTournamentFilter({}, tournamentId));
+    const synced = await syncHeadToHead(tournamentId);
     res.json({ message: 'Reset and re-synced TeamHeadToHead', syncedCount: synced });
   } catch (error) {
     console.error('Head-to-head reset error:', error);

@@ -14,6 +14,12 @@ const TradeHistorySchema = new mongoose.Schema(
 
 const TradeRequestSchema = new mongoose.Schema(
   {
+    tournamentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Tournament',
+      default: null,
+      index: true
+    },
     fromUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     toUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     offeredPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'Player', required: true },
@@ -33,6 +39,9 @@ const TradeRequestSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+TradeRequestSchema.index({ tournamentId: 1, status: 1, createdAt: -1 });
+TradeRequestSchema.index({ tournamentId: 1, fromUser: 1, toUser: 1 });
 
 module.exports = mongoose.model('TradeRequest', TradeRequestSchema);
 

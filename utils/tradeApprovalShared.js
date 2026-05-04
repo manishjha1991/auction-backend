@@ -4,6 +4,7 @@
  */
 const Player = require('../models/Player');
 const TradeRequest = require('../models/TradeRequest');
+const { withTournamentFilter } = require('./tournamentScope');
 
 const TRADE_LOCK_HOURS = 48;
 
@@ -49,7 +50,12 @@ async function setTradeLockOnPlayers(playerIds) {
  * @param {Array} playerIds - two player ObjectIds
  * @param {import('mongoose').Types.ObjectId|string|null} excludeTradeId - set when approving an existing TradeRequest
  */
-async function autoRejectTradesInvolvingPlayers(adminUserId, playerIds, excludeTradeId = null) {
+async function autoRejectTradesInvolvingPlayers(
+  adminUserId,
+  playerIds,
+  excludeTradeId = null,
+  tournamentId = null,
+) {
   const activeStatuses = ['pending', 'counter', 'admin_pending'];
   const filter = {
     status: { $in: activeStatuses },
@@ -60,7 +66,7 @@ async function autoRejectTradesInvolvingPlayers(adminUserId, playerIds, excludeT
   };
   if (excludeTradeId) filter._id = { $ne: excludeTradeId };
 
-  const others = await TradeRequest.find(filter);
+  const others = await TradeRequest.find(withTournamentFilter(filter, tournamentId));
   for (const o of others) {
     o.status = 'rejected';
     o.history.push({

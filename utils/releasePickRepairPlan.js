@@ -4,13 +4,14 @@ const ReleaseRequest = require('../models/ReleaseRequest');
 const PickRequest = require('../models/PickRequest');
 const Player = require('../models/Player');
 const { pickIsAlreadyPairedToARelease } = require('./releasePickPairing');
+const { withTournamentFilter } = require('./tournamentScope');
 
 const TIERS = ['Sapphire', 'Gold', 'Emerald', 'Silver'];
 
-async function getPairedPickIdSet() {
-  const rows = await ReleaseRequest.find({
+async function getPairedPickIdSet(tournamentId = null) {
+  const rows = await ReleaseRequest.find(withTournamentFilter({
     pairedPickRequest: { $exists: true, $ne: null },
-  })
+  }, tournamentId))
     .select('pairedPickRequest')
     .lean();
   return new Set(rows.map((d) => String(d.pairedPickRequest)));
@@ -41,16 +42,16 @@ async function ensurePlayersInCache(playerIds, playerById) {
  * chronological order (oldest release ↔ oldest pick per tier). Each pair implies one extra
  * tradesUsed that can be fixed by linking pairedPickRequest and decrementing tradesUsed by 1.
  */
-async function buildRepairPairsForUser(userId, pairedPickIdSet, playerById) {
+async function buildRepairPairsForUser(userId, pairedPickIdSet, playerById, tournamentId = null) {
   const uid = mongoose.Types.ObjectId.isValid(userId)
     ? new mongoose.Types.ObjectId(userId)
     : userId;
 
-  const releases = await ReleaseRequest.find({
+  const releases = await ReleaseRequest.find(withTournamentFilter({
     user: uid,
     status: 'completed',
     $or: [{ pairedPickRequest: null }, { pairedPickRequest: { $exists: false } }],
-  })
+  }, tournamentId))
     .select('player releasedPlayerType updatedAt createdAt')
     .sort({ updatedAt: 1 })
     .lean();
@@ -65,7 +66,7 @@ async function buildRepairPairsForUser(userId, pairedPickIdSet, playerById) {
     releasesWithTier.push({ ...r, effTier: eff });
   }
 
-  const picks = await PickRequest.find({ user: uid, status: 'completed' })
+  const picks = await PickRequest.find(withTournamentFilter({ user: uid, status: 'completed' }, tournamentId))
     .populate('player', 'name type')
     .sort({ updatedAt: 1 })
     .lean();
@@ -107,8 +108,8 @@ async function buildRepairPairsForUser(userId, pairedPickIdSet, playerById) {
   return pairs;
 }
 
-async function buildFullRepairPreview() {
-  const pairedPickIdSet = await getPairedPickIdSet();
+async function buildFullRepairPreview(tournamentId = null) {
+  const pairedPickIdSet = await getPairedPickIdSet(tournamentId);
   const users = await User.find({ isActive: true, isAdmin: false })
     .select('_id teamName name tradesUsed')
     .sort({ teamName: 1 })
@@ -119,7 +120,7 @@ async function buildFullRepairPreview() {
   let totalPairs = 0;
 
   for (const u of users) {
-    const pairs = await buildRepairPairsForUser(u._id, pairedPickIdSet, playerById);
+    const pairs = await buildRepairPairsForUser(u._id, pairedPickIdSet, playerById, tournamentId);
     if (!pairs.length) continue;
     totalPairs += pairs.length;
     const tu = Number(u.tradesUsed) || 0;
@@ -145,8 +146,8 @@ async function buildFullRepairPreview() {
 /**
  * @param {Set<string>|null} userIdFilter - if set, only repair these user ids
  */
-async function executeReleasePickRepairs(userIdFilter) {
-  const preview = await buildFullRepairPreview();
+async function executeReleasePickRepairs(userIdFilter, tournamentId = null) {
+  const preview = await buildFullRepairPreview(tournamentId);
   const targets = userIdFilter
     ? preview.teams.filter((t) => userIdFilter.has(t.userId))
     : preview.teams;
@@ -157,14 +158,14 @@ async function executeReleasePickRepairs(userIdFilter) {
     const uid = new mongoose.Types.ObjectId(team.userId);
 
     for (const pair of team.pairs) {
-      const rel = await ReleaseRequest.findById(pair.releaseId);
+      const rel = await ReleaseRequest.findOne(withTournamentFilter({ _id: pair.releaseId }, tournamentId));
       if (!rel || rel.status !== 'completed') continue;
       if (rel.pairedPickRequest) continue;
       if (String(rel.user) !== team.userId) continue;
 
-      if (await pickIsAlreadyPairedToARelease(pair.pickId)) continue;
+      if (await pickIsAlreadyPairedToARelease(pair.pickId, tournamentId)) continue;
 
-      const pick = await PickRequest.findById(pair.pickId);
+      const pick = await PickRequest.findOne(withTournamentFilter({ _id: pair.pickId }, tournamentId));
       if (!pick || pick.status !== 'completed') continue;
       if (String(pick.user) !== team.userId) continue;
 
@@ -178,10 +179,10 @@ async function executeReleasePickRepairs(userIdFilter) {
       if (!rel.releasedPlayerType && relPl.type) setFields.releasedPlayerType = relPl.type;
 
       const ures = await ReleaseRequest.updateOne(
-        {
+        withTournamentFilter({
           _id: rel._id,
           $or: [{ pairedPickRequest: null }, { pairedPickRequest: { $exists: false } }],
-        },
+        }, tournamentId),
         { $set: setFields }
       );
       if (ures.modifiedCount !== 1) continue;

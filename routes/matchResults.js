@@ -4,6 +4,7 @@ const MatchResult = require('../models/MatchResult');
 const User = require('../models/User');
 const Player = require('../models/Player');
 const headToHeadModule = require('./headToHead');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 // Middleware to check if user is authenticated
 const isAuthenticated = (req, res, next) => {
@@ -34,7 +35,8 @@ const isAdmin = async (req, res, next) => {
 // GET /api/match-results/public - Get all match results (public for trophy hall)
 router.get('/public', async (req, res) => {
   try {
-    const matchResults = await MatchResult.find({})
+    const tournamentId = getTournamentIdFromRequest(req);
+    const matchResults = await MatchResult.find(withTournamentFilter({}, tournamentId))
       .populate('manOfTheMatch.playerId', 'name role')
       .sort({ matchDate: -1, createdAt: -1 });
 
@@ -52,9 +54,10 @@ router.get('/public', async (req, res) => {
 router.get('/', isAuthenticated, isAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 20, search = '', matchType = '', trophyType = '' } = req.query;
+    const tournamentId = getTournamentIdFromRequest(req);
     
     // Build query
-    const query = {};
+    const query = withTournamentFilter({}, tournamentId);
     if (search) {
       query.$or = [
         { matchTitle: { $regex: search, $options: 'i' } },
@@ -100,7 +103,8 @@ router.get('/', isAuthenticated, isAdmin, async (req, res) => {
 // GET /api/match-results/:id - Get specific match result
 router.get('/:id', isAuthenticated, async (req, res) => {
   try {
-    const matchResult = await MatchResult.findById(req.params.id)
+    const tournamentId = getTournamentIdFromRequest(req);
+    const matchResult = await MatchResult.findOne(withTournamentFilter({ _id: req.params.id }, tournamentId))
       .populate('manOfTheMatch.playerId', 'name role team')
       .populate('createdBy', 'name teamName');
 
@@ -118,6 +122,7 @@ router.get('/:id', isAuthenticated, async (req, res) => {
 // POST /api/match-results - Create new match result (admin only)
 router.post('/', isAuthenticated, isAdmin, async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const {
       matchNumber,
       matchTitle,
@@ -154,7 +159,9 @@ router.post('/', isAuthenticated, isAdmin, async (req, res) => {
     }
 
     // Check if match number already exists
-    const existingMatch = await MatchResult.findOne({ matchNumber });
+    const existingMatch = await MatchResult.findOne(
+      withTournamentFilter({ matchNumber }, tournamentId)
+    );
     if (existingMatch) {
       return res.status(400).json({ error: 'Match number already exists' });
     }
@@ -188,13 +195,14 @@ router.post('/', isAuthenticated, isAdmin, async (req, res) => {
       margin,
       matchStatus: matchStatus || 'completed',
       additionalNotes: additionalNotes || '',
-      createdBy: req.userId
+      createdBy: req.userId,
+      tournamentId: tournamentId || null
     });
 
     await matchResult.save();
 
     if (headToHeadModule.syncHeadToHead) {
-      headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
+      headToHeadModule.syncHeadToHead(tournamentId).catch((err) => console.error('Head-to-head sync:', err));
     }
 
     // Populate the created match result
@@ -219,7 +227,8 @@ router.post('/', isAuthenticated, isAdmin, async (req, res) => {
 // PUT /api/match-results/:id - Update match result (admin only)
 router.put('/:id', isAuthenticated, isAdmin, async (req, res) => {
   try {
-    const matchResult = await MatchResult.findById(req.params.id);
+    const tournamentId = getTournamentIdFromRequest(req);
+    const matchResult = await MatchResult.findOne(withTournamentFilter({ _id: req.params.id }, tournamentId));
     
     if (!matchResult) {
       return res.status(404).json({ error: 'Match result not found' });
@@ -262,9 +271,9 @@ router.put('/:id', isAuthenticated, isAdmin, async (req, res) => {
       MatchResult.updateOne({ _id: matchResult._id }, { $set: { headToHeadSynced: false } })
         .then(() => {
           if (oldWinner && headToHeadModule.revertAndResyncForRecord) {
-            return headToHeadModule.revertAndResyncForRecord(oldTeam1, oldTeam2, oldWinner);
+            return headToHeadModule.revertAndResyncForRecord(oldTeam1, oldTeam2, oldWinner, tournamentId);
           }
-          return headToHeadModule.syncHeadToHead ? headToHeadModule.syncHeadToHead() : Promise.resolve(0);
+          return headToHeadModule.syncHeadToHead ? headToHeadModule.syncHeadToHead(tournamentId) : Promise.resolve(0);
         })
         .catch((err) => console.error('Head-to-head sync:', err));
     }
@@ -287,13 +296,14 @@ router.put('/:id', isAuthenticated, isAdmin, async (req, res) => {
 // DELETE /api/match-results/:id - Delete match result (admin only)
 router.delete('/:id', isAuthenticated, isAdmin, async (req, res) => {
   try {
-    const matchResult = await MatchResult.findById(req.params.id);
+    const tournamentId = getTournamentIdFromRequest(req);
+    const matchResult = await MatchResult.findOne(withTournamentFilter({ _id: req.params.id }, tournamentId));
     
     if (!matchResult) {
       return res.status(404).json({ error: 'Match result not found' });
     }
 
-    await MatchResult.findByIdAndDelete(req.params.id);
+    await MatchResult.deleteOne(withTournamentFilter({ _id: req.params.id }, tournamentId));
 
     res.json({ message: 'Match result deleted successfully' });
   } catch (error) {
@@ -305,11 +315,13 @@ router.delete('/:id', isAuthenticated, isAdmin, async (req, res) => {
 // GET /api/match-results/stats/summary - Get match statistics summary (admin only)
 router.get('/stats/summary', isAuthenticated, isAdmin, async (req, res) => {
   try {
-    const totalMatches = await MatchResult.countDocuments();
-    const completedMatches = await MatchResult.countDocuments({ matchStatus: 'completed' });
-    const abandonedMatches = await MatchResult.countDocuments({ matchStatus: 'abandoned' });
+    const tournamentId = getTournamentIdFromRequest(req);
+    const totalMatches = await MatchResult.countDocuments(withTournamentFilter({}, tournamentId));
+    const completedMatches = await MatchResult.countDocuments(withTournamentFilter({ matchStatus: 'completed' }, tournamentId));
+    const abandonedMatches = await MatchResult.countDocuments(withTournamentFilter({ matchStatus: 'abandoned' }, tournamentId));
     
     const trophyStats = await MatchResult.aggregate([
+      ...(tournamentId ? [{ $match: { tournamentId } }] : []),
       {
         $group: {
           _id: '$trophyName',
@@ -321,6 +333,7 @@ router.get('/stats/summary', isAuthenticated, isAdmin, async (req, res) => {
     ]);
 
     const teamStats = await MatchResult.aggregate([
+      ...(tournamentId ? [{ $match: { tournamentId } }] : []),
       {
         $group: {
           _id: null,

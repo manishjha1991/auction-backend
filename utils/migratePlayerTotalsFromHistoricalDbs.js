@@ -7,6 +7,7 @@
  */
 const mongoose = require('mongoose');
 const Player = require('../models/Player');
+const Tournament = require('../models/Tournament');
 
 function getMigrateSourceDbs() {
   return (
@@ -16,6 +17,27 @@ function getMigrateSourceDbs() {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function useLegacyMigrateMode() {
+  const mode = String(process.env.CPL_PLAYER_TOTALS_MIGRATE_SOURCE || '').toLowerCase();
+  return mode === 'legacy-db' || mode === 'legacy-dbs' || mode === 'legacy';
+}
+
+async function getMigrateSourceTournaments() {
+  const explicit = String(process.env.CPL_PLAYER_TOTALS_MIGRATE_TOURNAMENT_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (explicit.length) {
+    return Tournament.find({ _id: { $in: explicit } })
+      .select('_id name endDate updatedAt')
+      .lean();
+  }
+  return Tournament.find({ isActive: true })
+    .select('_id name endDate updatedAt')
+    .sort({ endDate: -1, updatedAt: -1 })
+    .lean();
 }
 
 function escapeRegex(s) {
@@ -113,6 +135,78 @@ function mergeIntoAggregated(aggregatedTotals, playerTotalsMap) {
 }
 
 async function buildAggregatedTotals() {
+  if (!useLegacyMigrateMode()) {
+    const tournaments = await getMigrateSourceTournaments();
+    const db = mongoose.connection.db;
+    const aggregatedTotals = {};
+    const perDb = [];
+    let totalStatRowsRead = 0;
+
+    for (const tournament of tournaments) {
+      const tournamentId = new mongoose.Types.ObjectId(String(tournament._id));
+      const rows = await db
+        .collection('playerstats')
+        .aggregate([
+          {
+            $match: {
+              tournamentId,
+              playerId: { $exists: true, $ne: null },
+            },
+          },
+          {
+            $group: {
+              _id: '$playerId',
+              totalRuns: { $sum: { $ifNull: ['$battingStats.runs', 0] } },
+              totalWickets: { $sum: { $ifNull: ['$bowlingStats.wickets', 0] } },
+              matchesPlayed: { $sum: 1 },
+            },
+          },
+        ])
+        .toArray();
+
+      const playerIds = rows.map((r) => r._id).filter(Boolean);
+      const players = playerIds.length
+        ? await db
+            .collection('players')
+            .find({ _id: { $in: playerIds } }, { projection: { _id: 1, name: 1 } })
+            .toArray()
+        : [];
+      const nameById = Object.fromEntries(players.map((p) => [String(p._id), p.name || 'Unknown']));
+
+      rows.forEach((r) => {
+        const playerId = String(r._id);
+        const playerName = nameById[playerId] || 'Unknown';
+        if (!aggregatedTotals[playerName]) {
+          aggregatedTotals[playerName] = {
+            totalRuns: 0,
+            totalWickets: 0,
+            matchesPlayed: 0,
+            sourcePlayerIds: [],
+          };
+        }
+        aggregatedTotals[playerName].totalRuns += Number(r.totalRuns) || 0;
+        aggregatedTotals[playerName].totalWickets += Number(r.totalWickets) || 0;
+        aggregatedTotals[playerName].matchesPlayed += Number(r.matchesPlayed) || 0;
+        aggregatedTotals[playerName].sourcePlayerIds.push(playerId);
+      });
+
+      totalStatRowsRead += rows.reduce((sum, r) => sum + (Number(r.matchesPlayed) || 0), 0);
+      perDb.push({
+        database: `tournament:${String(tournament._id)}`,
+        label: tournament.name || null,
+        inningsCount: rows.reduce((sum, r) => sum + (Number(r.matchesPlayed) || 0), 0),
+        distinctPlayersInDb: rows.length,
+      });
+    }
+
+    return {
+      aggregatedTotals,
+      perDb,
+      totalStatRowsRead,
+      sourceDbs: tournaments.map((t) => `tournament:${String(t._id)}`),
+    };
+  }
+
   const sourceDbs = getMigrateSourceDbs();
   const aggregatedTotals = {};
   const perDb = [];
@@ -165,6 +259,7 @@ async function previewMigratePlayerTotals() {
 
   return {
     currentDatabase: mongoose.connection.name || null,
+    sourceMode: useLegacyMigrateMode() ? 'legacy-dbs' : 'single-db',
     sourceDatabases: sourceDbs,
     summary: {
       activePlayersInTarget: activePlayerCount,
@@ -228,6 +323,7 @@ async function executeMigratePlayerTotals() {
   return {
     aborted: false,
     message: 'Migration completed.',
+    sourceMode: useLegacyMigrateMode() ? 'legacy-dbs' : 'single-db',
     sourceDatabases: sourceDbs,
     perDb,
     totalStatRowsRead,

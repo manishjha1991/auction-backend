@@ -16,11 +16,13 @@ const { invalidateCache } = require('../utils/cache');
 const { placeBidCore } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   const { playerId } = req.params;
   const { bidder } = req.body;
+  const tournamentId = getTournamentIdFromRequest(req);
   
   // Get IP address and device fingerprint from request
   const clientIP = getClientIp(req);
@@ -82,7 +84,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   }
 
   try {
-    const blocked = await bidQueueService.shouldBlockManualBid(playerId, authenticatedUserId);
+    const blocked = await bidQueueService.shouldBlockManualBid(playerId, authenticatedUserId, tournamentId);
     if (blocked) {
       return res.status(409).json({
         message:
@@ -92,7 +94,8 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
 
     const proxyBidder = await bidQueueService.isPromotedProxyBidder(
       playerId,
-      authenticatedUserId
+      authenticatedUserId,
+      tournamentId
     );
     if (proxyBidder) {
       return res.status(403).json({
@@ -105,6 +108,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     const result = await placeBidCore({
       playerId,
       bidderId: bidder,
+      tournamentId,
       clientIP,
       deviceFingerprint,
       isSuspiciousIP,
@@ -115,8 +119,8 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
       return res.status(result.status).json({ message: result.message });
     }
 
-    await bidQueueService.afterBidPlaced(playerId, io);
-    await bidQueueService.triggerProxyAfterOpponentBid(playerId, io);
+    await bidQueueService.afterBidPlaced(playerId, io, tournamentId);
+    await bidQueueService.triggerProxyAfterOpponentBid(playerId, io, tournamentId);
 
     res.json({
       message: "Bid placed successfully",
@@ -135,6 +139,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
 router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
   const { playerId } = req.params;
   const userId = req.authenticatedUser._id.toString();
+  const tournamentId = getTournamentIdFromRequest(req);
 
   try {
     // Find the player
@@ -155,7 +160,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
     }
 
     // Fetch all active bids for the player
-    const activeBids = await Bid.find({ playerId, isActive: true })
+    const activeBids = await Bid.find(withTournamentFilter({ playerId, isActive: true }, tournamentId))
       .select('bidder bidAmount')
       .sort({ bidAmount: -1 })
       .lean();
@@ -188,7 +193,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
 
           // Mark the second-highest bid as inactive
           await Bid.updateMany(
-            { playerId, bidder: secondHighestBid.bidder },
+            withTournamentFilter({ playerId, bidder: secondHighestBid.bidder }, tournamentId),
             { $set: { isActive: false, isBidOn: false } }
           );
 
@@ -206,7 +211,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
           await player.save();
 
           const ioAdmin = req.app.get("io");
-          await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin);
+          await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin, tournamentId);
 
           return res.json({
             message: "The second-highest bidder has exited successfully. Locked amount refunded.",
@@ -241,7 +246,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
     await user.save();
 
     // Mark the user's bid for this player as inactive
-    await Bid.updateMany({ playerId, bidder: userId }, { $set: { isActive: false, isBidOn: false } });
+    await Bid.updateMany(withTournamentFilter({ playerId, bidder: userId }, tournamentId), { $set: { isActive: false, isBidOn: false } });
 
     // Update the player's current bid and bidder
     const otherBidders = activeBids.filter((bid) => bid.bidder.toString() !== userId);
@@ -274,7 +279,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
     const { getSocketIdsForUsers } = require('../utils/socketUserMap');
     
     // Get remaining active bidders (excluding the exited user)
-    const remainingActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
+    const remainingActiveBids = await Bid.find(withTournamentFilter({ playerId, isActive: true, isBidOn: true }, tournamentId))
       .select('bidder')
       .lean();
     const remainingBidders = remainingActiveBids.map(bid => bid.bidder.toString());
@@ -305,7 +310,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
       playerName: player.name
     });
 
-    await bidQueueService.tryPromoteNextQueued(playerId, io);
+    await bidQueueService.tryPromoteNextQueued(playerId, io, tournamentId);
     
     res.json({
       message: "You have exited the bid successfully. Locked amount refunded.",
@@ -321,6 +326,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
 // Sold the player 
 router.post("/bid/sold", async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     // The UI can send either:
     // 1) { playerID: "..." } for a single player
     // 2) { playerIDs: ["...", "..."] } for multiple players
@@ -369,6 +375,7 @@ router.post("/bid/sold", async (req, res) => {
         // 3. Fetch only active/in-progress bids to find the highest bid
         const allBids = await Bid.find({
           playerId: pid,
+          ...(tournamentId ? { tournamentId } : {}),
           isActive: true,
           isBidOn: true
         }).sort({ bidAmount: -1 });
@@ -390,10 +397,14 @@ router.post("/bid/sold", async (req, res) => {
         }).select('_id purse currentBids');
 
         // 5. Mark all bids as inactive
-        await Bid.updateMany({ playerId: pid }, { $set: { isActive: false } });
+        await Bid.updateMany(
+          withTournamentFilter({ playerId: pid }, tournamentId),
+          { $set: { isActive: false } }
+        );
 
         // 6. Check if there's already a UserPlayer doc
         const existingUserPlayer = await UserPlayer.findOne({
+          ...(tournamentId ? { tournamentId } : {}),
           playerId: pid,
           userId: highestBid.bidder,
           isActive: true,
@@ -410,6 +421,7 @@ router.post("/bid/sold", async (req, res) => {
 
         // 7. Otherwise, create a new UserPlayer doc
         const newUserPlayer = new UserPlayer({
+          tournamentId: tournamentId || null,
           playerId: pid,
           userId: highestBid.bidder,
           bidValue: highestBid.bidAmount,
@@ -418,9 +430,10 @@ router.post("/bid/sold", async (req, res) => {
         await newUserPlayer.save();
 
         // 8. Log the sold bid in the BidHistory schema
-        const bidHistory = await BidHistory.findOne({ playerId: pid });
+        const bidHistory = await BidHistory.findOne(withTournamentFilter({ playerId: pid }, tournamentId));
         if (!bidHistory) {
           await new BidHistory({
+            tournamentId: tournamentId || null,
             playerId: pid,
             bidID: highestBid._id,
             bids: allBids.map((bid) => ({
@@ -619,6 +632,7 @@ router.post("/bid/sold", async (req, res) => {
 // Release Sold Player
 router.post("/release-player", async (req, res) => {
   const { playerId } = req.body;
+  const tournamentId = getTournamentIdFromRequest(req);
 
   try {
     // Find the player
@@ -633,7 +647,7 @@ router.post("/release-player", async (req, res) => {
     }
 
     // Find the user who owns the player
-    const userPlayerEntry = await UserPlayer.findOne({ playerId, isActive: true });
+    const userPlayerEntry = await UserPlayer.findOne(withTournamentFilter({ playerId, isActive: true }, tournamentId));
     if (!userPlayerEntry) {
       return res.status(400).json({ message: "No active owner found for this player." });
     }
@@ -674,7 +688,7 @@ router.post("/release-player", async (req, res) => {
     await userPlayerEntry.save();
 
     // Delete all bids for this player from the Bid collection
-    await Bid.deleteMany({ playerId });
+    await Bid.deleteMany(withTournamentFilter({ playerId }, tournamentId));
 
     res.status(200).json({
       message:
@@ -689,7 +703,7 @@ router.post("/release-player", async (req, res) => {
 
 // exit second highest user from player 
 // Function: Exit second-highest bidder for a single player
-async function exitSecondHighestForPlayerSingle(playerId, io = null) {
+async function exitSecondHighestForPlayerSingle(playerId, io = null, tournamentId = null) {
   try {
     // Find the player
     const player = await Player.findById(playerId);
@@ -703,7 +717,7 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
     }
 
     // Fetch all active bids for the player
-    const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
+    const activeBids = await Bid.find(withTournamentFilter({ playerId, isActive: true }, tournamentId)).sort({ bidAmount: -1 });
     
     if (activeBids.length > 1) {
       const secondHighestBid = activeBids[1]; // Second-highest bidder
@@ -729,7 +743,7 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
 
         // Mark the second-highest bid as inactive
         await Bid.updateMany(
-          { playerId, bidder: secondHighestBid.bidder },
+          withTournamentFilter({ playerId, bidder: secondHighestBid.bidder }, tournamentId),
           { $set: { isActive: false, isBidOn: false } }
         );
 
@@ -768,7 +782,8 @@ router.post("/:playerId/exit-second-highest", authenticateJWT, async (req, res) 
       return res.status(403).json({ message: "Only admin can exit the second-highest bidder." });
     }
     const { playerId } = req.params;
-    const result = await exitSecondHighestForPlayerSingle(playerId, req.app.get('io'));
+    const tournamentId = getTournamentIdFromRequest(req);
+    const result = await exitSecondHighestForPlayerSingle(playerId, req.app.get('io'), tournamentId);
     
     if (result.error) {
       return res.status(result.error === "Player not found" ? 404 : 400).json({ message: result.error });
@@ -819,13 +834,13 @@ router.get('/players', async (req, res) => {
 // Function: Get bidder count for a player
 // Returns: count=0 when ONLY ONE active bidder (second has exited) → SELL
 //          count=1 when TWO+ active bidders (second hasn't exited) → EXIT first, never sell
-async function getBidderCount(playerId) {
+async function getBidderCount(playerId, tournamentId = null) {
   try {
-    const activeBids = await Bid.find({
+    const activeBids = await Bid.find(withTournamentFilter({
       playerId,
       isActive: true,
       isBidOn: true,
-    }).select('bidder').lean();
+    }, tournamentId)).select('bidder').lean();
 
     if (activeBids.length === 0) {
       return { count: 1 }; // no bids → keep polling, don't sell
@@ -846,8 +861,9 @@ async function getBidderCount(playerId) {
 
 router.get('/players/:playerId/bidders', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { playerId } = req.params;
-    const result = await getBidderCount(playerId);
+    const result = await getBidderCount(playerId, tournamentId);
     return res.json(result);
   } catch (error) {
     console.error("Error fetching bidder count:", error);
@@ -858,7 +874,7 @@ router.get('/players/:playerId/bidders', async (req, res) => {
 
 
 // Function: Sell a single player (used by cron)
-async function sellPlayer(playerId, io = null) {
+async function sellPlayer(playerId, io = null, tournamentId = null) {
   try {
     // Filter out invalid IDs & already‐sold players
     if (!mongoose.isValidObjectId(playerId)) {
@@ -887,11 +903,11 @@ async function sellPlayer(playerId, io = null) {
     }
 
     // b) Fetch only active/in-progress bids to find the highest bid
-    const allBids = await Bid.find({
+    const allBids = await Bid.find(withTournamentFilter({
       playerId: playerId,
       isActive: true,
       isBidOn: true
-    }).sort({ bidAmount: -1 });
+    }, tournamentId)).sort({ bidAmount: -1 });
     if (!allBids.length) {
       return { playerID: playerId, status: 'error', message: 'No active bids found.' };
     }
@@ -916,7 +932,7 @@ async function sellPlayer(playerId, io = null) {
     }).select('_id purse currentBids');
 
     // c) Deactivate all bids
-    await Bid.updateMany({ playerId: playerId }, { $set: { isActive: false } });
+    await Bid.updateMany(withTournamentFilter({ playerId: playerId }, tournamentId), { $set: { isActive: false } });
 
     // d) ATOMIC OPERATION: Atomically check and create UserPlayer
     // Use findOneAndUpdate with upsert to atomically check if UserPlayer exists and create if not
@@ -946,11 +962,11 @@ async function sellPlayer(playerId, io = null) {
 
       // If player was already sold (update returned null), check for existing UserPlayer
       if (!playerUpdateResult) {
-        const existingUP = await UserPlayer.findOne({
+        const existingUP = await UserPlayer.findOne(withTournamentFilter({
           playerId: playerId,
           userId: highestBid.bidder,
           isActive: true
-        });
+        }, tournamentId));
         if (existingUP) {
           return {
             playerID: playerId,
@@ -967,11 +983,11 @@ async function sellPlayer(playerId, io = null) {
 
       // Now atomically create UserPlayer - the unique index will prevent duplicates
       // Use findOneAndUpdate with upsert: false to ensure we only create if it doesn't exist
-      const existingUserPlayer = await UserPlayer.findOne({
+      const existingUserPlayer = await UserPlayer.findOne(withTournamentFilter({
         playerId: playerId,
         userId: highestBid.bidder,
         isActive: true
-      });
+      }, tournamentId));
 
       if (existingUserPlayer) {
         // Another process created it between our checks - this is rare but possible
@@ -985,6 +1001,7 @@ async function sellPlayer(playerId, io = null) {
       // Create UserPlayer - unique index will prevent duplicates if two processes reach here simultaneously
       try {
         await new UserPlayer({
+          tournamentId: tournamentId || null,
           playerId: playerId,
           userId: highestBid.bidder,
           bidValue: highestBid.bidAmount,
@@ -1008,9 +1025,10 @@ async function sellPlayer(playerId, io = null) {
     }
 
     // f) Log BidHistory
-    let bidHist = await BidHistory.findOne({ playerId: playerId });
+    let bidHist = await BidHistory.findOne(withTournamentFilter({ playerId: playerId }, tournamentId));
     if (!bidHist) {
       await new BidHistory({
+        tournamentId: tournamentId || null,
         playerId: playerId,
         bidID: highestBid._id,
         bids: allBids.map(b => ({
@@ -1094,6 +1112,7 @@ async function sellPlayer(playerId, io = null) {
 
 router.post('/players/:playerId?/soldcrone', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { playerId: paramId } = req.params;
     const { resultMain, playerIDs, playerID } = req.body;
     const io = req.app.get('io');
@@ -1144,7 +1163,7 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
       
       // Process each player in the current batch
       for (const pid of batch) {
-        const result = await sellPlayer(pid, io);
+        const result = await sellPlayer(pid, io, tournamentId);
         results.push(result);
         processedCount++;
         if (result.status === 'success') {
@@ -1173,9 +1192,10 @@ router.post('/players/:playerId?/soldcrone', async (req, res) => {
 
 
 // Function: Get players with exactly one active bid
-async function getSingleBidPlayers() {
+async function getSingleBidPlayers(tournamentId = null) {
   try {
     const result = await Bid.aggregate([
+      ...(tournamentId ? [{ $match: { tournamentId } }] : []),
       {
         $group: {
           _id: '$playerId',
@@ -1214,7 +1234,8 @@ async function getSingleBidPlayers() {
 
 router.post("/players/singlebid", async (req, res) => {
   try {
-    const result = await getSingleBidPlayers();
+    const tournamentId = getTournamentIdFromRequest(req);
+    const result = await getSingleBidPlayers(tournamentId);
     res.status(200).json(result);
   } catch (err) {
     console.log(err);
@@ -1231,7 +1252,7 @@ router.post("/players/singlebid", async (req, res) => {
  */
 
 // Helper: encapsulate your existing exit logic into a function
-async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'user') {
+async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'user', tournamentId = null) {
   // 1) Load player
   const player = await Player.findById(playerId);
   if (!player)   return { playerId, userId, error: "Player not found" };
@@ -1242,7 +1263,7 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
   if (!user)     return { playerId, userId, error: "User not found" };
 
   // 3) Fetch active bids (descending)
-  const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
+  const activeBids = await Bid.find(withTournamentFilter({ playerId, isActive: true }, tournamentId)).sort({ bidAmount: -1 });
   if (!activeBids.length) return { playerId, userId, error: "No active bids" };
 
   // — Admin branch: remove second-highest bidder only —
@@ -1266,7 +1287,7 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
 
   // Deactivate all bids by this user on that player
   await Bid.updateMany(
-    { playerId, bidder: userId },
+    withTournamentFilter({ playerId, bidder: userId }, tournamentId),
     { $set: { isActive: false, isBidOn: false } }
   );
 
@@ -1304,7 +1325,9 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
     const { getSocketIdsForUsers } = require('../utils/socketUserMap');
     
     // Get remaining active bidders (excluding the exited user)
-    const remainingActiveBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).lean();
+    const remainingActiveBids = await Bid.find(
+      withTournamentFilter({ playerId, isActive: true, isBidOn: true }, tournamentId)
+    ).lean();
     const remainingBidders = remainingActiveBids.map(bid => bid.bidder.toString());
     
     // Only notify remaining bidders (exclude the user who exited - they don't need notification about their own exit)
@@ -1332,7 +1355,7 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
 }
 
 // Bulk exit function - can be called directly or via API
-async function runBulkExitAll(io = null) {
+async function runBulkExitAll(io = null, tournamentId = null) {
   try {
     const users = await User.find().select('_id isAdmin');
     const players = await Player.find({ isSold: false }).select('_id');
@@ -1347,7 +1370,13 @@ async function runBulkExitAll(io = null) {
       }
       for (const playerDoc of players) {
         const playerId = playerDoc._id;
-        const result = await exitBidForUserOnPlayer(userId.toString(), playerId.toString(), io, 'system');
+        const result = await exitBidForUserOnPlayer(
+          userId.toString(),
+          playerId.toString(),
+          io,
+          'system',
+          tournamentId
+        );
         report.push(result);
       }
     }
@@ -1369,7 +1398,8 @@ router.post('/exit-second-highest/all', authenticateJWT, async (req, res) => {
       return res.status(403).json({ message: "Only admin can run bulk bid exits." });
     }
     const io = req.app.get('io');
-    const result = await runBulkExitAll(io);
+    const tournamentId = getTournamentIdFromRequest(req);
+    const result = await runBulkExitAll(io, tournamentId);
     return res.json(result);
   } catch (err) {
     console.error('Batch exit-all error:', err);
@@ -1392,7 +1422,7 @@ router.post('/exit-second-highest/all', authenticateJWT, async (req, res) => {
  */
 // Function: Lock users under limit
 // options: { lockCheckCategories?: string[] } - from AppSettings. If empty/missing, checks all.
-async function lockUnderLimitAll(options = {}) {
+async function lockUnderLimitAll(options = {}, tournamentId = null) {
   try {
     // ── 0. FETCH LOCK CATEGORIES FROM SETTINGS ───────────────────────────────
     const AppSettings = require('../models/AppSettings');
@@ -1489,6 +1519,7 @@ async function lockUnderLimitAll(options = {}) {
         // Count retained Silver players (they are in boughtPlayers)
         const retainedSilverCount = await RetainedPlayer.countDocuments({
           userId: user._id,
+          ...(tournamentId ? { tournamentId } : {}),
           playerType: 'Silver',
           isActive: true
         });
@@ -1600,9 +1631,10 @@ async function lockUnderLimitAll(options = {}) {
   }
 }
 
-router.post('/lock-under-limit/all', async (_req, res) => {
+router.post('/lock-under-limit/all', async (req, res) => {
   try {
-    const result = await lockUnderLimitAll();
+    const tournamentId = getTournamentIdFromRequest(req);
+    const result = await lockUnderLimitAll({}, tournamentId);
     return res.json(result);
   } catch (err) {
     console.error('[lock-under-limit] fatal:', err);
@@ -1618,8 +1650,9 @@ router.post('/lock-under-limit/all', async (_req, res) => {
 // Get all active bids for live dashboard
 router.get('/live-dashboard', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     // Get all active bids with player and bidder information
-    const activeBids = await Bid.find({ isActive: true, isBidOn: true })
+    const activeBids = await Bid.find(withTournamentFilter({ isActive: true, isBidOn: true }, tournamentId))
       .select('playerId bidder bidAmount timestamp')
       .populate('playerId', 'name type role basePrice profilePicture')
       .populate('bidder', 'name teamName')
@@ -1672,6 +1705,7 @@ router.get('/live-dashboard', async (req, res) => {
 // Get all users with purse and active bids for user-grouped dashboard
 router.get('/users-dashboard', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     // Get all non-admin users with their purse and abbreviation
     const users = await User.find({
       isAdmin: { $ne: true },
@@ -1681,7 +1715,7 @@ router.get('/users-dashboard', async (req, res) => {
       .lean();
 
     // Get all active bids with player and bidder info (including abbreviation)
-    const activeBids = await Bid.find({ isActive: true, isBidOn: true })
+    const activeBids = await Bid.find(withTournamentFilter({ isActive: true, isBidOn: true }, tournamentId))
       .select('playerId bidder bidAmount timestamp isActive isBidOn')
       .populate('playerId', 'name type role basePrice profilePicture')
       .populate('bidder', 'name teamName _id abbreviation')
@@ -1808,6 +1842,7 @@ router.get('/users-dashboard', async (req, res) => {
 // Personalized auction command center: running bids, purses, queues, notifications
 router.get('/my-auction-hub/:userId', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { userId } = req.params;
     const me = await User.findById(userId)
       .select('name teamName purse _id abbreviation isAdmin')
@@ -1861,7 +1896,7 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
       users.map((u) => [u._id.toString(), parseFloat(u.purse.toString())])
     );
 
-    const activeBids = await Bid.find({ isActive: true, isBidOn: true })
+    const activeBids = await Bid.find(withTournamentFilter({ isActive: true, isBidOn: true }, tournamentId))
       .select('playerId bidder bidAmount timestamp isActive isBidOn')
       .populate('playerId', 'name type role basePrice profilePicture')
       .populate('bidder', 'name teamName _id abbreviation')
@@ -1955,7 +1990,7 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
       })
       .slice(0, 5);
 
-    const queueMemberships = await bidQueueService.listMyQueueMemberships(me._id);
+    const queueMemberships = await bidQueueService.listMyQueueMemberships(me._id, tournamentId);
 
     const io = req.app.get('io');
     let demand = { globalTop: null, yourTop: null };

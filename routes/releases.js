@@ -9,6 +9,7 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
 const { findOrphanPickToPairOnReleaseApprove } = require('../utils/releasePickPairing');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 const CRORE = 10000000;
 
@@ -19,12 +20,13 @@ async function buildReleaseInsight(requestDoc) {
     const request = requestDoc.toObject ? requestDoc.toObject({ virtuals: true }) : requestDoc;
     const userId = request.user?._id || request.user;
     const playerId = request.player?._id || request.player;
+    const tournamentId = request.tournamentId || null;
     if (!userId || !playerId) return null;
 
     const [activeCount, ownership, freshUser] = await Promise.all([
-      UserPlayer.countDocuments({ userId, isActive: true }),
+      UserPlayer.countDocuments(withTournamentFilter({ userId, isActive: true }, tournamentId)),
       // 🚀 PERFORMANCE: Use .lean() for read-only query
-      UserPlayer.findOne({ userId, playerId, isActive: true }).select('bidValue').lean(),
+      UserPlayer.findOne(withTournamentFilter({ userId, playerId, isActive: true }, tournamentId)).select('bidValue').lean(),
       request.user && typeof request.user.purse !== 'undefined'
         ? null
         // 🚀 PERFORMANCE: Use .lean() for read-only query
@@ -88,6 +90,7 @@ async function attachInsights(docs) {
 // Create release request
 router.post('/', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { userId, playerId } = req.body;
     if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
     // Guard: user cannot exceed season trade cap (trade + release combined)
@@ -98,7 +101,9 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: `You have used all ${rules.tradeSeasonCap} trades.` });
     }
     // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true }).lean();
+    const ownership = await UserPlayer.findOne(
+      withTournamentFilter({ userId, playerId, isActive: true }, tournamentId)
+    ).lean();
     if (!ownership) return res.status(400).json({ message: 'You do not own this player' });
 
     const playerForLock = await Player.findById(playerId).lean();
@@ -110,17 +115,23 @@ router.post('/', async (req, res) => {
     }
 
     // Prevent duplicate release requests while one is pending/admin_pending
-    const existingPending = await ReleaseRequest.findOne({
+    const existingPending = await ReleaseRequest.findOne(withTournamentFilter({
       user: userId,
       player: playerId,
       status: { $in: ['pending', 'admin_pending'] },
-    }).lean();
+    }, tournamentId)).lean();
     if (existingPending) {
       return res.status(409).json({
         message: 'A release request for this player is already pending admin approval.',
       });
     }
-    const rr = await ReleaseRequest.create({ user: userId, player: playerId, status: 'pending', history: [{ byUser: userId, action: 'propose' }] });
+    const rr = await ReleaseRequest.create({
+      tournamentId: tournamentId || null,
+      user: userId,
+      player: playerId,
+      status: 'pending',
+      history: [{ byUser: userId, action: 'propose' }]
+    });
 
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const populated = await ReleaseRequest.findById(rr._id)
@@ -142,8 +153,9 @@ router.post('/', async (req, res) => {
 // List my release requests
 router.get('/user/:userId', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { userId } = req.params;
-    const list = await ReleaseRequest.find({ user: userId })
+    const list = await ReleaseRequest.find(withTournamentFilter({ user: userId }, tournamentId))
       .populate('player', 'name type role profilePicture')
       .populate('user', 'name teamName purse')
       .sort({ createdAt: -1 });
@@ -158,8 +170,11 @@ router.get('/user/:userId', async (req, res) => {
 // Admin: pending
 router.get('/admin/pending', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const list = await ReleaseRequest.find({ status: { $in: ['pending', 'admin_pending'] } })
+    const list = await ReleaseRequest.find(
+      withTournamentFilter({ status: { $in: ['pending', 'admin_pending'] } }, tournamentId)
+    )
       .populate('user', 'name teamName purse')
       .populate('player', 'name type role profilePicture')
       .sort({ updatedAt: -1 })
@@ -185,9 +200,10 @@ router.get('/admin/pending', async (req, res) => {
 // Admin decide
 router.post('/admin/:releaseId/decide', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { releaseId } = req.params;
     const { adminUserId, decision, note, confirmRelease } = req.body;
-    const item = await ReleaseRequest.findById(releaseId);
+    const item = await ReleaseRequest.findOne(withTournamentFilter({ _id: releaseId }, tournamentId));
     if (!item) return res.status(404).json({ message: 'Release request not found' });
     
     if (decision === 'approve') {
@@ -206,7 +222,9 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
       }
 
       // deactivate ownership
-      const up = await UserPlayer.findOne({ userId: item.user, playerId: item.player, isActive: true });
+      const up = await UserPlayer.findOne(
+        withTournamentFilter({ userId: item.user, playerId: item.player, isActive: true }, tournamentId)
+      );
       if (up) { 
         up.isActive = false; 
         up.updatedAt = new Date(); 
@@ -250,7 +268,7 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
         
         // Clean up any remaining bid data for this player
         try {
-          await Bid.deleteMany({ playerId: item.player });
+          await Bid.deleteMany(withTournamentFilter({ playerId: item.player }, tournamentId));
         } catch (bidCleanupError) {
           console.error('Error cleaning up bid data:', bidCleanupError);
         }
@@ -308,10 +326,11 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
 // Withdraw release request
 router.post('/:releaseId/withdraw', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     const { releaseId } = req.params;
     const { byUserId } = req.body;
     
-    const item = await ReleaseRequest.findById(releaseId);
+    const item = await ReleaseRequest.findOne(withTournamentFilter({ _id: releaseId }, tournamentId));
     if (!item) {
       return res.status(404).json({ message: 'Release request not found' });
     }
@@ -355,7 +374,10 @@ router.post('/:releaseId/withdraw', async (req, res) => {
 // Admin: history (approved/rejected)
 router.get('/admin/history', async (req, res) => {
   try {
-    const list = await ReleaseRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
+    const tournamentId = getTournamentIdFromRequest(req);
+    const list = await ReleaseRequest.find(
+      withTournamentFilter({ 'adminDecision.status': { $in: ['approved', 'rejected'] } }, tournamentId)
+    )
       .populate('user', 'name teamName purse')
       .populate('player', 'name type role profilePicture')
       .populate('adminDecision.decidedBy', 'name email')

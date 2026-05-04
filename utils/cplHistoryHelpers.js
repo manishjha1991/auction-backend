@@ -179,14 +179,17 @@ async function fetchPointTableFromConnection(conn) {
 /**
  * Completed final from playofffixtures: matchId F (normal/groups) or WCF (World Cup).
  */
-async function fetchPlayoffFinalWinner(conn) {
+async function fetchPlayoffFinalWinner(conn, options = {}) {
+  const tournamentId = options.tournamentId || null;
   const db = conn.db;
   const col = db.collection('playofffixtures');
+  const match = {
+    matchId: { $in: ['F', 'WCF'] },
+    winner: { $nin: [null, '', 'TBD', 'tbd'] },
+  };
+  if (tournamentId) match.tournamentId = tournamentId;
   const arr = await col
-    .find({
-      matchId: { $in: ['F', 'WCF'] },
-      winner: { $nin: [null, '', 'TBD', 'tbd'] },
-    })
+    .find(match)
     .sort({ updatedAt: -1 })
     .limit(1)
     .toArray();
@@ -311,18 +314,26 @@ function isBetterBowler(p, q) {
  */
 const WICKETS_EXPR = { $ifNull: ['$bowlingStats.wickets', 0] };
 
-async function fetchSeasonPlayerHighlights(conn) {
+async function fetchSeasonPlayerHighlights(conn, options = {}) {
+  const tournamentId = options.tournamentId || null;
   const db = conn.db;
   let perPlayerAgg = [];
   let perTeamAgg = [];
   let usersRaw = [];
   let playersRaw = [];
+  const tournamentMatch = tournamentId ? { tournamentId } : {};
   try {
     ;[perPlayerAgg, perTeamAgg, usersRaw, playersRaw] = await Promise.all([
       db
         .collection('playerstats')
         .aggregate([
-          { $match: { playerId: { $exists: true, $ne: null }, userId: { $exists: true, $ne: null } } },
+          {
+            $match: {
+              ...tournamentMatch,
+              playerId: { $exists: true, $ne: null },
+              userId: { $exists: true, $ne: null },
+            },
+          },
           {
             $group: {
               _id: '$playerId',
@@ -354,7 +365,7 @@ async function fetchSeasonPlayerHighlights(conn) {
       db
         .collection('playerstats')
         .aggregate([
-          { $match: { userId: { $exists: true, $ne: null } } },
+          { $match: { ...tournamentMatch, userId: { $exists: true, $ne: null } } },
           {
             $group: {
               _id: '$userId',

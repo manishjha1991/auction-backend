@@ -12,6 +12,7 @@ const Schedule = require('../models/Schedule');
 const Comment = require('../models/Comment');
 const PostLike = require('../models/PostLike');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 function toCrores(amount) {
   const n = Number(amount || 0);
@@ -94,15 +95,16 @@ async function getSocialData(newsItems) {
   }
 }
 
-router.get('/feed', async (_req, res) => {
+router.get('/feed', async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (30 second cache for news feed - frequently changing)
-  const cacheKey = 'news:feed';
+  const tournamentId = getTournamentIdFromRequest(req);
+  const cacheKey = `news:feed:${tournamentId ? tournamentId.toString() : 'legacy'}`;
   const cached = cacheConfig.short.get(cacheKey);
   if (cached) return res.status(200).json(cached);
 
   try {
     const [trades, releases, picks, recentStats, fixtures, schedules] = await Promise.all([
-      TradeRequest.find({})
+      TradeRequest.find(withTournamentFilter({}, tournamentId))
         .populate({
           path: 'fromUser',
           select: 'name teamName isTournamentReady',
@@ -117,7 +119,7 @@ router.get('/feed', async (_req, res) => {
         .populate('requestedPlayer', 'name type role')
         .sort({ updatedAt: -1 })
         .limit(50), // Increased limit to show more trades
-      ReleaseRequest.find({})
+      ReleaseRequest.find(withTournamentFilter({}, tournamentId))
         .populate({
           path: 'user',
           select: 'teamName isTournamentReady',
@@ -131,7 +133,7 @@ router.get('/feed', async (_req, res) => {
         })
         .sort({ updatedAt: -1 })
         .limit(30),
-      PickRequest.find({})
+      PickRequest.find(withTournamentFilter({}, tournamentId))
         .populate({
           path: 'user',
           select: 'teamName isTournamentReady',
@@ -140,13 +142,13 @@ router.get('/feed', async (_req, res) => {
         .populate('player', 'name type basePrice')
         .sort({ updatedAt: -1 })
         .limit(30),
-      PlayerStats.find({}).populate({
+      PlayerStats.find(withTournamentFilter({}, tournamentId)).populate({
         path: 'userId',
         select: 'isTournamentReady',
         match: { isTournamentReady: true }
       }).sort({ createdAt: -1 }).limit(50).lean(),
-      Fixture.find({ isActive: true }).sort({ createdAt: -1 }).limit(20).lean(),
-      Schedule.find({}).sort({ createdAt: -1 }).limit(30).lean()
+      Fixture.find(withTournamentFilter({ isActive: true }, tournamentId)).sort({ createdAt: -1 }).limit(20).lean(),
+      Schedule.find(withTournamentFilter({}, tournamentId)).sort({ createdAt: -1 }).limit(30).lean()
     ]);
 
     const news = [];

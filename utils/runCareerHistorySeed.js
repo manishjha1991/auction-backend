@@ -8,6 +8,7 @@
 const mongoose = require('mongoose');
 const Player = require('../models/Player');
 const PlayerCareerSummary = require('../models/PlayerCareerSummary');
+const Tournament = require('../models/Tournament');
 const {
   normName,
   emptyBlock,
@@ -23,6 +24,29 @@ function getSourceDbs() {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function useLegacySeedMode() {
+  const mode = String(process.env.CPL_HISTORY_SEED_SOURCE || '').toLowerCase();
+  return mode === 'legacy-db' || mode === 'legacy-dbs' || mode === 'legacy';
+}
+
+async function getSourceTournaments() {
+  const explicit = String(process.env.CPL_HISTORY_SEED_TOURNAMENT_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (explicit.length) {
+    return Tournament.find({ _id: { $in: explicit } })
+      .select('_id name subscribedTeams')
+      .lean();
+  }
+
+  return Tournament.find({ isActive: true })
+    .select('_id name subscribedTeams endDate updatedAt')
+    .sort({ endDate: -1, updatedAt: -1 })
+    .lean();
 }
 
 function addInnings(block, row) {
@@ -72,42 +96,96 @@ async function rebuildAllPlayerTotalsFromCurrentStats() {
  * Seed historical career blocks from SOURCE_DBS and merge with live; then rebuild live from DB.
  */
 async function runCareerHistorySeed() {
-  const SOURCE_DBS = getSourceDbs();
   const currentPlayers = await Player.find({}).select('_id name role').lean();
   const currentByKey = new Map(currentPlayers.map((p) => [normName(p.name), p]));
+  const globalUsers = await mongoose.connection.db
+    .collection('users')
+    .find({})
+    .project({ _id: 1, teamName: 1, abbreviation: 1 })
+    .toArray();
+  const globalUserById = new Map(
+    globalUsers.map((u) => [String(u._id), u.abbreviation || u.teamName || 'Unknown'])
+  );
   const aggregateByKey = new Map();
   const perDb = [];
 
-  for (const dbName of SOURCE_DBS) {
-    const conn = mongoose.connection.useDb(dbName, { useCache: true });
-    const db = conn.db;
-    const [statsDocs, playerDocs, userDocs] = await Promise.all([
-      db.collection('playerstats').find({ playerId: { $exists: true, $ne: null } }).toArray(),
-      db.collection('players').find({}).project({ _id: 1, name: 1 }).toArray(),
-      db.collection('users').find({}).project({ _id: 1, teamName: 1, abbreviation: 1 }).toArray(),
-    ]);
-    const playerById = new Map(playerDocs.map((p) => [String(p._id), p]));
-    const userById = new Map(userDocs.map((u) => [String(u._id), u.abbreviation || u.teamName || 'Unknown']));
+  if (useLegacySeedMode()) {
+    const SOURCE_DBS = getSourceDbs();
+    for (const dbName of SOURCE_DBS) {
+      const conn = mongoose.connection.useDb(dbName, { useCache: true });
+      const db = conn.db;
+      const [statsDocs, playerDocs, userDocs] = await Promise.all([
+        db.collection('playerstats').find({ playerId: { $exists: true, $ne: null } }).toArray(),
+        db.collection('players').find({}).project({ _id: 1, name: 1 }).toArray(),
+        db.collection('users').find({}).project({ _id: 1, teamName: 1, abbreviation: 1 }).toArray(),
+      ]);
+      const playerById = new Map(playerDocs.map((p) => [String(p._id), p]));
+      const userById = new Map(
+        userDocs.map((u) => [String(u._id), u.abbreviation || u.teamName || 'Unknown'])
+      );
 
-    for (const row of statsDocs) {
-      const p = playerById.get(String(row.playerId));
-      if (!p?.name) continue;
-      const key = normName(p.name);
-      if (!aggregateByKey.has(key)) {
-        aggregateByKey.set(key, {
-          playerName: p.name,
-          role: '',
-          teams: new Set(),
-          historical: emptyBlock(),
-        });
+      for (const row of statsDocs) {
+        const p = playerById.get(String(row.playerId));
+        if (!p?.name) continue;
+        const key = normName(p.name);
+        if (!aggregateByKey.has(key)) {
+          aggregateByKey.set(key, {
+            playerName: p.name,
+            role: '',
+            teams: new Set(),
+            historical: emptyBlock(),
+          });
+        }
+        const holder = aggregateByKey.get(key);
+        const opponentTeam = userById.get(String(row.opponentUserId || '')) || 'Unknown';
+        addInnings(holder.historical, { ...row, opponentTeam });
+        const ownerTeam = userById.get(String(row.userId || ''));
+        if (ownerTeam) holder.teams.add(ownerTeam);
       }
-      const holder = aggregateByKey.get(key);
-      const opponentTeam = userById.get(String(row.opponentUserId || '')) || 'Unknown';
-      addInnings(holder.historical, { ...row, opponentTeam });
-      const ownerTeam = userById.get(String(row.userId || ''));
-      if (ownerTeam) holder.teams.add(ownerTeam);
+      perDb.push({ database: dbName, inningsRead: statsDocs.length });
     }
-    perDb.push({ database: dbName, inningsRead: statsDocs.length });
+  } else {
+    const tournaments = await getSourceTournaments();
+    const db = mongoose.connection.db;
+    for (const tournament of tournaments) {
+      const tournamentId = new mongoose.Types.ObjectId(String(tournament._id));
+      const [statsDocs, playerDocs] = await Promise.all([
+        db.collection('playerstats').find({ tournamentId, playerId: { $exists: true, $ne: null } }).toArray(),
+        db.collection('players').find({}).project({ _id: 1, name: 1 }).toArray(),
+      ]);
+      const playerById = new Map(playerDocs.map((p) => [String(p._id), p]));
+      const subscribedByUserId = new Map(
+        (tournament.subscribedTeams || []).map((s) => [String(s.userId), s.teamName || 'Unknown'])
+      );
+
+      for (const row of statsDocs) {
+        const p = playerById.get(String(row.playerId));
+        if (!p?.name) continue;
+        const key = normName(p.name);
+        if (!aggregateByKey.has(key)) {
+          aggregateByKey.set(key, {
+            playerName: p.name,
+            role: '',
+            teams: new Set(),
+            historical: emptyBlock(),
+          });
+        }
+        const holder = aggregateByKey.get(key);
+        const opponentTeam =
+          subscribedByUserId.get(String(row.opponentUserId || '')) ||
+          globalUserById.get(String(row.opponentUserId || '')) ||
+          'Unknown';
+        addInnings(holder.historical, { ...row, opponentTeam });
+        const ownerTeam =
+          subscribedByUserId.get(String(row.userId || '')) || globalUserById.get(String(row.userId || ''));
+        if (ownerTeam) holder.teams.add(ownerTeam);
+      }
+      perDb.push({
+        database: `tournament:${String(tournament._id)}`,
+        label: tournament.name || null,
+        inningsRead: statsDocs.length,
+      });
+    }
   }
 
   let upserts = 0;
@@ -149,10 +227,18 @@ async function runCareerHistorySeed() {
 }
 
 function getCareerHistorySeedPreview() {
-  return {
-    sourceDatabases: getSourceDbs(),
-    currentDatabase: mongoose.connection.name || null,
-  };
+  return useLegacySeedMode()
+    ? {
+        sourceMode: 'legacy-dbs',
+        sourceDatabases: getSourceDbs(),
+        currentDatabase: mongoose.connection.name || null,
+      }
+    : {
+        sourceMode: 'single-db',
+        sourceDatabases: [],
+        currentDatabase: mongoose.connection.name || null,
+        note: 'Uses tournaments in current DB; set CPL_HISTORY_SEED_SOURCE=legacy-db to use old multi-DB list.',
+      };
 }
 
 module.exports = {

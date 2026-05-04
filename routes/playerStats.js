@@ -21,6 +21,7 @@ const {
 const { upsertLiveCareerSummaryForPlayer } = require('../utils/playerCareerSummary');
 const { invalidateCareerSummaryCache } = require('../utils/cplReadCaches');
 const venueInsights = require('../utils/venueInsights');
+const { getTournamentIdFromRequest, withTournamentFilter } = require('../utils/tournamentScope');
 
 // 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats) - keeping for backward compatibility
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
@@ -2466,6 +2467,7 @@ router.post('/clear-all-cache', async (req, res) => {
 // Optional: ?clearStatsOverview=1 also deletes all PlayerStats and clears Fixture scores (highest/lowest team total)
 router.post('/clear-cache', async (req, res) => {
   try {
+    const tournamentId = getTournamentIdFromRequest(req);
     cache.del('stats-overview');
     invalidateCache('player-stats-list');
     invalidateCache('players:data');
@@ -2476,9 +2478,9 @@ router.post('/clear-cache', async (req, res) => {
 
     if (clearStatsOverview) {
       const [playerStatsResult, fixtureResult] = await Promise.all([
-        PlayerStats.deleteMany({}),
+        PlayerStats.deleteMany(withTournamentFilter({}, tournamentId)),
         Fixture.updateMany(
-          {},
+          withTournamentFilter({}, tournamentId),
           { $set: { team1Score: null, team2Score: null, team1Overs: null, team2Overs: null } }
         ),
       ]);
