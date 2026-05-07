@@ -341,203 +341,103 @@ router.post('/release-all-others', async (req, res) => {
       return res.status(403).json({ message: 'Only admin can release all other players' });
     }
 
-    // Get all retained player IDs
-    const retainedPlayers = await RetainedPlayer.find({ isActive: true });
-    const initialRetainedPlayerIds = retainedPlayers.map(rp => rp.playerId);
+    const retainedPlayers = await RetainedPlayer.find({ isActive: true })
+      .select('userId playerId')
+      .lean();
+    const retainedPlayerIds = retainedPlayers.map((rp) => rp.playerId);
+    const retainedPlayerIdSet = new Set(retainedPlayerIds.map((id) => id.toString()));
 
-    // Get all sold players that are NOT retained
-    const allSoldPlayers = await Player.find({ isSold: true });
-    const playersToRelease = allSoldPlayers.filter(player => 
-      !initialRetainedPlayerIds.includes(player._id)
-    );
+    // 1) Non-retained players: unsold + inactive + type-wise base price.
+    const nonRetainedPlayers = await Player.find({ _id: { $nin: retainedPlayerIds } })
+      .select('_id type')
+      .lean();
 
-    let releasedCount = 0;
-    let totalRefunded = 0;
-
-    // Process each player to be released
-    for (const player of playersToRelease) {
-      try {
-        // Find the user who owns this player
-        const userPlayer = await UserPlayer.findOne({ 
-          playerId: player._id, 
-          isActive: true 
-        });
-        
-        if (userPlayer) {
-          const user = await User.findById(userPlayer.userId);
-          if (user) {
-            // Refund the player's bid value
-            const bidValue = parseFloat(userPlayer.bidValue);
-            const currentPurse = parseFloat(user.purse.toString());
-            user.purse = currentPurse + bidValue;
-            await user.save();
-            totalRefunded += bidValue;
-
-            // Remove from user's boughtPlayers
-            await User.findByIdAndUpdate(userPlayer.userId, {
-              $pull: { boughtPlayers: player._id }
-            });
-
-            // Deactivate UserPlayer entry
-            userPlayer.isActive = false;
-            await userPlayer.save();
-          }
-        }
-
-        // Update player status and revert base price to original
-        const originalBasePrice = getOriginalBasePrice(player.type);
-        player.isSold = false;
-        player.isActive = false;
-        player.basePrice = originalBasePrice;
-        player.currentBid = originalBasePrice;
-        player.currentBidder = null;
-        player.releasedAt = new Date(); // Pick-from-unsold blocked for 48h
-        await player.save();
-
-        // Clean up related data
-        await Promise.all([
-          Bid.deleteMany({ playerId: player._id }),
-          BidHistory.deleteMany({ playerId: player._id }),
-          Notification.deleteMany({ 
-            $or: [
-              { 'metadata.playerId': player._id },
-              { 'metadata.relatedPlayerId': player._id }
-            ]
-          }),
-          Comment.deleteMany({ playerId: player._id }),
-          PickRequest.deleteMany({ playerId: player._id }),
-          PlayerStats.deleteMany({ playerId: player._id }),
-          PostLike.deleteMany({ playerId: player._id }),
-          ReleaseRequest.deleteMany({ player: player._id }),
-          TradeRequest.deleteMany({ 
-            $or: [
-              { playerId: player._id },
-              { requestedPlayerId: player._id }
-            ]
-          })
-        ]);
-
-        releasedCount++;
-      } catch (playerError) {
-        console.error(`Error processing player ${player._id}:`, playerError);
-      }
-    }
-
-    // Reset all users' points, matches played, and set purse to 100 crores
-    await User.updateMany({}, {
-      $set: {
-        points: 0,
-        matchesPlayed: 0,
-        fairnessPoint: 0,
-        currentBids: [],
-        purse: 1000000000 // 100 crores
-      }
+    const nonRetainedIds = nonRetainedPlayers.map((p) => p._id);
+    const byType = {
+      Silver: [],
+      Gold: [],
+      Emerald: [],
+      Sapphire: [],
+    };
+    nonRetainedPlayers.forEach((p) => {
+      if (byType[p.type]) byType[p.type].push(p._id);
     });
 
-    // Now deduct retention costs from users who have retained players
-    const allRetainedPlayers = await RetainedPlayer.find({ isActive: true });
-    const retentionCostPerPlayer = 170000000; // 17 crores per player
-    
-    for (const retained of allRetainedPlayers) {
-      try {
-        const user = await User.findById(retained.userId);
-        if (user) {
-          const currentPurse = parseFloat(user.purse.toString());
-          const newPurse = currentPurse - retentionCostPerPlayer;
-          user.purse = newPurse;
-          await user.save();
+    if (nonRetainedIds.length > 0) {
+      await Player.updateMany(
+        { _id: { $in: nonRetainedIds } },
+        {
+          $set: {
+            isSold: false,
+            isActive: false,
+            currentBid: null,
+            currentBidder: null,
+          },
         }
-      } catch (userError) {
-        console.error(`Error updating purse for user ${retained.userId}:`, userError);
-      }
+      );
+    }
+    if (byType.Silver.length > 0) {
+      await Player.updateMany({ _id: { $in: byType.Silver } }, { $set: { basePrice: 1000000 } });
+    }
+    if (byType.Gold.length > 0) {
+      await Player.updateMany({ _id: { $in: byType.Gold } }, { $set: { basePrice: 10000000 } });
+    }
+    if (byType.Emerald.length > 0) {
+      await Player.updateMany({ _id: { $in: byType.Emerald } }, { $set: { basePrice: 15000000 } });
+    }
+    if (byType.Sapphire.length > 0) {
+      await Player.updateMany({ _id: { $in: byType.Sapphire } }, { $set: { basePrice: 20000000 } });
     }
 
-    // Update retained players' base price to 17 Cr
-    for (const retained of allRetainedPlayers) {
-      try {
-        const player = await Player.findById(retained.playerId);
-        if (player) {
-          player.basePrice = 170000000; // 17 Cr
-          await player.save();
-        }
-      } catch (playerError) {
-        console.error(`Error updating base price for player ${retained.playerId}:`, playerError);
-      }
+    // 2) Retained players remain fixed at 17 Cr.
+    if (retainedPlayerIds.length > 0) {
+      await Player.updateMany({ _id: { $in: retainedPlayerIds } }, { $set: { basePrice: 170000000 } });
     }
 
-    // Clear all fixtures, schedules, and playoff fixtures
-    await Promise.all([
-      Fixture.deleteMany({}),
-      Schedule.deleteMany({}),
-      PlayoffFixture.deleteMany({})
-    ]);
-
-    // COMPREHENSIVE BID CLEANUP: Remove ALL bids except for retained players
-    console.log('Starting comprehensive bid cleanup...');
-    
-    // Get all retained player IDs (reuse existing allRetainedPlayers)
-    const cleanupRetainedPlayerIds = allRetainedPlayers.map(rp => rp.playerId);
-    
-    // Get all users who have retained players
-    const usersWithRetainedPlayers = allRetainedPlayers.map(rp => rp.userId);
-    
-    // Clean up ALL bid data except for retained players
-    const bidCleanupResults = await Promise.all([
-      // Delete all bids except for retained players
-      Bid.deleteMany({ 
-        playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
-      // Delete all bid history except for retained players
-      BidHistory.deleteMany({ 
-        playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
-      // Delete all bid notifications except for retained players
-      Notification.deleteMany({
-        $and: [
-          { type: { $in: ['bid', 'bid_notification', 'bid_update'] } },
-          { 'metadata.playerId': { $nin: teamCleanupRetainedPlayerIds } }
-        ]
-      }),
-      // Delete all comments except for retained players
-      Comment.deleteMany({ 
-        playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
-      // Delete all pick requests except for retained players
-      PickRequest.deleteMany({ 
-        playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
-      // Delete all player stats except for retained players
-      PlayerStats.deleteMany({ 
-        playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
-      // Delete all post likes except for retained players
-      PostLike.deleteMany({ 
-        playerId: { $nin: cleanupRetainedPlayerIds } 
-      }),
-      // Delete all release requests except for retained players
-      ReleaseRequest.deleteMany({ 
-        player: { $nin: cleanupRetainedPlayerIds } 
-      }),
-      // Delete all trade requests except for retained players
-      TradeRequest.deleteMany({ 
-        $or: [
-          { playerId: { $nin: cleanupRetainedPlayerIds } },
-          { requestedPlayerId: { $nin: cleanupRetainedPlayerIds } }
-        ]
-      })
-    ]);
-    
-    console.log('Bid cleanup results:', {
-      bidsDeleted: bidCleanupResults[0].deletedCount,
-      bidHistoryDeleted: bidCleanupResults[1].deletedCount,
-      notificationsDeleted: bidCleanupResults[2].deletedCount,
-      commentsDeleted: bidCleanupResults[3].deletedCount,
-      pickRequestsDeleted: bidCleanupResults[4].deletedCount,
-      playerStatsDeleted: bidCleanupResults[5].deletedCount,
-      postLikesDeleted: bidCleanupResults[6].deletedCount,
-      releaseRequestsDeleted: bidCleanupResults[7].deletedCount,
-      tradeRequestsDeleted: bidCleanupResults[8].deletedCount
+    // 3) UserPlayer mapping: keep only retained mapping, remove all non-retained mapping.
+    const userPlayerDeleteResult = await UserPlayer.deleteMany({
+      playerId: { $nin: retainedPlayerIds },
     });
+
+    // 4) User collection normalization:
+    //    - boughtPlayers contains only retained players
+    //    - currentBid null
+    //    - currentBids []
+    //    - purse = 100 Cr - retainedCount * 17 Cr
+    const retainedCountByUserId = new Map();
+    retainedPlayers.forEach((rp) => {
+      const key = rp.userId.toString();
+      retainedCountByUserId.set(key, (retainedCountByUserId.get(key) || 0) + 1);
+    });
+
+    const teams = await User.find({ isActive: true, isAdmin: false })
+      .select('_id boughtPlayers')
+      .lean();
+
+    const bulkUserOps = teams.map((team) => {
+      const uid = team._id.toString();
+      const retainedCount = retainedCountByUserId.get(uid) || 0;
+      const nextPurse = 1000000000 - retainedCount * 170000000;
+      const keptBoughtPlayers = (team.boughtPlayers || []).filter((pid) =>
+        retainedPlayerIdSet.has(pid.toString())
+      );
+      return {
+        updateOne: {
+          filter: { _id: team._id },
+          update: {
+            $set: {
+              boughtPlayers: keptBoughtPlayers,
+              currentBid: null,
+              currentBids: [],
+              purse: nextPurse,
+            },
+          },
+        },
+      };
+    });
+    if (bulkUserOps.length > 0) {
+      await User.bulkWrite(bulkUserOps);
+    }
 
     // Mark that admin has released players to disable undo option
     await AppSettings.findOneAndUpdate(
@@ -545,62 +445,25 @@ router.post('/release-all-others', async (req, res) => {
       { 
         adminReleasedPlayers: true,
         adminReleasedPlayersAt: new Date(),
-        allPlayersReleased: true
+        allPlayersReleased: true,
+        releasedTeams: teams.map((t) => t._id),
       },
       { upsert: true }
     );
 
     // Set allPlayersReleased: true for ALL users
-    console.log('Setting allPlayersReleased: true for all users...');
-    
-    // First, let's check how many users match the criteria
-    const usersToUpdate = await User.find({ isActive: true, isAdmin: false });
-    console.log(`Found ${usersToUpdate.length} users to update:`, usersToUpdate.map(u => ({ id: u._id, name: u.name, teamName: u.teamName })));
-    
     const updateResult = await User.updateMany(
       { isActive: true, isAdmin: false }, // Only active non-admin users
       { allPlayersReleased: true }
     );
-    console.log(`Update result:`, updateResult);
-    console.log(`Updated ${updateResult.modifiedCount} users with allPlayersReleased: true`);
-    
-    // Verify the update worked
-    const updatedUsers = await User.find({ isActive: true, isAdmin: false, allPlayersReleased: true });
-    console.log(`Verification: ${updatedUsers.length} users now have allPlayersReleased: true`);
-
-    // Clear all data from PlayerStats and Fixture collections
-    // NOTE: do NOT add VenueMatchEntry to this list — it is the
-    // persistent venue-analytics ledger and is preserved across seasons.
-    console.log('Clearing all PlayerStats data...');
-    const playerStatsResult = await PlayerStats.deleteMany({});
-    console.log(`Deleted ${playerStatsResult.deletedCount} PlayerStats records`);
-
-    console.log('Clearing all Fixture data...');
-    const fixtureResult = await Fixture.deleteMany({});
-    console.log(`Deleted ${fixtureResult.deletedCount} Fixture records`);
 
     res.json({
-      message: 'All non-retained players released successfully. PlayerStats and Fixture data cleared.',
-      releasedCount,
-      totalRefunded,
+      message: 'All non-retained players normalized successfully.',
+      releasedCount: nonRetainedIds.length,
       retainedCount: retainedPlayers.length,
-      dataCleared: {
-        playerStatsDeleted: playerStatsResult.deletedCount,
-        fixtureDeleted: fixtureResult.deletedCount
-      },
-      purseReset: 'All users purse reset to ₹100 Cr',
-      retentionDeduction: `₹${(retainedPlayers.length * 17).toFixed(2)} Cr deducted from users with retained players`,
-      bidCleanup: {
-        bidsDeleted: bidCleanupResults[0].deletedCount,
-        bidHistoryDeleted: bidCleanupResults[1].deletedCount,
-        notificationsDeleted: bidCleanupResults[2].deletedCount,
-        commentsDeleted: bidCleanupResults[3].deletedCount,
-        pickRequestsDeleted: bidCleanupResults[4].deletedCount,
-        playerStatsDeleted: bidCleanupResults[5].deletedCount,
-        postLikesDeleted: bidCleanupResults[6].deletedCount,
-        releaseRequestsDeleted: bidCleanupResults[7].deletedCount,
-        tradeRequestsDeleted: bidCleanupResults[8].deletedCount
-      }
+      userPlayerMappingsRemoved: userPlayerDeleteResult.deletedCount,
+      updatedUsers: updateResult.modifiedCount,
+      purseRule: 'Purse = 100 Cr - (retained count * 17 Cr)',
     });
 
   } catch (error) {

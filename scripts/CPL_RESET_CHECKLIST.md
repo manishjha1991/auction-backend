@@ -59,14 +59,41 @@ For every player/user document, set:
 - Clear the `retainedplayers` collection.
 - Then update `allPlayersReleased: false` and `isRetentionLocked: false` in the `users` collection (same as above).
 
-## CPL report / history performance
+#// 1) Reset global release flags in AppSettings
+db.appsettings.updateOne(
+  {},
+  {
+    $set: {
+      adminReleasedPlayers: false,
+      allPlayersReleased: false,
+      enablePlayerRetention: true,
+      releasedTeams: []
+    }
+  },
+  { upsert: true }
+);
 
-### MongoDB indexes
-After deploying, run **`POST /api/indexes/create-all`** (admin) so new compound indexes apply on each DB you use (including historical `cpl_*` DBs if you run the tool per database). Added indexes support CPL qualification overview and history point-table reads:
-- **users:** `{ isActive: 1, isAdmin: 1, teamName: 1, points: -1 }`
-- **fixtures:** `{ isActive: 1, winner: 1 }`
+// 2) Reset per-user release/retention lock flags
+db.users.updateMany(
+  { isAdmin: { $ne: true } },
+  {
+    $set: {
+      allPlayersReleased: false,
+      isRetentionLocked: false
+    }
+  }
+);
 
-### Server-side cache (optional env)
-- `CPL_REPORT_CACHE_TTL_SEC` — default `45` (in-memory snapshot shared by `/api/cpl-report/snapshot` and `/pdf`; cleared when points/fixtures emit `points_table_updated`).
-- `CPL_HISTORY_CACHE_TTL_SEC` — default `120` (in-memory `/api/cpl-history/summary`; TTL-only; admin **clear all caches** also flushes it).
 
+db.users.updateMany(
+  {},
+  {
+    $set: {
+      fairnessPoint: 0,
+      points: 0,
+      matchesPlayed: 0,
+      tradesUsed: 0,
+      purse: NumberDecimal("1000000000")
+    }
+  }
+);
