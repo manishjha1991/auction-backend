@@ -48,16 +48,23 @@ app.set('trust proxy', true);
 
 app.set('io', io);
 // 🚀 OPTIMIZED MongoDB Connection Pooling Configuration
-const poolMax = parseInt(process.env.MONGO_MAX_POOL_SIZE || '10', 10);
+const mongoUri = process.env.MONGO_URI;
+if (!mongoUri) {
+  console.error('❌ Missing MONGO_URI. Set it in environment variables.');
+  process.exit(1);
+}
+
+const poolMax = parseInt(process.env.MONGO_MAX_POOL_SIZE || '3', 10);
 const poolMin = parseInt(process.env.MONGO_MIN_POOL_SIZE || '0', 10);
+const envDbName = (process.env.MONGO_DB_NAME || '').trim();
 const mongooseOptions = {
-  dbName: 'cpl_20',
+  ...(envDbName ? { dbName: envDbName } : {}),
   useNewUrlParser: true,
   useUnifiedTopology: true,
   
   // ⚡ CONNECTION POOLING - Core Performance Settings
   // IMPORTANT: Atlas M0 has low connection limits; keep pools small by default.
-  maxPoolSize: Number.isFinite(poolMax) ? poolMax : 10,
+  maxPoolSize: Number.isFinite(poolMax) ? poolMax : 3,
   minPoolSize: Number.isFinite(poolMin) ? poolMin : 0,
   maxIdleTimeMS: 60000,   // Increased from 30s - Keep connections alive longer
   maxConnecting: 5,       // Allow 5 simultaneous connection attempts
@@ -92,7 +99,7 @@ const startServer = () => {
   server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 };
 
-mongoose.connect(process.env.MONGO_URI, mongooseOptions)
+mongoose.connect(mongoUri, mongooseOptions)
   .then(() => {
     console.log('✅ MongoDB Connected Successfully');
     console.log('📊 Connection State:', mongoose.connection.readyState);

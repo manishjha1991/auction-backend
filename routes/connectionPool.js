@@ -3,6 +3,34 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 
+function getReconnectOptions() {
+  const poolMax = parseInt(process.env.MONGO_MAX_POOL_SIZE || '3', 10);
+  const poolMin = parseInt(process.env.MONGO_MIN_POOL_SIZE || '0', 10);
+  const envDbName = (process.env.MONGO_DB_NAME || '').trim();
+  return {
+    ...(envDbName ? { dbName: envDbName } : {}),
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+    maxPoolSize: Number.isFinite(poolMax) ? poolMax : 3,
+    minPoolSize: Number.isFinite(poolMin) ? poolMin : 0,
+    maxIdleTimeMS: 60000,
+    maxConnecting: 2,
+    serverSelectionTimeoutMS: 15000,
+    socketTimeoutMS: 30000,
+    connectTimeoutMS: 15000,
+    retryWrites: true,
+    retryReads: true,
+    heartbeatFrequencyMS: 5000,
+    compressors: ['zlib'],
+    zlibCompressionLevel: 6,
+    directConnection: (process.env.MONGO_URI || '').startsWith('mongodb+srv://') ? false : (process.env.MONGO_DIRECT_CONNECTION === 'true'),
+    monitorCommands: process.env.NODE_ENV !== 'production',
+    readPreference: (process.env.MONGO_URI || '').startsWith('mongodb+srv://') ? 'primaryPreferred' : (process.env.MONGO_DIRECT_CONNECTION === 'true' ? 'primary' : 'primaryPreferred'),
+    readConcern: { level: 'local' },
+    writeConcern: { w: 1, j: true }
+  };
+}
+
 // Get connection pool status
 router.get('/status', (req, res) => {
   try {
@@ -122,6 +150,12 @@ router.get('/test', async (req, res) => {
 router.post('/refresh', async (req, res) => {
   try {
     console.log('🔄 Refreshing connection pool...');
+    if (!process.env.MONGO_URI) {
+      return res.status(500).json({
+        success: false,
+        error: 'MONGO_URI is missing'
+      });
+    }
     
     // Close existing connections
     await mongoose.connection.close();
@@ -130,29 +164,7 @@ router.post('/refresh', async (req, res) => {
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     // Reconnect with current options
-    await mongoose.connect(process.env.MONGO_URI, {
-      dbName: 'cpl_12',
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      maxPoolSize: 20,
-      minPoolSize: 8,
-      maxIdleTimeMS: 60000,
-      maxConnecting: 5,
-      serverSelectionTimeoutMS: 15000,
-      socketTimeoutMS: 30000,
-      connectTimeoutMS: 15000,
-      retryWrites: true,
-      retryReads: true,
-      heartbeatFrequencyMS: 5000,
-      compressors: ['zlib'],
-      zlibCompressionLevel: 6,
-      directConnection: false,
-      monitorCommands: true,
-      maxStalenessSeconds: 90,
-      readPreference: 'primaryPreferred',
-      readConcern: { level: 'local' },
-      writeConcern: { w: 1, j: true }
-    });
+    await mongoose.connect(process.env.MONGO_URI, getReconnectOptions());
     
     res.json({
       success: true,
