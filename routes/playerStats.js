@@ -507,6 +507,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     matchId,
     teamInningsOrder: rawTeamInningsOrder,
     matchWinnerSide: rawMatchWinnerSide,
+    forceCreate: rawForceCreate,
   } = payload;
 
   const venue = typeof rawVenue === 'string' ? rawVenue.trim() : rawVenue || null;
@@ -532,6 +533,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
   const userId = ownerUser._id;
   const wcStage = isWcScore ? normalizeWcStage(rawWcStage) : null;
   const tournamentId = rawTournamentId || null;
+  const forceCreate = rawForceCreate === true || rawForceCreate === 'true';
 
   if (isWcScore && !wcStage) {
     const error = new Error('wcStage is required when isWcScore is true (super8 | semi | final)');
@@ -545,26 +547,29 @@ const savePlayerStatsEntry = async (payload = {}) => {
   //   → different stage / different tournament creates a new entry
   // - Playoff entries always create new (existing behavior)
   // - Regular entries dedup on (player, owner, opponent) but exclude WC/playoff buckets
+  // - forceCreate=true bypasses overwrite lookup and always creates a fresh row
   let existingStats = null;
-  if (isWcScore) {
-    existingStats = await PlayerStats.findOne({
-      playerId,
-      userId,
-      opponentUserId,
-      tournamentId,
-      'metadata.isWcScore': true,
-      'metadata.wcStage': wcStage,
-    });
-  } else if (!isPlayoffScore) {
-    existingStats = await PlayerStats.findOne({
-      playerId,
-      userId,
-      opponentUserId,
-      $and: [
-        { $or: [{ 'metadata.isWcScore': { $ne: true } }, { 'metadata.isWcScore': { $exists: false } }] },
-        { $or: [{ 'metadata.isPlayoffScore': { $ne: true } }, { 'metadata.isPlayoffScore': { $exists: false } }] },
-      ],
-    });
+  if (!forceCreate) {
+    if (isWcScore) {
+      existingStats = await PlayerStats.findOne({
+        playerId,
+        userId,
+        opponentUserId,
+        tournamentId,
+        'metadata.isWcScore': true,
+        'metadata.wcStage': wcStage,
+      });
+    } else if (!isPlayoffScore) {
+      existingStats = await PlayerStats.findOne({
+        playerId,
+        userId,
+        opponentUserId,
+        $and: [
+          { $or: [{ 'metadata.isWcScore': { $ne: true } }, { 'metadata.isWcScore': { $exists: false } }] },
+          { $or: [{ 'metadata.isPlayoffScore': { $ne: true } }, { 'metadata.isPlayoffScore': { $exists: false } }] },
+        ],
+      });
+    }
   }
 
   const newTotals = {
@@ -2831,7 +2836,7 @@ router.get('/stats/:playerId', async (req, res) => {
     // Fetch stats for the given playerId
     const stats = await PlayerStats.find({ playerId })
       .populate('userId', 'name') // Populate user details
-      .populate('opponentUserId', 'name'); // Populate opponent details
+      .populate('opponentUserId', 'name teamName'); // Populate opponent details
 
     // Calculate total stats
     let totalRuns = 0;
@@ -2851,10 +2856,17 @@ router.get('/stats/:playerId', async (req, res) => {
         id: stat._id,
         playerId: stat.playerId,
         user: stat.userId?.name || null,
-        opponent: stat.opponentUserId?.name || null,
+        opponent: stat.opponentUserId?.teamName || stat.opponentUserId?.name || null,
+        opponentUserId: stat.opponentUserId?._id || stat.opponentUserId || null,
         battingStats: stat.battingStats,
         bowlingStats: stat.bowlingStats,
         isMom: stat.isMom,
+        tournamentId: stat.tournamentId || null,
+        metadata: {
+          isPlayoffScore: !!stat.metadata?.isPlayoffScore,
+          isWcScore: !!stat.metadata?.isWcScore,
+          wcStage: stat.metadata?.wcStage || null,
+        },
         createdAt: stat.createdAt,
       })),
       totalStats: {
