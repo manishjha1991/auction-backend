@@ -8,6 +8,7 @@ const validateUser = require("../config/validation.js")
 const User = require("../models/User.js");
 const mongoose = require("mongoose");
 const BidNotification = require('../models/BidNotification');
+const BidPlayerQueue = require('../models/BidPlayerQueue');
 const authenticateJWT = require('../middleware/authJWT');
 const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
 const { getClientIp } = require('../utils/network');
@@ -45,6 +46,17 @@ async function getCachedQueueMemberships(userId) {
   const value = await bidQueueService.listMyQueueMemberships(userId);
   auctionHubBurstCache.set(key, value);
   return value;
+}
+
+async function hasQueuedWaiters(playerId) {
+  if (!mongoose.isValidObjectId(playerId)) return false;
+  const waitingDoc = await BidPlayerQueue.findOne({
+    playerId,
+    'entries.status': 'queued',
+  })
+    .select('_id')
+    .lean();
+  return !!waitingDoc;
 }
 
 // Place a bid
@@ -407,6 +419,26 @@ router.post("/bid/sold", async (req, res) => {
             playerID: pid,
             status: "error",
             message: "No active bids found for this player.",
+          });
+          continue;
+        }
+
+        if (await hasQueuedWaiters(pid)) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: "Cannot sell: players with waiting queue users must not be sold until queue clears.",
+          });
+          continue;
+        }
+
+        // Safety guard: never allow manual sell while 2+ active bidders exist.
+        const uniqueBidders = new Set(allBids.map((b) => b.bidder?.toString()).filter(Boolean));
+        if (uniqueBidders.size > 1) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: "Cannot sell: second bidder has not exited. Only sell when one bidder remains.",
           });
           continue;
         }
@@ -778,6 +810,9 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
         player.lastExitBy = 'system';
         await player.save();
 
+        // If queue has waiters and exactly one active bidder remains, auto-promote next queued user.
+        await bidQueueService.tryPromoteNextQueued(playerId, io);
+
         return {
           message: "The second-highest bidder has exited successfully. Locked amount refunded.",
           currentBid: player.currentBid,
@@ -913,6 +948,14 @@ async function sellPlayer(playerId, io = null) {
         playerID: playerId,
         status: 'error',
         message: 'Player already sold.'
+      };
+    }
+
+    if (await hasQueuedWaiters(playerId)) {
+      return {
+        playerID: playerId,
+        status: 'error',
+        message: 'Cannot sell: queue has waiting users for this player.',
       };
     }
 
@@ -1314,6 +1357,9 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
   // Defensive: remove accidental currentBids field if present
   if (player.currentBids !== undefined) delete player.currentBids;
   await player.save();
+
+  // Keep queue flow deterministic for bulk/system exits too.
+  await bidQueueService.tryPromoteNextQueued(playerId, io);
 
   // Create and save notification
   const notificationData = {

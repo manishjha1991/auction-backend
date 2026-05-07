@@ -356,6 +356,48 @@ async function exitOnlyWindowJob(windowMinutes) {
   }
 }
 
+/**
+ * One-time 11:45 PM IST sweep:
+ * Sell only players where second-highest already exited and exactly one bidder remains.
+ * No waiting window check in this one-time sweep.
+ * Does NOT perform new exits; sell-only sweep.
+ */
+async function oneTimeSellAfterExitSweep() {
+  const settings = await getCronSettings();
+  if (settings.cronSingleBidEnabled === false) {
+    console.log('⏸️ One-time 11:45 PM sell sweep disabled via admin settings (cronSingleBidEnabled=false).');
+    return;
+  }
+
+  console.log(`⏱️ [${new Date().toISOString()}] Running one-time immediate sell-after-exit sweep`);
+  try {
+    const result = await getUnsoldPlayers();
+    const players = result.players || [];
+    let sold = 0;
+
+    const batchSize = parseInt(process.env.SCHEDULER_MONITOR_BATCH_SIZE, 10) || DEFAULT_BATCH_SIZE;
+    await runInBatches(
+      players,
+      batchSize,
+      async ({ _id: pid, id }) => {
+        const playerId = pid || id;
+        const player = await Player.findById(playerId).lean();
+        if (!player || player.isSold) return;
+        const bidCountResult = await getBidderCount(playerId);
+        const count = bidCountResult.count ?? 0;
+        if (count !== 0) return; // only single-bid left (second already exited)
+        if (!player.lastExitAt) return; // ensure second-highest exit happened earlier
+        await sellPlayer(playerId, null);
+        sold += 1;
+      }
+    );
+
+    console.log(`   ✅ One-time 11:45 PM sweep sold ${sold} player(s).`);
+  } catch (err) {
+    console.error('⚠️ oneTimeSellAfterExitSweep error:', err.message);
+  }
+}
+
 async function postWindowJob() {
   const settings = await getCronSettings();
   if (settings.cronBulkExitEnabled) {
@@ -540,49 +582,50 @@ async function lockUnderLimitJob() {
   }
 }
 
-// tenMinuteSingleBidJob DISABLED – counterBidWindowJob (5 min) and postWindowJob (2 min) handle 11:30–2:00
-// Requirement: from 11:30 sell single-bid where second exited; then 5 min cycle till 12:30; after 12:30 use 2 min cycle
+// tenMinuteSingleBidJob DISABLED – counterBidWindowJob handles 11:50 PM–2:00 AM windows
+// Requirement: 11:50 PM–12:45 AM with 5-minute check; after 12:45 AM run same logic every 2 minutes till 2:00 AM
 
-// 22:30 IST nightly – sell players that never received a counter bid
-cron.schedule('0 30 22 * * *', sellingSingleBidSinceStarting, {
+// 23:00 IST nightly – sell players that never received a counter bid
+cron.schedule('0 0 23 * * *', sellingSingleBidSinceStarting, {
   timezone: 'Asia/Kolkata',
 });
 
-// 22:30–23:20 IST – every 5 minutes exit-only window (no auto-sell), extended till 11:20 PM
-cron.schedule('0 30,35,40,45,50,55 22 * * *', () => exitOnlyWindowJob(5), {
-  timezone: 'Asia/Kolkata',
-});
-cron.schedule('0 0,5,10,15,20 23 * * *', () => exitOnlyWindowJob(5), {
+// 23:00–23:40 IST – every 5 minutes exit-only window (no auto-sell)
+cron.schedule('0 0,5,10,15,20,25,30,35,40 23 * * *', () => exitOnlyWindowJob(5), {
   timezone: 'Asia/Kolkata',
 });
 
-// 23:30–00:30 IST – every 5 minutes counter-bid window
-cron.schedule('0 30-59/5 23 * * *', () => counterBidWindowJob(5), {
+// 23:45 IST – one-time sell sweep for players where second-highest exited >= 5 minutes ago
+cron.schedule('0 45 23 * * *', () => oneTimeSellAfterExitSweep(), {
   timezone: 'Asia/Kolkata',
 });
 
-// 00:00–00:30 IST – every 5 minutes counter-bid window
-cron.schedule('0 0-30/5 0 * * *', () => counterBidWindowJob(5), {
+// 23:50–00:45 IST – every 5 minutes counter-bid window
+cron.schedule('0 50,55 23 * * *', () => counterBidWindowJob(5), {
+  timezone: 'Asia/Kolkata',
+});
+cron.schedule('0 0,5,10,15,20,25,30,35,40,45 0 * * *', () => counterBidWindowJob(5), {
   timezone: 'Asia/Kolkata',
 });
 
-// 00:30–00:59 IST – every 2 minutes post-window cycle
-cron.schedule('0 30-59/2 0 * * *', () => postWindowJob(), {
+// 00:46–02:00 IST – every 2 minutes counter-bid window with 2-minute exit check
+cron.schedule('0 46,48,50,52,54,56,58 0 * * *', () => counterBidWindowJob(2), {
+  timezone: 'Asia/Kolkata',
+});
+cron.schedule('0 */2 1 * * *', () => counterBidWindowJob(2), {
+  timezone: 'Asia/Kolkata',
+});
+cron.schedule('0 0 2 * * *', () => counterBidWindowJob(2), {
   timezone: 'Asia/Kolkata',
 });
 
-// 01:00–01:59 IST – every 2 minutes post-window cycle
-cron.schedule('0 */2 1 * * *', () => postWindowJob(), {
-  timezone: 'Asia/Kolkata',
-});
-
-// Bulk exit: Window 1 = 6:00 PM–9:40 PM every 10 min; Window 2 = 10:35 PM–11:05 PM every 10 min; then stops
-cron.schedule('0 0,10,20,30,40,50 18-20 * * *', () => {
-  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (6–9:40 PM window)`);
+// Bulk exit: Window 1 = 8:00 PM–9:40 PM every 10 min; Window 2 = 10:35 PM–11:05 PM every 10 min; then stops
+cron.schedule('0 0,10,20,30,40,50 20 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (8:00–9:40 PM window)`);
   runBulkExitJob();
 }, { timezone: 'Asia/Kolkata' });
 cron.schedule('0 0,10,20,30,40 21 * * *', () => {
-  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (6–9:40 PM window)`);
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (8:00–9:40 PM window)`);
   runBulkExitJob();
 }, { timezone: 'Asia/Kolkata' });
 cron.schedule('0 35,45,55 22 * * *', () => {
@@ -594,17 +637,17 @@ cron.schedule('0 5 23 * * *', () => {
   runBulkExitJob();
 }, { timezone: 'Asia/Kolkata' });
 
-// Lock users that violate roster requirements at 22:00 IST (10:00 PM) daily
-cron.schedule('0 22 * * *', lockUnderLimitJob, {
+// Lock users that violate roster requirements at 22:30 IST (10:30 PM) daily
+cron.schedule('0 30 22 * * *', lockUnderLimitJob, {
   timezone: 'Asia/Kolkata',
 });
 
-// Auction Auto Mode: 6 PM start; 9:40 bulk off; 10:25 finalizer on; 10:35 bulk on; 11:20 bulk off; 11:25 sell-after-exit on
-cron.schedule('0 0 18 * * *', auctionAutoModeStartJob, { timezone: 'Asia/Kolkata' });
+// Auction Auto Mode: 8 PM start; 9:40 bulk off; 10:55 finalizer on; 10:35 bulk on; 11:20 bulk off; 11:50 sell-after-exit on
+cron.schedule('0 0 20 * * *', auctionAutoModeStartJob, { timezone: 'Asia/Kolkata' });
 cron.schedule('0 40 21 * * *', auctionAutoModeSwitchJob, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 25 22 * * *', auctionAutoModeFinalizerOn, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 55 22 * * *', auctionAutoModeFinalizerOn, { timezone: 'Asia/Kolkata' });
 cron.schedule('0 34 22 * * *', auctionAutoModeBulk2On, { timezone: 'Asia/Kolkata' }); // 10:34 so bulk is ready for 10:35 run
 cron.schedule('0 20 23 * * *', auctionAutoModeBulk2Off, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 25 23 * * *', auctionAutoModeSellAfterExitOn, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 50 23 * * *', auctionAutoModeSellAfterExitOn, { timezone: 'Asia/Kolkata' });
 
 console.log('🕒 Auction scheduler running…');
