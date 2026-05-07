@@ -495,6 +495,55 @@ router.get("/purses", async (req, res) => {
       activeBidsMap.get(bid.bidder._id.toString()).push(bid);
     });
 
+    // Precompute team-level win/loss counts once (avoid filtering full match list per user)
+    const teamOutcomeMap = new Map();
+    matchResults.forEach((match) => {
+      if (!match?.winner || match.winner === 'tie' || match.winner === 'no_result') return;
+      const winningTeam = match.winner === 'team1' ? match.team1 : match.team2;
+      const losingTeam = winningTeam === match.team1 ? match.team2 : match.team1;
+      if (winningTeam) {
+        const row = teamOutcomeMap.get(winningTeam) || { wins: 0, losses: 0 };
+        row.wins += 1;
+        teamOutcomeMap.set(winningTeam, row);
+      }
+      if (losingTeam) {
+        const row = teamOutcomeMap.get(losingTeam) || { wins: 0, losses: 0 };
+        row.losses += 1;
+        teamOutcomeMap.set(losingTeam, row);
+      }
+    });
+
+    // Precompute World Cup win / runner-up maps once (avoid scanning tournaments for each user)
+    const normalizeTeamName = (name) => (name ? name.trim().toLowerCase() : '');
+    const wcWinsByTeam = new Map(); // normalizedTeam -> [{ tournamentName, wonAt }]
+    const wcRunnerUpByTeam = new Map(); // normalizedTeam -> count
+    worldCupTournaments.forEach((tournament) => {
+      const winnerTeamRaw = tournament?.winner?.teamName || null;
+      const winnerTeam = normalizeTeamName(winnerTeamRaw);
+      if (winnerTeam) {
+        const wins = wcWinsByTeam.get(winnerTeam) || [];
+        wins.push({
+          tournamentName: tournament.name,
+          wonAt: tournament.winner?.wonAt || tournament.endDate || null
+        });
+        wcWinsByTeam.set(winnerTeam, wins);
+      }
+
+      const fixtures = Array.isArray(tournament?.tournamentFixtures) ? tournament.tournamentFixtures : [];
+      const finalFixture = fixtures.length > 0 ? fixtures[fixtures.length - 1] : null;
+      if (!finalFixture) return;
+      const team1 = normalizeTeamName(finalFixture.team1);
+      const team2 = normalizeTeamName(finalFixture.team2);
+      if (!team1 || !team2) return;
+
+      if (team1 && team1 !== winnerTeam) {
+        wcRunnerUpByTeam.set(team1, (wcRunnerUpByTeam.get(team1) || 0) + 1);
+      }
+      if (team2 && team2 !== winnerTeam) {
+        wcRunnerUpByTeam.set(team2, (wcRunnerUpByTeam.get(team2) || 0) + 1);
+      }
+    });
+
     const userData = users.map((user) => {
       // Get user's players and bids from maps
       const userPlayers = userPlayersMap.get(user._id.toString()) || [];
@@ -534,86 +583,14 @@ router.get("/purses", async (req, res) => {
           biddingBy: user.name, // User placing the bid
         }));
 
-        // Calculate trophy and runner-up counts from match results
-        const teamWins = matchResults.filter(match => {
-          if (!match.winner || match.winner === 'tie' || match.winner === 'no_result') return false;
-          const winningTeam = match.winner === 'team1' ? match.team1 : match.team2;
-          return winningTeam === user.teamName;
-        });
+        const normalizedUserTeam = normalizeTeamName(user.teamName);
+        const teamOutcome = teamOutcomeMap.get(user.teamName) || { wins: 0, losses: 0 };
+        const trophyCount = teamOutcome.wins;
+        const runnerUpCount = teamOutcome.losses;
 
-        const teamLosses = matchResults.filter(match => {
-          if (!match.winner || match.winner === 'tie' || match.winner === 'no_result') return false;
-          const winningTeam = match.winner === 'team1' ? match.team1 : match.team2;
-          return (match.team1 === user.teamName || match.team2 === user.teamName) && winningTeam !== user.teamName;
-        });
-
-        const trophyCount = teamWins.length;
-        const runnerUpCount = teamLosses.length;
-
-        // Calculate World Cup wins for this team
-        const worldCupWins = worldCupTournaments.filter(tournament => {
-          return tournament.winner && 
-                 tournament.winner.teamName && 
-                 tournament.winner.teamName === user.teamName;
-        });
-        
-        const worldCupCount = worldCupWins.length;
-        const worldCupWinsList = worldCupWins.map(wc => ({
-          tournamentName: wc.name,
-          wonAt: wc.winner?.wonAt || wc.endDate || null
-        }));
-
-        // Calculate World Cup runner-ups (teams that reached final but lost)
-        // Helper function to normalize team names for comparison
-        const normalizeTeamName = (name) => {
-          if (!name) return '';
-          return name.trim().toLowerCase();
-        };
-        
-        const worldCupRunnerUps = worldCupTournaments.filter(tournament => {
-          // Check if tournament has a winner
-          if (!tournament.winner || !tournament.winner.teamName) return false;
-          
-          const normalizedUserTeam = normalizeTeamName(user.teamName);
-          const normalizedTournamentWinner = normalizeTeamName(tournament.winner.teamName);
-          
-          // If this team is the winner, they're not a runner-up
-          if (normalizedUserTeam === normalizedTournamentWinner) return false;
-          
-          // Check if this team was in the final match
-          if (tournament.tournamentFixtures && tournament.tournamentFixtures.length > 0) {
-            // Get the final fixture (last fixture)
-            const finalFixture = tournament.tournamentFixtures[tournament.tournamentFixtures.length - 1];
-            
-            if (finalFixture) {
-              // Normalize team names for comparison
-              const normalizedTeam1 = normalizeTeamName(finalFixture.team1);
-              const normalizedTeam2 = normalizeTeamName(finalFixture.team2);
-              
-              // Check if this team was in the final (team1 or team2)
-              const wasInFinal = (normalizedTeam1 === normalizedUserTeam || normalizedTeam2 === normalizedUserTeam);
-              
-              // If team was in final and didn't win, they're the runner-up
-              if (wasInFinal) {
-                // Debug logging for Shantanu
-                if (normalizedUserTeam.includes('shantanu')) {
-                  console.log(`✅ World Cup Runner-up FOUND for ${user.teamName}:`, {
-                    tournamentName: tournament.name,
-                    finalFixtureTeam1: finalFixture.team1,
-                    finalFixtureTeam2: finalFixture.team2,
-                    tournamentWinner: tournament.winner.teamName,
-                    userTeamName: user.teamName
-                  });
-                }
-                return true;
-              }
-            }
-          }
-          
-          return false;
-        });
-        
-        const worldCupRunnerUpCount = worldCupRunnerUps.length;
+        const worldCupWinsList = wcWinsByTeam.get(normalizedUserTeam) || [];
+        const worldCupCount = worldCupWinsList.length;
+        const worldCupRunnerUpCount = wcRunnerUpByTeam.get(normalizedUserTeam) || 0;
         
         // Debug logging
         if (user.teamName?.toLowerCase().includes('shantanu')) {
@@ -772,6 +749,7 @@ router.get("/purses", async (req, res) => {
     });
 
 
+    cacheConfig.medium.set(cacheKey, enhancedUserData);
     res.status(200).json(enhancedUserData);
   } catch (error) {
     console.error("Error fetching user purse data:", error);

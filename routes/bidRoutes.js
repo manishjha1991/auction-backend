@@ -16,6 +16,36 @@ const { invalidateCache } = require('../utils/cache');
 const { placeBidCore } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
+const NodeCache = require('node-cache');
+
+// Tiny hot-path cache for watch-card player lookups (name/profilePicture).
+// Keeps UI real-time while avoiding repeated Player.findById calls.
+const playerWatchCardCache = new NodeCache({ stdTTL: 30, checkperiod: 60 });
+// Very short cache only to absorb burst polling on auction hub.
+const auctionHubBurstCache = new NodeCache({ stdTTL: 5, checkperiod: 10 });
+
+async function getPlayerWatchCard(playerId) {
+  if (!playerId) return { playerName: '?', profilePicture: null };
+  const key = `watch-card:${String(playerId)}`;
+  const cached = playerWatchCardCache.get(key);
+  if (cached) return cached;
+  const pl = await Player.findById(playerId).select('name profilePicture').lean();
+  const value = {
+    playerName: pl?.name || '?',
+    profilePicture: pl?.profilePicture || null,
+  };
+  playerWatchCardCache.set(key, value);
+  return value;
+}
+
+async function getCachedQueueMemberships(userId) {
+  const key = `queue-memberships:${String(userId)}`;
+  const cached = auctionHubBurstCache.get(key);
+  if (cached) return cached;
+  const value = await bidQueueService.listMyQueueMemberships(userId);
+  auctionHubBurstCache.set(key, value);
+  return value;
+}
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
@@ -1672,6 +1702,28 @@ router.get('/live-dashboard', async (req, res) => {
 // Get all users with purse and active bids for user-grouped dashboard
 router.get('/users-dashboard', async (req, res) => {
   try {
+    const bidderAbbr = (bidder) =>
+      bidder?.abbreviation ||
+      bidder?.teamName?.substring(0, 3).toUpperCase() ||
+      bidder?.name?.substring(0, 3).toUpperCase() ||
+      'N/A';
+
+    const upsertTopTwoByPlayer = (bucket, playerId, bidRow) => {
+      const current = bucket[playerId];
+      if (!current) {
+        bucket[playerId] = { top1: bidRow, top2: null };
+        return;
+      }
+      if (!current.top1 || bidRow.bidAmount > current.top1.bidAmount) {
+        current.top2 = current.top1;
+        current.top1 = bidRow;
+        return;
+      }
+      if (!current.top2 || bidRow.bidAmount > current.top2.bidAmount) {
+        current.top2 = bidRow;
+      }
+    };
+
     // Get all non-admin users with their purse and abbreviation
     const users = await User.find({
       isAdmin: { $ne: true },
@@ -1707,69 +1759,56 @@ router.get('/users-dashboard', async (req, res) => {
       }
     });
 
-    // First, group bids by player to find highest and second highest
-    const bidsByPlayer = {};
+    // First, track top-2 bids by player in O(n)
+    const bidsByPlayerTopTwo = {};
     
     activeBids.forEach(bid => {
       const playerId = bid.playerId._id.toString();
-      if (!bidsByPlayer[playerId]) {
-        bidsByPlayer[playerId] = [];
-      }
-      bidsByPlayer[playerId].push({
+      upsertTopTwoByPlayer(bidsByPlayerTopTwo, playerId, {
         bidderId: bid.bidder._id.toString(),
         bidderName: bid.bidder.name,
-        bidderAbbreviation: bid.bidder.abbreviation || bid.bidder.teamName?.substring(0, 3).toUpperCase() || bid.bidder.name?.substring(0, 3).toUpperCase() || 'N/A',
+        bidderAbbreviation: bidderAbbr(bid.bidder),
         bidAmount: bid.bidAmount,
         timestamp: bid.timestamp
       });
     });
 
-    // Sort bids for each player
-    Object.keys(bidsByPlayer).forEach(playerId => {
-      bidsByPlayer[playerId].sort((a, b) => b.bidAmount - a.bidAmount);
-    });
-
     // Group active bids by bidder (user) with winning/losing status
     const bidsByUser = {};
+    const bidsByUserPlayerMap = {};
     
     activeBids.forEach(bid => {
       const bidderId = bid.bidder._id.toString();
       const playerId = bid.playerId._id.toString();
-      const playerBids = bidsByPlayer[playerId] || [];
+      const topTwo = bidsByPlayerTopTwo[playerId] || {};
+      const top1 = topTwo.top1 || null;
+      const top2 = topTwo.top2 || null;
       
       if (!bidsByUser[bidderId]) {
         bidsByUser[bidderId] = [];
+        bidsByUserPlayerMap[bidderId] = new Map();
       }
       
       // Find if this user is highest or second (second = losing to someone else)
-      const isHighest = playerBids[0]?.bidderId === bidderId;
-      const isSecond = playerBids[1]?.bidderId === bidderId && playerBids[1]?.bidderId !== playerBids[0]?.bidderId;
+      const isHighest = top1?.bidderId === bidderId;
+      const isSecond = top2?.bidderId === bidderId && top2?.bidderId !== top1?.bidderId;
       
       // Get the other bidder's abbreviation
       let otherBidderAbbr = null;
       let otherBidderName = null;
-      if (isHighest && playerBids[1]) {
-        otherBidderAbbr = playerBids[1].bidderAbbreviation;
-        otherBidderName = playerBids[1].bidderName || null;
-      } else if (isSecond && playerBids[0]) {
-        otherBidderAbbr = playerBids[0].bidderAbbreviation;
-        otherBidderName = playerBids[0].bidderName || null;
+      if (isHighest && top2) {
+        otherBidderAbbr = top2.bidderAbbreviation;
+        otherBidderName = top2.bidderName || null;
+      } else if (isSecond && top1) {
+        otherBidderAbbr = top1.bidderAbbreviation;
+        otherBidderName = top1.bidderName || null;
       }
       
-      // Group by player - keep highest bid per player for this user
-      const existingPlayerBid = bidsByUser[bidderId].find(
-        b => b.playerId.toString() === playerId
-      );
-      
+      // Group by player - keep highest bid per player for this user (O(1) map update)
+      const existingPlayerBid = bidsByUserPlayerMap[bidderId].get(playerId);
       if (!existingPlayerBid || existingPlayerBid.bidAmount < bid.bidAmount) {
-        // Remove old bid for this player if exists
-        if (existingPlayerBid) {
-          const index = bidsByUser[bidderId].indexOf(existingPlayerBid);
-          bidsByUser[bidderId].splice(index, 1);
-        }
-        
         const lastExit = lastExitByPlayer.get(playerId);
-        bidsByUser[bidderId].push({
+        bidsByUserPlayerMap[bidderId].set(playerId, {
           playerId: bid.playerId._id,
           playerName: bid.playerId.name,
           playerType: bid.playerId.type,
@@ -1786,6 +1825,11 @@ router.get('/users-dashboard', async (req, res) => {
           lastExitAt: lastExit?.timestamp || null
         });
       }
+    });
+
+    // Materialize map values once after grouping
+    Object.keys(bidsByUserPlayerMap).forEach((bidderId) => {
+      bidsByUser[bidderId] = Array.from(bidsByUserPlayerMap[bidderId].values());
     });
 
     // Combine users with their active bids
@@ -1808,6 +1852,39 @@ router.get('/users-dashboard', async (req, res) => {
 // Personalized auction command center: running bids, purses, queues, notifications
 router.get('/my-auction-hub/:userId', async (req, res) => {
   try {
+    const decimalToNumber = (value) => {
+      if (value === null || value === undefined) return 0;
+      if (typeof value === 'number') return value;
+      if (typeof value === 'string') return parseFloat(value) || 0;
+      if (typeof value === 'object' && value.$numberDecimal !== undefined) {
+        return parseFloat(value.$numberDecimal) || 0;
+      }
+      if (typeof value?.toString === 'function') {
+        return parseFloat(value.toString()) || 0;
+      }
+      return 0;
+    };
+    const bidderAbbr = (bidder) =>
+      bidder?.abbreviation ||
+      bidder?.teamName?.substring(0, 3).toUpperCase() ||
+      bidder?.name?.substring(0, 3).toUpperCase() ||
+      'N/A';
+    const upsertTopTwoByPlayer = (bucket, playerId, bidRow) => {
+      const current = bucket[playerId];
+      if (!current) {
+        bucket[playerId] = { top1: bidRow, top2: null };
+        return;
+      }
+      if (!current.top1 || bidRow.bidAmount > current.top1.bidAmount) {
+        current.top2 = current.top1;
+        current.top1 = bidRow;
+        return;
+      }
+      if (!current.top2 || bidRow.bidAmount > current.top2.bidAmount) {
+        current.top2 = bidRow;
+      }
+    };
+
     const { userId } = req.params;
     const me = await User.findById(userId)
       .select('name teamName purse _id abbreviation isAdmin')
@@ -1822,12 +1899,12 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
         const topList = getTopWatchedPlayers(ioAdm, 5);
         if (topList.length > 0) {
           const t = topList[0];
-          const pl = await Player.findById(t.playerId).select('name profilePicture').lean();
+          const topPlayer = await getPlayerWatchCard(t.playerId);
           demandAdm.globalTop = {
             playerId: t.playerId,
             count: t.count,
-            playerName: pl?.name || '?',
-            profilePicture: pl?.profilePicture || null,
+            playerName: topPlayer.playerName,
+            profilePicture: topPlayer.profilePicture,
           };
         }
       }
@@ -1851,78 +1928,80 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
       });
     }
 
-    const users = await User.find({
-      isAdmin: { $ne: true },
-      teamName: { $exists: true, $ne: null },
+    const myActiveBidRows = await Bid.find({
+      bidder: me._id,
+      isActive: true,
+      isBidOn: true,
     })
-      .select('purse _id')
+      .select('playerId')
       .lean();
-    const purseByUserId = new Map(
-      users.map((u) => [u._id.toString(), parseFloat(u.purse.toString())])
-    );
+    const myActivePlayerIds = [
+      ...new Set(
+        myActiveBidRows
+          .map((r) => r?.playerId?.toString())
+          .filter(Boolean)
+      ),
+    ];
 
-    const activeBids = await Bid.find({ isActive: true, isBidOn: true })
-      .select('playerId bidder bidAmount timestamp isActive isBidOn')
-      .populate('playerId', 'name type role basePrice profilePicture')
-      .populate('bidder', 'name teamName _id abbreviation')
-      .sort({ bidAmount: -1 })
-      .lean();
+    const activeBids = myActivePlayerIds.length
+      ? await Bid.find({
+          isActive: true,
+          isBidOn: true,
+          playerId: { $in: myActivePlayerIds },
+        })
+          .select('playerId bidder bidAmount timestamp isActive isBidOn')
+          .populate('playerId', 'name type role basePrice profilePicture')
+          .populate('bidder', 'name teamName _id abbreviation purse')
+          .sort({ bidAmount: -1 })
+          .lean()
+      : [];
 
-    const abbr = (bidder) =>
-      bidder?.abbreviation ||
-      bidder?.teamName?.substring(0, 3).toUpperCase() ||
-      bidder?.name?.substring(0, 3).toUpperCase() ||
-      'N/A';
-
-    const bidsByPlayer = {};
+    const bidsByPlayerTopTwo = {};
     activeBids.forEach((bid) => {
       const pid = bid.playerId._id.toString();
-      if (!bidsByPlayer[pid]) bidsByPlayer[pid] = [];
-      bidsByPlayer[pid].push({
+      upsertTopTwoByPlayer(bidsByPlayerTopTwo, pid, {
         bidderId: bid.bidder._id.toString(),
         bidderName: bid.bidder.name,
-        bidderAbbreviation: abbr(bid.bidder),
+        bidderAbbreviation: bidderAbbr(bid.bidder),
         bidAmount: bid.bidAmount,
         timestamp: bid.timestamp,
+        bidderPurse: decimalToNumber(bid.bidder?.purse),
       });
-    });
-    Object.keys(bidsByPlayer).forEach((pid) => {
-      bidsByPlayer[pid].sort((a, b) => b.bidAmount - a.bidAmount);
     });
 
     const myId = userId.toString();
-    const myRunning = [];
+    const myRunningMap = new Map();
 
     activeBids.forEach((bid) => {
       if (bid.bidder._id.toString() !== myId) return;
       const playerId = bid.playerId._id.toString();
-      const playerBids = bidsByPlayer[playerId] || [];
-      const isHighest = playerBids[0]?.bidderId === myId;
+      const topTwo = bidsByPlayerTopTwo[playerId] || {};
+      const top1 = topTwo.top1 || null;
+      const top2 = topTwo.top2 || null;
+      const isHighest = top1?.bidderId === myId;
       const isSecond =
-        playerBids[1]?.bidderId === myId &&
-        playerBids[1]?.bidderId !== playerBids[0]?.bidderId;
+        top2?.bidderId === myId &&
+        top2?.bidderId !== top1?.bidderId;
 
       let otherBidderId = null;
       let otherBidderAbbr = null;
       let otherBidderName = null;
-      if (isHighest && playerBids[1]) {
-        otherBidderId = playerBids[1].bidderId;
-        otherBidderAbbr = playerBids[1].bidderAbbreviation;
-        otherBidderName = playerBids[1].bidderName;
-      } else if (isSecond && playerBids[0]) {
-        otherBidderId = playerBids[0].bidderId;
-        otherBidderAbbr = playerBids[0].bidderAbbreviation;
-        otherBidderName = playerBids[0].bidderName;
+      let otherBidderPurse = null;
+      if (isHighest && top2) {
+        otherBidderId = top2.bidderId;
+        otherBidderAbbr = top2.bidderAbbreviation;
+        otherBidderName = top2.bidderName;
+        otherBidderPurse = top2.bidderPurse;
+      } else if (isSecond && top1) {
+        otherBidderId = top1.bidderId;
+        otherBidderAbbr = top1.bidderAbbreviation;
+        otherBidderName = top1.bidderName;
+        otherBidderPurse = top1.bidderPurse;
       }
 
-      const existingPlayerBid = myRunning.find((b) => b.playerId.toString() === playerId);
+      const existingPlayerBid = myRunningMap.get(playerId);
       if (!existingPlayerBid || existingPlayerBid.bidAmount < bid.bidAmount) {
-        if (existingPlayerBid) {
-          const index = myRunning.indexOf(existingPlayerBid);
-          myRunning.splice(index, 1);
-        }
-        const oppPurse = otherBidderId != null ? purseByUserId.get(otherBidderId) ?? null : null;
-        myRunning.push({
+        myRunningMap.set(playerId, {
           playerId: bid.playerId._id,
           playerName: bid.playerId.name,
           playerType: bid.playerId.type,
@@ -1935,27 +2014,23 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
           otherBidderAbbr,
           otherBidderName,
           otherBidderId,
-          otherBidderPurse: oppPurse,
-          leadingBidAmount: playerBids[0]?.bidAmount ?? bid.bidAmount,
-          secondBidAmount: playerBids[1]?.bidAmount ?? null,
+          otherBidderPurse,
+          leadingBidAmount: top1?.bidAmount ?? bid.bidAmount,
+          secondBidAmount: top2?.bidAmount ?? null,
         });
       }
     });
+    const myRunning = Array.from(myRunningMap.values());
 
-    const bidNotifications = await BidNotification.find({ active: true })
+    const relevantNotifications = await BidNotification.find({
+      active: true,
+      $or: [{ currentBidder: myId }, { secondBidder: myId }],
+    })
       .sort({ timestamp: -1 })
-      .limit(50)
+      .limit(5)
       .lean();
 
-    const relevantNotifications = bidNotifications
-      .filter((n) => {
-        const cb = n.currentBidder != null ? String(n.currentBidder) : '';
-        const sb = n.secondBidder != null ? String(n.secondBidder) : '';
-        return cb === myId || sb === myId;
-      })
-      .slice(0, 5);
-
-    const queueMemberships = await bidQueueService.listMyQueueMemberships(me._id);
+    const queueMemberships = await getCachedQueueMemberships(me._id);
 
     const io = req.app.get('io');
     let demand = { globalTop: null, yourTop: null };
@@ -1963,12 +2038,12 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
       const topList = getTopWatchedPlayers(io, 5);
       if (topList.length > 0) {
         const t = topList[0];
-        const pl = await Player.findById(t.playerId).select('name profilePicture').lean();
+        const topPlayer = await getPlayerWatchCard(t.playerId);
         demand.globalTop = {
           playerId: t.playerId,
           count: t.count,
-          playerName: pl?.name || '?',
-          profilePicture: pl?.profilePicture || null,
+          playerName: topPlayer.playerName,
+          profilePicture: topPlayer.profilePicture,
         };
       }
       const myPidSet = new Set();
@@ -1984,12 +2059,12 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
         }
       }
       if (best != null && bestCount > 0) {
-        const pl = await Player.findById(best).select('name profilePicture').lean();
+        const topMine = await getPlayerWatchCard(best);
         demand.yourTop = {
           playerId: best,
           count: bestCount,
-          playerName: pl?.name || '?',
-          profilePicture: pl?.profilePicture || null,
+          playerName: topMine.playerName,
+          profilePicture: topMine.profilePicture,
         };
       }
     }

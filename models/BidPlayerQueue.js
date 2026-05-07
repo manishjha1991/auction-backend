@@ -29,6 +29,11 @@ const BidPlayerQueueSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 });
 
+// Hot-path indexes for queue APIs/services
+BidPlayerQueueSchema.index({ playerId: 1 }, { unique: true });
+BidPlayerQueueSchema.index({ "entries.userId": 1 });
+BidPlayerQueueSchema.index({ "entries.status": 1, updatedAt: -1 });
+
 BidPlayerQueueSchema.pre("save", function (next) {
   this.updatedAt = new Date();
   next();

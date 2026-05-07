@@ -26,6 +26,7 @@ const Tournament = require('../models/Tournament');
 const PlayerCareerSummary = require('../models/PlayerCareerSummary');
 const TeamHeadToHead = require('../models/TeamHeadToHead');
 const VenueMatchEntry = require('../models/VenueMatchEntry');
+const BidPlayerQueue = require('../models/BidPlayerQueue');
 
 /**
  * Venue ledger index plan — returned in POST /create-all as `venueMatchEntryIndexGuide`
@@ -154,6 +155,10 @@ router.post('/create-all', async (req, res) => {
     // 18. PLAYOFF FIXTURE COLLECTION INDEXES
     console.log('🏆 Creating PlayoffFixture indexes...');
     results.playoffFixtures = await createPlayoffFixtureIndexes();
+
+    // 18b. BID PLAYER QUEUE COLLECTION INDEXES
+    console.log('⏳ Creating BidPlayerQueue indexes...');
+    results.bidPlayerQueues = await createBidPlayerQueueIndexes();
 
     // 19. APP SETTINGS COLLECTION INDEXES
     console.log('⚙️ Creating AppSettings indexes...');
@@ -726,7 +731,10 @@ async function createBidNotificationIndexes() {
     { playerId: 1, timestamp: -1 },
     { playername: 1, timestamp: -1 },
     { playerId: 1, exitedUser: 1, timestamp: -1 }, // Hot path: dashboard last exit
-    { playerId: 1, playername: 1, timestamp: -1 }
+    { playerId: 1, playername: 1, timestamp: -1 },
+    // Hot path: my-auction-hub relevant notifications by user
+    { active: 1, currentBidder: 1, timestamp: -1 },
+    { active: 1, secondBidder: 1, timestamp: -1 }
   ];
 
   const results = [];
@@ -870,6 +878,26 @@ async function createPlayoffFixtureIndexes() {
   for (const index of indexes) {
     try {
       await PlayoffFixture.collection.createIndex(index);
+      results.push({ index, status: 'created' });
+    } catch (error) {
+      results.push({ index, status: 'error', error: error.message });
+    }
+  }
+  return results;
+}
+
+// BID PLAYER QUEUE COLLECTION INDEXES
+async function createBidPlayerQueueIndexes() {
+  const indexes = [
+    { playerId: 1 }, // unique in schema
+    { 'entries.userId': 1 },
+    { 'entries.status': 1, updatedAt: -1 },
+  ];
+
+  const results = [];
+  for (const index of indexes) {
+    try {
+      await BidPlayerQueue.collection.createIndex(index);
       results.push({ index, status: 'created' });
     } catch (error) {
       results.push({ index, status: 'error', error: error.message });
@@ -1058,7 +1086,7 @@ router.get('/stats', async (req, res) => {
       'playerstats', 'playercareersummaries', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
-      'venuematchentries',
+      'venuematchentries', 'bidplayerqueues',
       'useractivities'
     ];
 
@@ -1105,7 +1133,7 @@ router.post('/drop-all', async (req, res) => {
       'playerstats', 'playercareersummaries', 'traderequests', 'releaserequests', 'pickrequests',
       'comments', 'postlikes', 'notifications', 'bidnotifications', 'schedules',
       'userplayers', 'playofffixtures', 'appsettings', 'tournaments', 'retainedplayers',
-      'venuematchentries',
+      'venuematchentries', 'bidplayerqueues',
       'useractivities'
     ];
 

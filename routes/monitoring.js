@@ -7,6 +7,7 @@ const express = require('express');
 const router = express.Router();
 const { getPerformanceStats } = require('../utils/performanceMonitor');
 const { getCacheStats, getCacheKeysCount } = require('../utils/cacheMonitor');
+const { getRoutePerfSnapshot, resetRoutePerfStats } = require('../utils/routePerfMonitor');
 const mongoose = require('mongoose');
 
 /**
@@ -225,6 +226,57 @@ router.get('/health', async (req, res) => {
       success: false,
       error: error.message,
       stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined
+    });
+  }
+});
+
+/**
+ * GET /api/monitoring/route-performance
+ * Per-route latency metrics (rolling window)
+ */
+router.get('/route-performance', (req, res) => {
+  try {
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 200) : 50;
+    const contains = typeof req.query.contains === 'string' ? req.query.contains : '';
+    const method = typeof req.query.method === 'string' ? req.query.method : '';
+    const data = getRoutePerfSnapshot({ limit, contains, method });
+    res.json({
+      success: true,
+      data: {
+        routes: data,
+        filters: {
+          contains: contains || null,
+          method: method || null,
+          limit,
+        },
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /api/monitoring/route-performance/reset
+ * Reset rolling route-performance stats
+ */
+router.post('/route-performance/reset', (req, res) => {
+  try {
+    resetRoutePerfStats();
+    res.json({
+      success: true,
+      message: 'Route performance stats reset successfully',
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
     });
   }
 });

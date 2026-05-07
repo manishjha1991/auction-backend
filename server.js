@@ -134,6 +134,7 @@ app.use(cors({
 
 // Add request logging middleware - only in development (avoids blocking I/O in prod)
 const { getClientIp } = require('./utils/network');
+const { routePerfMiddleware } = require('./utils/routePerfMonitor');
 
 app.use((req, res, next) => {
   if (process.env.NODE_ENV !== 'production') {
@@ -146,6 +147,7 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
+app.use(routePerfMiddleware);
 
 // 🚀 PERFORMANCE: Add performance monitoring middleware (only in development)
 if (process.env.NODE_ENV !== 'production') {
