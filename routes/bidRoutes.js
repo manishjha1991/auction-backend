@@ -262,7 +262,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
     }
 
     // Fetch all active bids for the player
-    const activeBids = await Bid.find({ playerId, isActive: true })
+    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
       .select('bidder bidAmount')
       .sort({ bidAmount: -1 })
       .lean();
@@ -274,18 +274,36 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
     // Check if the user is an admin
     if (user.isAdmin) {
       if (activeBids.length > 1) {
-        const secondHighestBid = activeBids[1]; // Second-highest bidder
+        const highestBid = activeBids[0];
+        const secondHighestBid = activeBids.find(
+          (bid) => bid.bidder.toString() !== highestBid.bidder.toString()
+        );
+        if (!secondHighestBid) {
+          return res.status(400).json({ message: "No second-highest bidder to exit." });
+        }
+        const secondIsQueueProxy = await bidQueueService.isPromotedProxyBidder(
+          playerId,
+          secondHighestBid.bidder.toString()
+        );
+        if (secondIsQueueProxy) {
+          return res.status(400).json({
+            message:
+              "Skipped: second-highest bidder is queue-promoted (active proxy). Exit is allowed only for manual bidders in admin/system second-highest removal.",
+          });
+        }
         const secondHighestBidder = await User.findById(secondHighestBid.bidder);
 
         if (secondHighestBidder) {
           const lockedAmount = secondHighestBidder.currentBids.find(
             (bid) => bid.playerId.toString() === playerId
-          ).amount;
+          )?.amount || 0;
 
-          const purse = parseFloat(secondHighestBidder.purse.toString());
-          secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
-            (purse + lockedAmount).toString()
-          );
+          if (lockedAmount > 0) {
+            const purse = parseFloat(secondHighestBidder.purse.toString());
+            secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
+              (purse + lockedAmount).toString()
+            );
+          }
 
           // Remove the second-highest bid from their current bids
           secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
@@ -830,10 +848,26 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
     }
 
     // Fetch all active bids for the player
-    const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
+    const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).sort({ bidAmount: -1 });
     
     if (activeBids.length > 1) {
-      const secondHighestBid = activeBids[1]; // Second-highest bidder
+      const highestBid = activeBids[0];
+      const secondHighestBid = activeBids.find(
+        (bid) => bid.bidder.toString() !== highestBid.bidder.toString()
+      );
+      if (!secondHighestBid) {
+        return { message: "No second-highest bidder to exit." };
+      }
+      const secondIsQueueProxy = await bidQueueService.isPromotedProxyBidder(
+        playerId,
+        secondHighestBid.bidder.toString()
+      );
+      if (secondIsQueueProxy) {
+        return {
+          message:
+            "Skipped: second-highest bidder is queue-promoted (active proxy). Bulk/system exit only applies to manual bidders.",
+        };
+      }
       const secondHighestBidder = await User.findById(secondHighestBid.bidder);
 
       if (secondHighestBidder) {
@@ -1380,8 +1414,20 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
   if (!user)     return { playerId, userId, error: "User not found" };
 
   // 3) Fetch active bids (descending)
-  const activeBids = await Bid.find({ playerId, isActive: true }).sort({ bidAmount: -1 });
+  const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).sort({ bidAmount: -1 });
   if (!activeBids.length) return { playerId, userId, error: "No active bids" };
+
+  // Bulk/system exits should not remove queue-promoted bidders.
+  if (exitBy === 'system') {
+    const isQueueProxy = await bidQueueService.isPromotedProxyBidder(playerId, userId);
+    if (isQueueProxy) {
+      return {
+        playerId,
+        userId,
+        error: "Skipped: queue-promoted bidder (active proxy) is not eligible for bulk/system exit",
+      };
+    }
+  }
 
   // — Admin branch: remove second-highest bidder only —
   
