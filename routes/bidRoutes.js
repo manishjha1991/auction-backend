@@ -14,7 +14,7 @@ const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
 const { getClientIp } = require('../utils/network');
 const RetainedPlayer = require('../models/RetainedPlayer');
 const { invalidateCache } = require('../utils/cache');
-const { placeBidCore } = require('../services/bidPlacement');
+const { placeBidCore, countQueuedSlotsForUser, TYPE_LIMIT } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
 const NodeCache = require('node-cache');
@@ -124,6 +124,71 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   }
 
   try {
+    // Manual-bid guard: queue slots also consume active bid capacity.
+    // If a user already used remaining slots via queue, block new manual entry.
+    const playerForCapacity = await Player.findById(playerId).select('type');
+    if (playerForCapacity) {
+      const userForCapacity = await User.findById(authenticatedUserId).select('boughtPlayers currentBids');
+      const alreadyBiddingThisPlayer = !!userForCapacity?.currentBids?.some(
+        (bid) => bid.playerId.toString() === playerId
+      );
+
+      if (userForCapacity && !alreadyBiddingThisPlayer) {
+        const { totalQueued, byType } = await countQueuedSlotsForUser(authenticatedUserId, null);
+        const currentBidPlayerIds = (userForCapacity.currentBids || []).map((bid) => bid.playerId);
+        const [boughtPlayersOfThisType, playersOfThisTypeInCurrentBids] = await Promise.all([
+          Player.countDocuments({
+            _id: { $in: userForCapacity.boughtPlayers || [] },
+            type: playerForCapacity.type,
+          }),
+          Player.countDocuments({
+            _id: { $in: currentBidPlayerIds },
+            type: playerForCapacity.type,
+          }),
+        ]);
+
+        if (playerForCapacity.type === 'Gold' || playerForCapacity.type === 'Silver') {
+          const maxConcurrentBids = TYPE_LIMIT[playerForCapacity.type] - boughtPlayersOfThisType;
+          const queuedOfThisType = byType[playerForCapacity.type] || 0;
+          if (playersOfThisTypeInCurrentBids + queuedOfThisType >= maxConcurrentBids) {
+            return res.status(400).json({
+              message: `Manual bid blocked: your ${playerForCapacity.type} slots are already occupied by active bids + queue entries. Exit a ${playerForCapacity.type} bid/queue slot first.`,
+            });
+          }
+        } else if (playerForCapacity.type === 'Emerald' || playerForCapacity.type === 'Sapphire') {
+          const queuedOfThisType = byType[playerForCapacity.type] || 0;
+          const maxConcurrentTypeBids = TYPE_LIMIT[playerForCapacity.type] - boughtPlayersOfThisType;
+          if (playersOfThisTypeInCurrentBids + queuedOfThisType >= maxConcurrentTypeBids) {
+            return res.status(400).json({
+              message: `Manual bid blocked: your ${playerForCapacity.type} slots are already occupied by active bids + queue entries. Exit a ${playerForCapacity.type} bid/queue slot first.`,
+            });
+          }
+
+          const [combinedESBought, combinedESInCurrentBids] = await Promise.all([
+            Player.countDocuments({
+              _id: { $in: userForCapacity.boughtPlayers || [] },
+              type: { $in: ['Emerald', 'Sapphire'] },
+            }),
+            Player.countDocuments({
+              _id: { $in: currentBidPlayerIds },
+              type: { $in: ['Emerald', 'Sapphire'] },
+            }),
+          ]);
+          const queuedES = (byType.Emerald || 0) + (byType.Sapphire || 0);
+          const maxConcurrentESBids = 5 - combinedESBought;
+          if (combinedESInCurrentBids + queuedES >= maxConcurrentESBids) {
+            return res.status(400).json({
+              message: 'Manual bid blocked: Emerald + Sapphire slots are already occupied by active bids + queue entries. Exit one first.',
+            });
+          }
+        } else if ((userForCapacity.currentBids || []).length + totalQueued >= 6) {
+          return res.status(400).json({
+            message: 'Manual bid blocked: your concurrent bid slots are occupied by active bids + queue entries. Exit one first.',
+          });
+        }
+      }
+    }
+
     const blocked = await bidQueueService.shouldBlockManualBid(playerId, authenticatedUserId);
     if (blocked) {
       return res.status(409).json({

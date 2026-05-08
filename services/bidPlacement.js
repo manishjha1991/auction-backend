@@ -377,4 +377,4 @@ async function placeBidCore({
   }
 }
 
-module.exports = { placeBidCore, assertQueueJoinSlotLimits, countQueuedSlotsForUser };
+module.exports = { placeBidCore, assertQueueJoinSlotLimits, countQueuedSlotsForUser, TYPE_LIMIT };
