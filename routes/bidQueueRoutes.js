@@ -43,6 +43,12 @@ router.get("/:playerId", authenticateJWT, async (req, res) => {
       req.params.playerId,
       req.authenticatedUser._id
     );
+    // Self-heal: if a promoted user is still in duel and polling queue state,
+    // re-trigger proxy continuation so auto-bidding cannot remain stuck.
+    if (state?.you?.isPromotedProxy) {
+      const io = req.app.get("io");
+      await bidQueueService.triggerProxyAfterOpponentBid(req.params.playerId, io);
+    }
     res.json(state);
   } catch (e) {
     console.error(e);
