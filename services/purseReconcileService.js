@@ -12,7 +12,13 @@ function toNumber(v) {
   return Number(v?.toString?.() || 0);
 }
 
-async function reconcileUsersPurse({ userIds = null, includeAdmins = false, dryRun = false } = {}) {
+async function reconcileUsersPurse({
+  userIds = null,
+  includeAdmins = false,
+  dryRun = false,
+  logIfChanged = true,
+  logTag = "runtime",
+} = {}) {
   const userFilter = {};
   if (!includeAdmins) userFilter.isAdmin = { $ne: true };
   if (Array.isArray(userIds) && userIds.length > 0) {
@@ -93,6 +99,14 @@ async function reconcileUsersPurse({ userIds = null, includeAdmins = false, dryR
 
   if (!dryRun && ops.length) {
     await User.bulkWrite(ops);
+  }
+
+  if (logIfChanged && !dryRun && changes.length > 0) {
+    const preview = changes.slice(0, 10);
+    console.warn(
+      `[PURSE_RECONCILE][${logTag}] corrected ${changes.length} user purse(s).`,
+      preview
+    );
   }
 
   return {

@@ -372,6 +372,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
           await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin);
           await reconcileUsersPurse({
             userIds: [secondHighestBid.bidder, player.currentBidder].filter(Boolean),
+            logTag: "admin-exit",
           });
 
           return res.json({
@@ -472,7 +473,10 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
     });
 
     await bidQueueService.tryPromoteNextQueued(playerId, io);
-    await reconcileUsersPurse({ userIds: [userId, player.currentBidder].filter(Boolean) });
+    await reconcileUsersPurse({
+      userIds: [userId, player.currentBidder].filter(Boolean),
+      logTag: "user-exit",
+    });
     
     res.json({
       message: "You have exited the bid successfully. Locked amount refunded.",
@@ -576,8 +580,11 @@ router.post("/bid/sold", async (req, res) => {
           'currentBids.playerId': pid
         }).select('_id purse currentBids');
 
-        // 5. Mark all bids as inactive
-        await Bid.updateMany({ playerId: pid }, { $set: { isActive: false } });
+        // 5. Mark all bids as inactive and closed for this sold player
+        await Bid.updateMany(
+          { playerId: pid },
+          { $set: { isActive: false, isBidOn: false } }
+        );
 
         // 6. Check if there's already a UserPlayer doc
         const existingUserPlayer = await UserPlayer.findOne({
@@ -945,6 +952,7 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
         await bidQueueService.tryPromoteNextQueued(playerId, io);
         await reconcileUsersPurse({
           userIds: [secondHighestBid.bidder, player.currentBidder].filter(Boolean),
+          logTag: "system-exit",
         });
 
         return {
@@ -1122,8 +1130,11 @@ async function sellPlayer(playerId, io = null) {
       'currentBids.playerId': playerId
     }).select('_id purse currentBids');
 
-    // c) Deactivate all bids
-    await Bid.updateMany({ playerId: playerId }, { $set: { isActive: false } });
+    // c) Deactivate and close all bids for this sold player
+    await Bid.updateMany(
+      { playerId: playerId },
+      { $set: { isActive: false, isBidOn: false } }
+    );
 
     // d) ATOMIC OPERATION: Atomically check and create UserPlayer
     // Use findOneAndUpdate with upsert to atomically check if UserPlayer exists and create if not
@@ -1282,7 +1293,7 @@ async function sellPlayer(playerId, io = null) {
     }
 
     const reconcileIds = [highestBid.bidder, ...usersWithBidsOnThisPlayer.map((u) => u._id)];
-    await reconcileUsersPurse({ userIds: reconcileIds });
+    await reconcileUsersPurse({ userIds: reconcileIds, logTag: "sell-player" });
 
     await clearQueueAfterSold(playerId, highestBid.bidder, highestBid.bidAmount, io);
 
@@ -1499,7 +1510,10 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
 
   // Keep queue flow deterministic for bulk/system exits too.
   await bidQueueService.tryPromoteNextQueued(playerId, io);
-  await reconcileUsersPurse({ userIds: [userId, player.currentBidder].filter(Boolean) });
+  await reconcileUsersPurse({
+    userIds: [userId, player.currentBidder].filter(Boolean),
+    logTag: "bulk-exit",
+  });
 
   // Create and save notification
   const notificationData = {

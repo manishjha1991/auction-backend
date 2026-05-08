@@ -32,6 +32,7 @@ const {
   previewMigratePlayerTotals,
   executeMigratePlayerTotals,
 } = require('../utils/migratePlayerTotalsFromHistoricalDbs');
+const { reconcileUsersPurse } = require('../services/purseReconcileService');
 
 const AUCTION_RESET_COLLECTIONS = [
   'bidhistories',
@@ -51,6 +52,7 @@ const AUCTION_RESET_COLLECTIONS = [
 ];
 
 const VALID_TYPES = ['Sapphire', 'Emerald', 'Gold', 'Silver'];
+const RETAINED_TARGET_PRICE = 170000000;
 
 const toNumber = (value) => {
   if (!value) return 0;
@@ -1094,6 +1096,93 @@ router.post('/target/calculate', async (req, res) => {
     res
       .status(error.status || 500)
       .json({ message: error.message || 'Failed to calculate target' });
+  }
+});
+
+/**
+ * POST /api/admin-tools/consistency-check
+ * Admin-only read-only check for retained pricing and purses.
+ */
+router.post('/consistency-check', async (req, res) => {
+  try {
+    const { adminUserId } = req.body;
+    await requireAdmin(adminUserId);
+
+    const retained = await RetainedPlayer.find({ isActive: true }).lean();
+    const retainedPlayerIds = [...new Set(retained.map((r) => String(r.playerId)).filter(Boolean))];
+    const retainedUserIds = [...new Set(retained.map((r) => String(r.userId)).filter(Boolean))];
+
+    const [players, users, userPlayers] = await Promise.all([
+      Player.find({ _id: { $in: retainedPlayerIds } }).select('_id name').lean(),
+      User.find({ _id: { $in: retainedUserIds } }).select('_id name teamName').lean(),
+      UserPlayer.find({
+        isActive: true,
+        playerId: { $in: retainedPlayerIds },
+        userId: { $in: retainedUserIds },
+      })
+        .select('userId playerId bidValue')
+        .lean(),
+    ]);
+
+    const playerNameById = new Map(players.map((p) => [String(p._id), p.name]));
+    const userById = new Map(users.map((u) => [String(u._id), u]));
+    const upByKey = new Map(
+      userPlayers.map((up) => [
+        `${String(up.userId)}:${String(up.playerId)}`,
+        Number(up.bidValue || 0),
+      ])
+    );
+
+    const retainedIssues = [];
+    for (const row of retained) {
+      const uid = String(row.userId || '');
+      const pid = String(row.playerId || '');
+      const upVal = upByKey.get(`${uid}:${pid}`);
+      const retainedPriceField = row.retainedPrice == null ? null : Number(row.retainedPrice);
+      const retainedFieldMismatch =
+        retainedPriceField != null && retainedPriceField !== RETAINED_TARGET_PRICE;
+      const userPlayerMismatch = upVal == null || upVal !== RETAINED_TARGET_PRICE;
+      if (retainedFieldMismatch || userPlayerMismatch) {
+        const u = userById.get(uid) || {};
+        retainedIssues.push({
+          userId: uid,
+          userName: u.name || '',
+          teamName: u.teamName || '',
+          playerId: pid,
+          playerName: playerNameById.get(pid) || row.playerName || '',
+          retainedPriceField,
+          userPlayerBidValue: upVal ?? null,
+        });
+      }
+    }
+
+    const pursePreview = await reconcileUsersPurse({
+      dryRun: true,
+      includeAdmins: false,
+      logIfChanged: false,
+      logTag: 'consistency-check',
+    });
+
+    res.json({
+      success: true,
+      checkedAt: new Date().toISOString(),
+      retained: {
+        targetPrice: RETAINED_TARGET_PRICE,
+        activeCount: retained.length,
+        issueCount: retainedIssues.length,
+        issues: retainedIssues,
+      },
+      purse: {
+        checkedUsers: pursePreview.checked,
+        mismatchCount: pursePreview.changes.length,
+        mismatches: pursePreview.changes,
+      },
+    });
+  } catch (error) {
+    console.error('consistency-check error', error);
+    res
+      .status(error.status || 500)
+      .json({ message: error.message || 'Failed to run consistency check' });
   }
 });
 

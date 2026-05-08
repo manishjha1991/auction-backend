@@ -375,7 +375,10 @@ async function placeBidCore({
     }
 
     // Safety net: keep purse in sync for users involved on this player.
-    await reconcileUsersPurse({ userIds: [bidderId, ...otherActiveBidders] });
+    await reconcileUsersPurse({
+      userIds: [bidderId, ...otherActiveBidders],
+      logTag: "place-bid",
+    });
 
     return { ok: true, newBid, bidAmount, player, user };
   } catch (err) {

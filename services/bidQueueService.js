@@ -130,7 +130,7 @@ async function reconcileUsersOnPlayer(playerId) {
   }
   const userIds = [...ids].filter(Boolean);
   if (userIds.length > 0) {
-    await reconcileUsersPurse({ userIds });
+    await reconcileUsersPurse({ userIds, logTag: "bid-queue" });
   }
 }
 

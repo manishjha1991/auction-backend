@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
+const BidPlayerQueue = require('../models/BidPlayerQueue');
+
+const BASELINE_PURSE = 1000000000; // 100 Cr
+const CR_DIVISOR = 10000000;
 
 const toNumber = (value) => {
   if (!value) return 0;
@@ -15,7 +19,7 @@ const toNumber = (value) => {
 async function buildPurseUpdatePlan() {
   const [users, userPlayers] = await Promise.all([
     User.find({ isAdmin: { $ne: true } })
-      .select('_id name teamName purse')
+      .select('_id name teamName purse currentBids')
       .lean(),
     UserPlayer.find({ isActive: true })
       .select('userId bidValue')
@@ -32,6 +36,24 @@ async function buildPurseUpdatePlan() {
     userPlayerMap.get(key).push(up);
   });
 
+  const userIds = users.map((u) => u._id);
+  const queueDocs = await BidPlayerQueue.find({
+    'entries.userId': { $in: userIds },
+  })
+    .select('entries')
+    .lean();
+
+  const queueLocksByUser = new Map();
+  for (const doc of queueDocs) {
+    for (const entry of doc.entries || []) {
+      if (entry.status !== 'queued' && entry.status !== 'active_proxy') continue;
+      const key = entry.userId?.toString?.();
+      if (!key) continue;
+      const locked = Number(entry.lockedAmount) || 0;
+      queueLocksByUser.set(key, (queueLocksByUser.get(key) || 0) + locked);
+    }
+  }
+
   const updates = [];
   let totalUsers = 0;
   let usersToUpdate = 0;
@@ -43,19 +65,29 @@ async function buildPurseUpdatePlan() {
       (sum, up) => sum + (Number(up.bidValue) || 0),
       0
     );
+    const currentBidLocks = (user.currentBids || []).reduce(
+      (sum, bid) => sum + (Number(bid.amount) || 0),
+      0
+    );
+    const queuedLocks = queueLocksByUser.get(userId) || 0;
+    const totalCommitted = totalPlayerValue + currentBidLocks + queuedLocks;
 
     const currentPurseValue = toNumber(user.purse);
-    const currentPurseCr = currentPurseValue / 10000000;
-    const playersValueCr = totalPlayerValue / 10000000;
-    const newPurseCr = 100 - playersValueCr;
+    const currentPurseCr = currentPurseValue / CR_DIVISOR;
+    const playersValueCr = totalPlayerValue / CR_DIVISOR;
+    const bidLocksCr = currentBidLocks / CR_DIVISOR;
+    const queueLocksCr = queuedLocks / CR_DIVISOR;
+    const newPurseValue = BASELINE_PURSE - totalCommitted;
+    const newPurseCr = newPurseValue / CR_DIVISOR;
     const differenceCr = newPurseCr - currentPurseCr;
-    const newPurseValue = Math.max(newPurseCr, 0) * 10000000;
 
     updates.push({
       userId,
       teamName: user.teamName || user.name || 'Unknown',
       currentPurseCr,
       playersValueCr,
+      bidLocksCr,
+      queueLocksCr,
       newPurseCr,
       differenceCr,
       currentPurseValue,
