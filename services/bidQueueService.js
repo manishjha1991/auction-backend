@@ -338,6 +338,17 @@ async function runProxyContinuation(playerId, proxyUserId, io, options = {}) {
         io,
       });
       if (!res.ok) {
+        const msg = String(res.message || "").toLowerCase();
+        const nonFatal =
+          (typeof res.status === "number" && res.status >= 500) ||
+          msg.includes("consecutive bids") ||
+          msg.includes("only two bidders");
+        if (nonFatal) {
+          // Keep proxy active; next state change will re-trigger continuation.
+          outcome = "stop";
+          return;
+        }
+
         doc.entries.pull(entry._id);
         await doc.save();
         await forceExitProxyUser(proxyUserId, playerId, io);
