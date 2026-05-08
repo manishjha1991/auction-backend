@@ -167,7 +167,7 @@ async function pruneQueuedOverMax(playerId, io) {
     const player = await Player.findById(playerId);
     if (!player) return;
 
-    const highestBid = await Bid.findOne({ playerId, isActive: true })
+    const highestBid = await Bid.findOne({ playerId, isActive: true, isBidOn: true })
       .sort({ bidAmount: -1 })
       .select("bidAmount")
       .lean();
@@ -268,7 +268,7 @@ async function runProxyContinuation(playerId, proxyUserId, io) {
       }
 
       const player = await Player.findById(playerId);
-      const highest = await Bid.findOne({ playerId, isActive: true })
+      const highest = await Bid.findOne({ playerId, isActive: true, isBidOn: true })
         .sort({ bidAmount: -1 })
         .lean();
       if (!highest) {
@@ -338,7 +338,7 @@ async function tryPromoteNextQueued(playerId, io) {
       const head = doc.entries.find((e) => e.status === "queued");
       if (!head) return;
 
-      const highestBid = await Bid.findOne({ playerId, isActive: true })
+      const highestBid = await Bid.findOne({ playerId, isActive: true, isBidOn: true })
         .sort({ bidAmount: -1 })
         .lean();
 
@@ -442,7 +442,7 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       return { ok: false, status: 400, message: "You are already in the queue for this player." };
     }
 
-    const highestBid = await Bid.findOne({ playerId, isActive: true })
+    const highestBid = await Bid.findOne({ playerId, isActive: true, isBidOn: true })
       .sort({ bidAmount: -1 })
       .lean();
     const maxAssessment = assessQueueMaxBid(player, highestBid, maxBid);
@@ -540,7 +540,7 @@ async function updateQueueMax({ playerId, userId, maxBid, io }) {
     }
 
     const player = await Player.findById(playerId);
-    const highestBid = await Bid.findOne({ playerId, isActive: true })
+    const highestBid = await Bid.findOne({ playerId, isActive: true, isBidOn: true })
       .sort({ bidAmount: -1 })
       .lean();
     const maxAssessment = assessQueueMaxBid(player, highestBid, maxBid);
@@ -633,6 +633,101 @@ async function listMyQueueMemberships(userId) {
       label: mine.status === "active_proxy" ? "Auto-bidding (queue)" : `Queue #${position} of ${queued.length}`,
     });
   }
+  return out;
+}
+
+/**
+ * Admin queue monitor snapshot:
+ * - all players that currently have queued/proxy entries
+ * - queued users with max bids + position
+ * - active proxy user (if any)
+ * - current top active bid + bidder
+ */
+async function getAdminQueueOverview() {
+  const docs = await BidPlayerQueue.find({
+    entries: { $elemMatch: { status: { $in: ["queued", "active_proxy"] } } },
+  })
+    .populate("playerId", "name type profilePicture currentBid currentBidder isSold isActive")
+    .populate("entries.userId", "name teamName")
+    .lean();
+
+  const playerIds = docs
+    .map((d) => d.playerId?._id)
+    .filter(Boolean);
+
+  const topBidsRaw = playerIds.length
+    ? await Bid.find({
+        playerId: { $in: playerIds },
+        isActive: true,
+        isBidOn: true,
+      })
+        .sort({ playerId: 1, bidAmount: -1 })
+        .populate("bidder", "name teamName")
+        .lean()
+    : [];
+
+  const topBidByPlayer = new Map();
+  for (const bid of topBidsRaw) {
+    const pid = bid.playerId?.toString?.();
+    if (!pid || topBidByPlayer.has(pid)) continue;
+    topBidByPlayer.set(pid, bid);
+  }
+
+  const out = [];
+  for (const doc of docs) {
+    const player = doc.playerId;
+    if (!player) continue;
+
+    const queued = (doc.entries || [])
+      .filter((e) => e.status === "queued")
+      .sort((a, b) => new Date(a.joinedAt) - new Date(b.joinedAt))
+      .map((e, idx) => ({
+        userId: e.userId?._id?.toString?.() || e.userId?.toString?.() || null,
+        name: e.userId?.name || "Unknown",
+        teamName: e.userId?.teamName || "",
+        maxBid: e.maxBid,
+        lockedAmount: e.lockedAmount,
+        joinedAt: e.joinedAt,
+        position: idx + 1,
+      }));
+
+    const activeProxy = (doc.entries || []).find((e) => e.status === "active_proxy");
+    const topActive = topBidByPlayer.get(player._id.toString()) || null;
+
+    out.push({
+      playerId: player._id.toString(),
+      playerName: player.name || "?",
+      playerType: player.type || "",
+      profilePicture: player.profilePicture || null,
+      isSold: !!player.isSold,
+      isActive: player.isActive !== false,
+      queueCount: queued.length,
+      queued,
+      activeProxy: activeProxy
+        ? {
+            userId: activeProxy.userId?._id?.toString?.() || activeProxy.userId?.toString?.() || null,
+            name: activeProxy.userId?.name || "Unknown",
+            teamName: activeProxy.userId?.teamName || "",
+            maxBid: activeProxy.maxBid,
+          }
+        : null,
+      topActiveBid: topActive
+        ? {
+            amount: topActive.bidAmount,
+            bidderId: topActive.bidder?._id?.toString?.() || topActive.bidder?.toString?.() || null,
+            bidderName: topActive.bidder?.name || "",
+            bidderTeam: topActive.bidder?.teamName || "",
+          }
+        : null,
+      updatedAt: doc.updatedAt,
+    });
+  }
+
+  out.sort((a, b) => {
+    if (b.queueCount !== a.queueCount) return b.queueCount - a.queueCount;
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
+
   return out;
 }
 
@@ -789,7 +884,7 @@ async function afterBidPlaced(playerId, io) {
   const doc = await BidPlayerQueue.findOne({ playerId });
   if (!doc) return;
   const player = await Player.findById(playerId);
-  const highestBid = await Bid.findOne({ playerId, isActive: true })
+  const highestBid = await Bid.findOne({ playerId, isActive: true, isBidOn: true })
     .sort({ bidAmount: -1 })
     .lean();
 
@@ -823,6 +918,7 @@ module.exports = {
   leaveQueue,
   updateQueueMax,
   getQueueState,
+  getAdminQueueOverview,
   listMyQueueMemberships,
   isPromotedProxyBidder,
   resignActiveProxyToManual,

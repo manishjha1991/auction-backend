@@ -15,6 +15,20 @@ router.get("/counts", async (req, res) => {
   }
 });
 
+/** Admin: full queue overview for all players. */
+router.get("/admin/overview", authenticateJWT, async (req, res) => {
+  try {
+    if (!req.authenticatedUser?.isAdmin) {
+      return res.status(403).json({ message: "Only admin can view queue overview." });
+    }
+    const rows = await bidQueueService.getAdminQueueOverview();
+    res.json({ rows, total: rows.length });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 /** Stop queue auto-bid while staying in the auction; manual bids allowed again. */
 router.post("/:playerId/resign-proxy", authenticateJWT, async (req, res) => {
   try {
