@@ -151,7 +151,14 @@ async function processPlayer(pid) {
 }
 
 async function shouldSellNoNewBidSinceExit(player, windowMs) {
-  if (!player?.lastExitAt) return false;
+  if (!player) return false;
+  if (!player.lastExitAt) {
+    // Fallback: player can be in a single-bidder state without a recorded exit
+    // (e.g., no second bidder ever formed). In that case, use lastBidAt.
+    const lastBidTime = player.lastBidAt ? new Date(player.lastBidAt).getTime() : 0;
+    const now = Date.now();
+    return !!lastBidTime && now - lastBidTime >= windowMs;
+  }
   const lastExitTime = new Date(player.lastExitAt).getTime();
   const lastBidTime = player.lastBidAt ? new Date(player.lastBidAt).getTime() : 0;
   const now = Date.now();
@@ -358,9 +365,9 @@ async function exitOnlyWindowJob(windowMinutes) {
 
 /**
  * One-time 11:45 PM IST sweep:
- * Sell only players where second-highest already exited and exactly one bidder remains.
- * No waiting window check in this one-time sweep.
- * Does NOT perform new exits; sell-only sweep.
+ * Sell any unsold player that currently has exactly one active bidder.
+ * (Same intent as single-bid-only sell; no second-highest required.)
+ * Queue rows are cleared as part of sell flow.
  */
 async function oneTimeSellAfterExitSweep() {
   const settings = await getCronSettings();
@@ -385,8 +392,7 @@ async function oneTimeSellAfterExitSweep() {
         if (!player || player.isSold) return;
         const bidCountResult = await getBidderCount(playerId);
         const count = bidCountResult.count ?? 0;
-        if (count !== 0) return; // only single-bid left (second already exited)
-        if (!player.lastExitAt) return; // ensure second-highest exit happened earlier
+        if (count !== 0) return; // only one active bidder remains
         await sellPlayer(playerId, null);
         sold += 1;
       }
