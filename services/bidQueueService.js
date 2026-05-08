@@ -400,16 +400,21 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       .lean();
     const nextBid = computeNextBidAmount(player, highestBid);
     if (maxBid < nextBid) {
+      const currentTop = highestBid?.bidAmount ?? player.basePrice;
       return {
         ok: false,
         status: 400,
-        message: `Max bid must be at least the next bid amount (Rs ${nextBid}).`,
+        message: `Queue join blocked: your max bid (Rs ${maxBid}) is below required level. Current top is Rs ${currentTop} and next legal bid is Rs ${nextBid}. Set max >= Rs ${nextBid}.`,
       };
     }
 
     const purse = parseFloat(user.purse.toString());
     if (purse < maxBid) {
-      return { ok: false, status: 400, message: "Insufficient purse to lock your max bid." };
+      return {
+        ok: false,
+        status: 400,
+        message: `Queue join blocked: insufficient purse. Available purse is Rs ${purse}, but queue max lock requested is Rs ${maxBid}. Reduce max bid or increase purse.`,
+      };
     }
 
     user.purse = mongoose.Types.Decimal128.fromString(String(purse - maxBid));
