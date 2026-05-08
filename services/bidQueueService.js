@@ -51,6 +51,10 @@ async function reconcileQueuedActiveBidders(playerId) {
       if (e.status === "queued" && active.has(e.userId.toString())) {
         e.status = "active_proxy";
         changed = true;
+      } else if (e.status === "active_proxy" && !active.has(e.userId.toString())) {
+        // Repair stale proxy rows (e.g. failed promotion or prior inconsistency).
+        e.status = "queued";
+        changed = true;
       }
     }
     if (changed) {
@@ -336,6 +340,7 @@ async function runProxyContinuation(playerId, proxyUserId, io, options = {}) {
         deviceFingerprint: PROXY_FINGERPRINT,
         isSuspiciousIP: false,
         io,
+        allowLockedForProxy: true,
       });
       if (!res.ok) {
         const msg = String(res.message || "").toLowerCase();
@@ -415,10 +420,30 @@ async function tryPromoteNextQueued(playerId, io) {
         deviceFingerprint: PROXY_FINGERPRINT,
         isSuspiciousIP: false,
         io,
+        allowLockedForProxy: true,
       });
 
       if (!res.ok) {
         await revertPreparePromotedUser(head.userId, playerId, nextBid, lockedSnapshot);
+        const msg = String(res.message || "").toLowerCase();
+        const permanentlyIneligible =
+          res.status === 404 ||
+          (res.status === 403 && msg.includes("locked out")) ||
+          (res.status === 400 &&
+            (msg.includes("maximum limit") ||
+              msg.includes("maximum combined limit") ||
+              msg.includes("maximum of") ||
+              msg.includes("can bid on a maximum")));
+
+        if (permanentlyIneligible) {
+          // Head user can no longer be promoted; remove and continue queue.
+          headEntry.status = "queued";
+          await doc.save();
+          await removeQueuedEntryById(playerId, head._id, "ineligible_for_promotion", io);
+          continue;
+        }
+
+        // Temporary/unknown error: keep position and retry on next trigger.
         headEntry.status = "queued";
         await doc.save();
         return;

@@ -125,6 +125,7 @@ async function placeBidCore({
   deviceFingerprint,
   isSuspiciousIP,
   io,
+  allowLockedForProxy = false,
 }) {
   try {
     const player = await Player.findById(playerId);
@@ -139,7 +140,7 @@ async function placeBidCore({
     if (!user) {
       return { ok: false, status: 404, message: "User not found." };
     }
-    if (user.isLocked) {
+    if (user.isLocked && !allowLockedForProxy) {
       return {
         ok: false,
         status: 403,
