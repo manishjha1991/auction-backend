@@ -10,6 +10,7 @@ const {
 const { withPlayerBidLock } = require("../utils/bidQueueMutex");
 const { placeBidCore, assertQueueJoinSlotLimits } = require("./bidPlacement");
 const { getSocketIdsForUsers } = require("../utils/socketUserMap");
+const { reconcileUsersPurse } = require("./purseReconcileService");
 
 const PROXY_FINGERPRINT = "bid-queue-proxy";
 const PROXY_IP = "127.0.0.1";
@@ -116,6 +117,23 @@ async function countQueued(playerId) {
   return doc.entries.filter((e) => e.status === "queued").length;
 }
 
+async function reconcileUsersOnPlayer(playerId) {
+  const [activeBids, queueDoc] = await Promise.all([
+    Bid.find({ playerId, isActive: true, isBidOn: true }).select("bidder").lean(),
+    BidPlayerQueue.findOne({ playerId }).select("entries.userId entries.status").lean(),
+  ]);
+  const ids = new Set(activeBids.map((b) => b.bidder?.toString()).filter(Boolean));
+  for (const e of queueDoc?.entries || []) {
+    if (e.status === "queued" || e.status === "active_proxy") {
+      ids.add(e.userId?.toString?.());
+    }
+  }
+  const userIds = [...ids].filter(Boolean);
+  if (userIds.length > 0) {
+    await reconcileUsersPurse({ userIds });
+  }
+}
+
 /** Broadcast queue depth for player list + popups (includes queueCount for clients). */
 async function emitBidQueueUpdated(io, playerId, queueCountKnown) {
   if (!io) return;
@@ -200,6 +218,7 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
     playerName: player?.name || "",
     refund,
   });
+  await reconcileUsersOnPlayer(playerId);
   await emitBidQueueUpdated(io, playerId);
 }
 
@@ -293,6 +312,7 @@ async function forceExitProxyUser(userId, playerId, io) {
     currentBidder: player.currentBidder,
     playerName: player.name,
   });
+  await reconcileUsersOnPlayer(playerId);
   await emitBidQueueUpdated(io, playerId);
 }
 
@@ -611,6 +631,7 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       playerName: player.name,
       maxBid,
     });
+    await reconcileUsersOnPlayer(playerId);
     const qn = doc.entries.filter((e) => e.status === "queued").length;
     await emitBidQueueUpdated(io, playerId, qn);
 
@@ -702,6 +723,7 @@ async function updateQueueMax({ playerId, userId, maxBid, io }) {
     await user.save();
     await doc.save();
 
+    await reconcileUsersOnPlayer(playerId);
     await emitBidQueueUpdated(io, playerId);
     return { ok: true };
   });

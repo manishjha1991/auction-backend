@@ -16,6 +16,7 @@ const RetainedPlayer = require('../models/RetainedPlayer');
 const { invalidateCache } = require('../utils/cache');
 const { placeBidCore, countQueuedSlotsForUser, TYPE_LIMIT } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
+const { reconcileUsersPurse } = require('../services/purseReconcileService');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
 const NodeCache = require('node-cache');
 
@@ -57,6 +58,53 @@ async function hasQueuedWaiters(playerId) {
     .select('_id')
     .lean();
   return !!waitingDoc;
+}
+
+async function clearQueueAfterSold(playerId, soldToUserId, soldPrice = 0, io = null) {
+  const doc = await BidPlayerQueue.findOne({ playerId });
+  if (!doc || !Array.isArray(doc.entries) || doc.entries.length === 0) return;
+
+  // Refund queue locks:
+  // - normal queued users: full lockedAmount
+  // - sold winner if still queued by stale state: refund (lockedAmount - soldPrice)
+  // - active_proxy rows: no queue-lock refund here (handled via currentBids lifecycle)
+  const refundMap = new Map();
+  for (const e of doc.entries) {
+    if (e.status !== "queued" && e.status !== "active_proxy") continue;
+    const uid = e.userId?.toString?.();
+    if (!uid) continue;
+    const locked = Number(e.lockedAmount || 0);
+    let refund = 0;
+
+    if (e.status === "queued") {
+      if (soldToUserId && uid === soldToUserId.toString()) {
+        refund = Math.max(0, locked - Number(soldPrice || 0));
+      } else {
+        refund = locked;
+      }
+    }
+
+    if (refund > 0) {
+      refundMap.set(uid, (refundMap.get(uid) || 0) + refund);
+    }
+  }
+
+  if (refundMap.size > 0) {
+    const users = await User.find({ _id: { $in: [...refundMap.keys()] } });
+    for (const user of users) {
+      const uid = user._id.toString();
+      const refund = refundMap.get(uid) || 0;
+      if (refund <= 0) continue;
+      const purse = parseFloat(user.purse.toString());
+      user.purse = mongoose.Types.Decimal128.fromString(String(purse + refund));
+      await user.save();
+    }
+  }
+
+  await BidPlayerQueue.deleteOne({ _id: doc._id });
+  if (io) {
+    io.emit("bid_queue_updated", { playerId: playerId.toString(), queueCount: 0 });
+  }
 }
 
 // Place a bid
@@ -281,16 +329,6 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
         if (!secondHighestBid) {
           return res.status(400).json({ message: "No second-highest bidder to exit." });
         }
-        const secondIsQueueProxy = await bidQueueService.isPromotedProxyBidder(
-          playerId,
-          secondHighestBid.bidder.toString()
-        );
-        if (secondIsQueueProxy) {
-          return res.status(400).json({
-            message:
-              "Skipped: second-highest bidder is queue-promoted (active proxy). Exit is allowed only for manual bidders in admin/system second-highest removal.",
-          });
-        }
         const secondHighestBidder = await User.findById(secondHighestBid.bidder);
 
         if (secondHighestBidder) {
@@ -332,6 +370,9 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
 
           const ioAdmin = req.app.get("io");
           await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin);
+          await reconcileUsersPurse({
+            userIds: [secondHighestBid.bidder, player.currentBidder].filter(Boolean),
+          });
 
           return res.json({
             message: "The second-highest bidder has exited successfully. Locked amount refunded.",
@@ -431,6 +472,7 @@ router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
     });
 
     await bidQueueService.tryPromoteNextQueued(playerId, io);
+    await reconcileUsersPurse({ userIds: [userId, player.currentBidder].filter(Boolean) });
     
     res.json({
       message: "You have exited the bid successfully. Locked amount refunded.",
@@ -858,16 +900,6 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
       if (!secondHighestBid) {
         return { message: "No second-highest bidder to exit." };
       }
-      const secondIsQueueProxy = await bidQueueService.isPromotedProxyBidder(
-        playerId,
-        secondHighestBid.bidder.toString()
-      );
-      if (secondIsQueueProxy) {
-        return {
-          message:
-            "Skipped: second-highest bidder is queue-promoted (active proxy). Bulk/system exit only applies to manual bidders.",
-        };
-      }
       const secondHighestBidder = await User.findById(secondHighestBid.bidder);
 
       if (secondHighestBidder) {
@@ -911,6 +943,9 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
 
         // If queue has waiters and exactly one active bidder remains, auto-promote next queued user.
         await bidQueueService.tryPromoteNextQueued(playerId, io);
+        await reconcileUsersPurse({
+          userIds: [secondHighestBid.bidder, player.currentBidder].filter(Boolean),
+        });
 
         return {
           message: "The second-highest bidder has exited successfully. Locked amount refunded.",
@@ -1246,6 +1281,11 @@ async function sellPlayer(playerId, io = null) {
       throw new Error(`Player status verification failed for ${playerId}`);
     }
 
+    const reconcileIds = [highestBid.bidder, ...usersWithBidsOnThisPlayer.map((u) => u._id)];
+    await reconcileUsersPurse({ userIds: reconcileIds });
+
+    await clearQueueAfterSold(playerId, highestBid.bidder, highestBid.bidAmount, io);
+
     return {
       playerID: playerId,
       status: 'success',
@@ -1417,18 +1457,6 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
   const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true }).sort({ bidAmount: -1 });
   if (!activeBids.length) return { playerId, userId, error: "No active bids" };
 
-  // Bulk/system exits should not remove queue-promoted bidders.
-  if (exitBy === 'system') {
-    const isQueueProxy = await bidQueueService.isPromotedProxyBidder(playerId, userId);
-    if (isQueueProxy) {
-      return {
-        playerId,
-        userId,
-        error: "Skipped: queue-promoted bidder (active proxy) is not eligible for bulk/system exit",
-      };
-    }
-  }
-
   // — Admin branch: remove second-highest bidder only —
   
 
@@ -1471,6 +1499,7 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
 
   // Keep queue flow deterministic for bulk/system exits too.
   await bidQueueService.tryPromoteNextQueued(playerId, io);
+  await reconcileUsersPurse({ userIds: [userId, player.currentBidder].filter(Boolean) });
 
   // Create and save notification
   const notificationData = {

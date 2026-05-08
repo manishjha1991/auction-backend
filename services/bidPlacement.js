@@ -8,6 +8,7 @@ const BidNotification = require("../models/BidNotification");
 const { invalidateCache } = require("../utils/cache");
 const { computeNextBidAmount } = require("../utils/bidIncrement");
 const { getSocketIdsForUsers } = require("../utils/socketUserMap");
+const { reconcileUsersPurse } = require("./purseReconcileService");
 
 const TYPE_LIMIT = {
   Sapphire: 2,
@@ -372,6 +373,9 @@ async function placeBidCore({
         playerName: player.name,
       });
     }
+
+    // Safety net: keep purse in sync for users involved on this player.
+    await reconcileUsersPurse({ userIds: [bidderId, ...otherActiveBidders] });
 
     return { ok: true, newBid, bidAmount, player, user };
   } catch (err) {
