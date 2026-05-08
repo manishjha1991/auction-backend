@@ -267,7 +267,8 @@ async function forceExitProxyUser(userId, playerId, io) {
   await emitBidQueueUpdated(io, playerId);
 }
 
-async function runProxyContinuation(playerId, proxyUserId, io) {
+async function runProxyContinuation(playerId, proxyUserId, io, options = {}) {
+  const fanout = options.fanout !== false;
   for (let i = 0; i < 40; i++) {
     let outcome = "stop";
     await withPlayerBidLock(playerId, async () => {
@@ -322,6 +323,9 @@ async function runProxyContinuation(playerId, proxyUserId, io) {
     });
 
     await afterBidPlaced(playerId, io);
+    if (outcome === "bid" && fanout) {
+      await triggerProxyAfterOpponentBid(playerId, io, proxyUserId);
+    }
 
     if (outcome === "stop") return;
     if (outcome === "promote") {
@@ -403,14 +407,50 @@ async function tryPromoteNextQueued(playerId, io) {
   }
 }
 
-async function triggerProxyAfterOpponentBid(playerId, io) {
+async function triggerProxyAfterOpponentBid(playerId, io, excludeUserId = null) {
   if (!isEnabled()) return;
-  const doc = await BidPlayerQueue.findOne({ playerId }).select("entries").lean();
-  if (!doc?.entries?.length) return;
-  const proxy = doc.entries.find((e) => e.status === "active_proxy");
-  if (!proxy) return;
-  const proxyUserId = proxy.userId.toString();
-  await runProxyContinuation(playerId, proxyUserId, io);
+  let excluded = excludeUserId ? excludeUserId.toString() : null;
+
+  // Iterate until bidding stabilizes so proxy-vs-proxy duels keep responding
+  // automatically (or until safety cap is reached).
+  for (let round = 0; round < 200; round += 1) {
+    const doc = await BidPlayerQueue.findOne({ playerId }).select("entries").lean();
+    if (!doc?.entries?.length) return;
+
+    const proxyUserIds = [
+      ...new Set(
+        doc.entries
+          .filter((e) => e.status === "active_proxy")
+          .map((e) => e.userId.toString())
+          .filter((uid) => !excluded || uid !== excluded)
+      ),
+    ];
+    if (!proxyUserIds.length) return;
+
+    const beforeTop = await Bid.findOne({ playerId, isActive: true, isBidOn: true })
+      .sort({ bidAmount: -1 })
+      .select("bidder bidAmount")
+      .lean();
+
+    for (const proxyUserId of proxyUserIds) {
+      await runProxyContinuation(playerId, proxyUserId, io, { fanout: false });
+    }
+
+    const afterTop = await Bid.findOne({ playerId, isActive: true, isBidOn: true })
+      .sort({ bidAmount: -1 })
+      .select("bidder bidAmount")
+      .lean();
+
+    const changed =
+      (beforeTop?.bidder?.toString?.() || null) !== (afterTop?.bidder?.toString?.() || null) ||
+      (beforeTop?.bidAmount ?? null) !== (afterTop?.bidAmount ?? null);
+
+    if (!changed) return;
+
+    // Exclude initiator only in first round to prevent immediate bounceback;
+    // then allow all active proxies to participate.
+    excluded = null;
+  }
 }
 
 async function enqueueUser({ playerId, userId, maxBid, io }) {
