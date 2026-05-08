@@ -13,6 +13,7 @@ const { getSocketIdsForUsers } = require("../utils/socketUserMap");
 
 const PROXY_FINGERPRINT = "bid-queue-proxy";
 const PROXY_IP = "127.0.0.1";
+const MIN_QUEUE_BID_STEPS = 4;
 
 function isEnabled() {
   return process.env.ENABLE_BID_QUEUE === "true";
@@ -32,6 +33,52 @@ async function getActiveBidderIds(playerId) {
     .select("bidder")
     .lean();
   return [...new Set(bids.map((b) => b.bidder.toString()))];
+}
+
+function getNthNextLegalBid(player, highestBid, n) {
+  let cursor = highestBid || null;
+  let target = player.basePrice;
+  for (let i = 0; i < n; i += 1) {
+    target = computeNextBidAmount(player, cursor);
+    cursor = { bidAmount: target };
+  }
+  return target;
+}
+
+function assessQueueMaxBid(player, highestBid, maxBid) {
+  const nextBid = computeNextBidAmount(player, highestBid || null);
+  const currentTop = highestBid?.bidAmount ?? player.basePrice;
+  const minAllowedMax = getNthNextLegalBid(player, highestBid || null, MIN_QUEUE_BID_STEPS);
+
+  // Walk legal ladder to see if maxBid is exactly on a valid bid step.
+  let cursor = highestBid || null;
+  let legalStepsCovered = 0;
+  let isExactLegalStep = false;
+  let nearestLowerLegal = currentTop;
+  let nearestHigherLegal = nextBid;
+
+  for (let i = 0; i < 500; i += 1) {
+    const next = computeNextBidAmount(player, cursor);
+    nearestHigherLegal = next;
+    if (next > maxBid) break;
+    legalStepsCovered += 1;
+    nearestLowerLegal = next;
+    if (next === maxBid) {
+      isExactLegalStep = true;
+      break;
+    }
+    cursor = { bidAmount: next };
+  }
+
+  return {
+    nextBid,
+    currentTop,
+    minAllowedMax,
+    legalStepsCovered,
+    isExactLegalStep,
+    nearestLowerLegal,
+    nearestHigherLegal,
+  };
 }
 
 async function countQueued(playerId) {
@@ -398,13 +445,26 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
     const highestBid = await Bid.findOne({ playerId, isActive: true })
       .sort({ bidAmount: -1 })
       .lean();
-    const nextBid = computeNextBidAmount(player, highestBid);
-    if (maxBid < nextBid) {
-      const currentTop = highestBid?.bidAmount ?? player.basePrice;
+    const maxAssessment = assessQueueMaxBid(player, highestBid, maxBid);
+    if (maxBid < maxAssessment.nextBid) {
       return {
         ok: false,
         status: 400,
-        message: `Queue join blocked: your max bid (Rs ${maxBid}) is below required level. Current top is Rs ${currentTop} and next legal bid is Rs ${nextBid}. Set max >= Rs ${nextBid}.`,
+        message: `Queue join blocked: your max bid (Rs ${maxBid}) is below required level. Current top is Rs ${maxAssessment.currentTop} and next legal bid is Rs ${maxAssessment.nextBid}. Set max >= Rs ${maxAssessment.nextBid}.`,
+      };
+    }
+    if (!maxAssessment.isExactLegalStep) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Queue join blocked: max bid must match legal bid ladder. Nearest valid bids are Rs ${maxAssessment.nearestLowerLegal} or Rs ${maxAssessment.nearestHigherLegal}.`,
+      };
+    }
+    if (maxAssessment.legalStepsCovered < MIN_QUEUE_BID_STEPS) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Queue join blocked: max bid must cover at least next ${MIN_QUEUE_BID_STEPS} legal bid steps. Current top is Rs ${maxAssessment.currentTop}, so minimum allowed max is Rs ${maxAssessment.minAllowedMax}.`,
       };
     }
 
@@ -483,9 +543,27 @@ async function updateQueueMax({ playerId, userId, maxBid, io }) {
     const highestBid = await Bid.findOne({ playerId, isActive: true })
       .sort({ bidAmount: -1 })
       .lean();
-    const nextBid = computeNextBidAmount(player, highestBid);
-    if (maxBid < nextBid) {
-      return { ok: false, status: 400, message: `Max must be at least next bid Rs ${nextBid}.` };
+    const maxAssessment = assessQueueMaxBid(player, highestBid, maxBid);
+    if (maxBid < maxAssessment.nextBid) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Max update blocked: your max bid (Rs ${maxBid}) is below next legal bid Rs ${maxAssessment.nextBid}.`,
+      };
+    }
+    if (!maxAssessment.isExactLegalStep) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Max update blocked: value must match legal bid ladder. Nearest valid bids are Rs ${maxAssessment.nearestLowerLegal} or Rs ${maxAssessment.nearestHigherLegal}.`,
+      };
+    }
+    if (maxAssessment.legalStepsCovered < MIN_QUEUE_BID_STEPS) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Max update blocked: keep at least next ${MIN_QUEUE_BID_STEPS} legal bid steps buffer. Current top is Rs ${maxAssessment.currentTop}; minimum allowed max is Rs ${maxAssessment.minAllowedMax}.`,
+      };
     }
 
     const delta = maxBid - entry.maxBid;
