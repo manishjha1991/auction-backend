@@ -119,10 +119,23 @@ async function getAllQueuedCountsByPlayer() {
 
 async function shouldBlockManualBid(playerId, bidderId) {
   if (!isEnabled()) return false;
-  const n = await countQueued(playerId);
-  if (n === 0) return false;
-  const active = await getActiveBidderIds(playerId);
-  return !active.includes(bidderId.toString());
+  const [active, doc] = await Promise.all([
+    getActiveBidderIds(playerId),
+    BidPlayerQueue.findOne({ playerId }).select("entries.status").lean(),
+  ]);
+  const activeCount = active.length;
+  const isActiveBidder = active.includes(bidderId.toString());
+  if (isActiveBidder) return false;
+
+  const queueCount =
+    doc?.entries?.reduce((acc, e) => (e.status === "queued" ? acc + 1 : acc), 0) || 0;
+  const hasActiveProxy = !!doc?.entries?.some((e) => e.status === "active_proxy");
+
+  // Block third-party manual bids while queue exists, and while a promoted queue proxy
+  // is still in an active 2-bidder duel.
+  if (queueCount > 0) return true;
+  if (hasActiveProxy && activeCount >= 2) return true;
+  return false;
 }
 
 async function refundPurse(userId, amount) {
@@ -758,7 +771,8 @@ async function getQueueState(playerId, viewerUserId) {
     (a, b) => new Date(a.joinedAt) - new Date(b.joinedAt)
   );
   const queueCount = queued.length;
-  const manualBidsFrozen = queueCount > 0;
+  const hasActiveProxy = !!doc?.entries?.some((e) => e.status === "active_proxy");
+  const manualBidsFrozen = queueCount > 0 || (hasActiveProxy && activeBidderCount >= 2);
   const youQueued = viewerUserId
     ? queued.find((e) => e.userId._id.toString() === viewerUserId.toString()) || null
     : null;

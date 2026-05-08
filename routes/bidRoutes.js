@@ -193,7 +193,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
     if (blocked) {
       return res.status(409).json({
         message:
-          "Manual bidding is paused for this player while users are in the bid queue. Join the queue or wait until it clears. Only the two active bidders may bid.",
+          "Manual bidding is paused for this player while queue/proxy bidding is active. Join the queue or wait for an exit. Only the two active bidders may bid.",
       });
     }
 
