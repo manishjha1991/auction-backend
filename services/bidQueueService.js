@@ -35,6 +35,31 @@ async function getActiveBidderIds(playerId) {
   return [...new Set(bids.map((b) => b.bidder.toString()))];
 }
 
+/**
+ * Self-heal stale queue state:
+ * if a user is already an active bidder on this player but still marked "queued",
+ * promote that row to "active_proxy" so auto-bid continuation can run.
+ */
+async function reconcileQueuedActiveBidders(playerId) {
+  if (!isEnabled()) return false;
+  let changed = false;
+  await withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc?.entries?.length) return;
+    const active = new Set(await getActiveBidderIds(playerId));
+    for (const e of doc.entries) {
+      if (e.status === "queued" && active.has(e.userId.toString())) {
+        e.status = "active_proxy";
+        changed = true;
+      }
+    }
+    if (changed) {
+      await doc.save();
+    }
+  });
+  return changed;
+}
+
 function getNthNextLegalBid(player, highestBid, n) {
   let cursor = highestBid || null;
   let target = player.basePrice;
@@ -409,6 +434,7 @@ async function tryPromoteNextQueued(playerId, io) {
 
 async function triggerProxyAfterOpponentBid(playerId, io, excludeUserId = null) {
   if (!isEnabled()) return;
+  await reconcileQueuedActiveBidders(playerId);
   let excluded = excludeUserId ? excludeUserId.toString() : null;
 
   // Iterate until bidding stabilizes so proxy-vs-proxy duels keep responding
@@ -785,6 +811,7 @@ async function getAdminQueueOverview() {
 }
 
 async function getQueueState(playerId, viewerUserId) {
+  await reconcileQueuedActiveBidders(playerId);
   const activeBidderIds = await getActiveBidderIds(playerId);
   const activeBidderCount = activeBidderIds.length;
   const queueJoinAllowed = activeBidderCount === 2;
