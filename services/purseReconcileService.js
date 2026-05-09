@@ -60,12 +60,21 @@ async function reconcileUsersPurse({
     .lean();
   const soldPlayerIdSet = new Set(soldPlayers.map((p) => p._id.toString()));
   const queueByUser = new Map();
+  const queueProxyByUserPlayer = new Map();
   for (const doc of queueDocs) {
     if (soldPlayerIdSet.has(doc.playerId?.toString?.())) continue;
+    const pid = doc.playerId?.toString?.();
     for (const entry of doc.entries || []) {
       if (entry.status !== "queued" && entry.status !== "active_proxy") continue;
       const key = entry.userId.toString();
-      queueByUser.set(key, (queueByUser.get(key) || 0) + toNumber(entry.lockedAmount));
+      const amount = toNumber(entry.lockedAmount);
+      if (entry.status === "queued") {
+        queueByUser.set(key, (queueByUser.get(key) || 0) + amount);
+      } else {
+        const byPlayer = queueProxyByUserPlayer.get(key) || new Map();
+        byPlayer.set(pid || "__unknown__", (byPlayer.get(pid || "__unknown__") || 0) + amount);
+        queueProxyByUserPlayer.set(key, byPlayer);
+      }
     }
   }
 
@@ -79,7 +88,21 @@ async function reconcileUsersPurse({
       (sum, bid) => sum + toNumber(bid.amount),
       0
     );
-    const queuedLocked = queueByUser.get(uid) || 0;
+    const queuedWaitingLocked = queueByUser.get(uid) || 0;
+    const currentBidByPlayer = new Map();
+    for (const bid of user.currentBids || []) {
+      const pid = bid.playerId?.toString?.();
+      if (!pid) continue;
+      currentBidByPlayer.set(pid, (currentBidByPlayer.get(pid) || 0) + toNumber(bid.amount));
+    }
+    // For active_proxy rows, count only reserve above already-locked current bid.
+    let activeProxyReserve = 0;
+    const proxyByPlayer = queueProxyByUserPlayer.get(uid) || new Map();
+    proxyByPlayer.forEach((proxyAmount, pid) => {
+      const currentAmount = currentBidByPlayer.get(pid) || 0;
+      activeProxyReserve += Math.max(0, proxyAmount - currentAmount);
+    });
+    const queuedLocked = queuedWaitingLocked + activeProxyReserve;
     const expected = BASELINE_PURSE - spentBought - currentBidLocks - queuedLocked;
     const actual = toNumber(user.purse);
     if (actual !== expected) {
