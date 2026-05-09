@@ -151,6 +151,15 @@ router.get("/:playerId/bids", async (req, res) => {
 
     // 3. Get the top two bids
     const lastTwoBids = allBids ? allBids.slice(0, 2) : [];
+    const winnerId = player.currentBidder ? String(player.currentBidder) : null;
+    const fallbackWinnerBidId = player.isSold && lastTwoBids.length > 0 ? String(lastTwoBids[0]._id) : null;
+    const isWinnerBid = (bid) => {
+      const bidderId = bid?.bidder?._id ? String(bid.bidder._id) : String(bid?.bidder || "");
+      if (!player.isSold) return false;
+      if (winnerId && bidderId === winnerId) return true;
+      // Fallback for older/inconsistent sold rows where currentBidder was not persisted correctly.
+      return !!(fallbackWinnerBidId && String(bid?._id) === fallbackWinnerBidId);
+    };
 
     // 4. Respond with player's info + top bids + all bids
     res.status(200).json({
@@ -179,14 +188,16 @@ router.get("/:playerId/bids", async (req, res) => {
         bidder: bid.bidder,
         bidAmount: bid.bidAmount,
         createdAt: bid.timestamp,
-        isBidOn: bid.isBidOn
+        isWinner: isWinnerBid(bid),
+        isBidOn: bid.isBidOn || isWinnerBid(bid),
       })),
       allBids: allBids.map((bid) => ({
         id: bid._id,
         bidder: bid.bidder,
         bidAmount: bid.bidAmount,
         createdAt: bid.timestamp,
-        isBidOn: bid.isBidOn
+        isWinner: isWinnerBid(bid),
+        isBidOn: bid.isBidOn || isWinnerBid(bid),
       })),
     });
   } catch (error) {
