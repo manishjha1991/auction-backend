@@ -25,6 +25,7 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const MatchResult = require('../models/MatchResult');
 const Tournament = require('../models/Tournament');
+const RetainedPlayer = require('../models/RetainedPlayer');
 const multer = require('multer');
 const path = require('path');
 // Configure Multer for file uploads
@@ -778,12 +779,15 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
       .lean();
     const userIds = users.map((u) => u._id);
 
-    const [userPlayers, queueDocs] = await Promise.all([
+    const [userPlayers, queueDocs, retainedPlayers] = await Promise.all([
       UserPlayer.find({ isActive: true, userId: { $in: userIds } })
         .select('userId playerId bidValue')
         .lean(),
       BidPlayerQueue.find({ 'entries.userId': { $in: userIds } })
         .select('playerId entries')
+        .lean(),
+      RetainedPlayer.find({ isActive: true, userId: { $in: userIds } })
+        .select('userId playerId retainedValue')
         .lean(),
     ]);
 
@@ -804,6 +808,9 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
       .select('_id name type isSold currentBid currentBidder')
       .lean();
     const playerById = new Map(players.map((p) => [p._id.toString(), p]));
+    const retainedPairSet = new Set(
+      retainedPlayers.map((r) => `${r.userId?.toString?.()}-${r.playerId?.toString?.()}`)
+    );
 
     const soldSpendByUser = new Map();
     const soldRowsByUser = new Map();
@@ -814,11 +821,13 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
       const rows = soldRowsByUser.get(uid) || [];
       const pid = up.playerId?.toString?.();
       const p = pid ? playerById.get(pid) : null;
+      const retainedKey = `${uid}-${pid || ''}`;
       rows.push({
         playerId: pid || null,
         playerName: p?.name || '-',
         playerType: p?.type || '',
         amount: toNumber(up.bidValue),
+        isRetained: retainedPairSet.has(retainedKey),
       });
       soldRowsByUser.set(uid, rows);
     });
@@ -916,6 +925,7 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
         },
         counts: {
           soldPlayers: (soldRowsByUser.get(uid) || []).length,
+          retainedSoldPlayers: (soldRowsByUser.get(uid) || []).filter((r) => r.isRetained).length,
           activeBidSlots: (u.currentBids || []).length,
           queueEntries: (queueRowsByUser.get(uid) || []).length,
         },
