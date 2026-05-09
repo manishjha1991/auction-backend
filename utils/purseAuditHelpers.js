@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
 const BidPlayerQueue = require('../models/BidPlayerQueue');
+const Player = require('../models/Player');
 
 const BASELINE_PURSE = 1000000000; // 100 Cr
 const CR_DIVISOR = 10000000;
@@ -40,11 +41,17 @@ async function buildPurseUpdatePlan() {
   const queueDocs = await BidPlayerQueue.find({
     'entries.userId': { $in: userIds },
   })
-    .select('entries')
+    .select('playerId entries')
     .lean();
+  const queuePlayerIds = [...new Set(queueDocs.map((d) => d.playerId).filter(Boolean))];
+  const soldPlayers = await Player.find({ _id: { $in: queuePlayerIds }, isSold: true })
+    .select('_id')
+    .lean();
+  const soldPlayerIdSet = new Set(soldPlayers.map((p) => p._id.toString()));
 
   const queueLocksByUser = new Map();
   for (const doc of queueDocs) {
+    if (soldPlayerIdSet.has(doc.playerId?.toString?.())) continue;
     for (const entry of doc.entries || []) {
       if (entry.status !== 'queued' && entry.status !== 'active_proxy') continue;
       const key = entry.userId?.toString?.();
