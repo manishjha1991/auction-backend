@@ -1669,46 +1669,53 @@ async function lockUnderLimitAll(options = {}) {
     // ── 2. SCAN EVERY USER ───────────────────────────────────────────────────
     const users = await User.find({}, { boughtPlayers: 1, currentBids: 1, isAdmin: 1 }).lean();
 
-    const toLock  = [];     // array of ObjectId
+    const toLockSet = new Set(); // ObjectId strings
     const details = [];     // { userId, reason, data }
 
     for (const user of users) {
       if (user.isAdmin) continue;
-      const playerIds = [
-        ...user.boughtPlayers,
-        ...user.currentBids.map(b => b.playerId),
-      ];
+      const boughtPlayerIds = user.boughtPlayers || [];
+      const biddingPlayerIds = (user.currentBids || []).map((b) => b.playerId);
+      const playerIds = [...boughtPlayerIds, ...biddingPlayerIds];
+      const userIdStr = user._id.toString();
 
       // shortcut: owns nothing → fails the minimum test immediately
       if (playerIds.length === 0) {
-        toLock.push(user._id);
+        toLockSet.add(userIdStr);
         details.push({ userId: user._id, reason: 'noPlayers' });
         continue;
       }
 
-      // fetch only the player types once
-      const players = await Player.find(
-        { _id: { $in: playerIds } },
-        { type: 1 }
-      ).lean();
+      // Fetch bought and bidding player types separately to avoid double-counting.
+      const [boughtPlayers, biddingPlayers] = await Promise.all([
+        Player.find(
+          { _id: { $in: boughtPlayerIds } },
+          { type: 1 }
+        ).lean(),
+        Player.find(
+          { _id: { $in: biddingPlayerIds } },
+          { type: 1 }
+        ).lean(),
+      ]);
 
-      const counts = players.reduce((acc, p) => {
+      const boughtCounts = boughtPlayers.reduce((acc, p) => {
+        acc[p.type] = (acc[p.type] || 0) + 1;
+        return acc;
+      }, {});
+      const biddingCounts = biddingPlayers.reduce((acc, p) => {
         acc[p.type] = (acc[p.type] || 0) + 1;
         return acc;
       }, {});
 
       // ── 2-a. Check Gold type minimum requirement ─────────────────────────────
       if (checkGold) {
-        const goldBought = counts['Gold'] || 0;
-        const goldBidding = user.currentBids.filter(bid => {
-          // Count only Gold players in current bids
-          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Gold';
-        }).length;
+        const goldBought = boughtCounts['Gold'] || 0;
+        const goldBidding = biddingCounts['Gold'] || 0;
         const goldTotal = goldBought + goldBidding;
         
         // Lock user if they have less than minimum 8 Gold total
         if (goldTotal < GOLD_MINIMUM_TOTAL) {
-          toLock.push(user._id);
+          toLockSet.add(userIdStr);
           details.push({
             userId: user._id,
             reason: 'goldRequirement',
@@ -1733,12 +1740,10 @@ async function lockUnderLimitAll(options = {}) {
         });
 
         // Count all Silver players in boughtPlayers (includes retained)
-        const silverBought = counts['Silver'] || 0;
+        const silverBought = boughtCounts['Silver'] || 0;
         
         // Count Silver players in current bids
-        const silverBidding = user.currentBids.filter(bid => {
-          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Silver';
-        }).length;
+        const silverBidding = biddingCounts['Silver'] || 0;
         
         const silverTotal = silverBought + silverBidding;
         
@@ -1748,7 +1753,7 @@ async function lockUnderLimitAll(options = {}) {
         // Example: 1 retained + 4 bidding = 5 total ✗ (LOCK)
         // Example: 0 retained + 5 bidding = 5 total ✗ (LOCK)
         if (silverTotal < SILVER_MINIMUM_TOTAL) {
-          toLock.push(user._id);
+          toLockSet.add(userIdStr);
           details.push({
             userId: user._id,
             reason: 'silverRequirement',
@@ -1766,15 +1771,10 @@ async function lockUnderLimitAll(options = {}) {
 
       // ── 2-c. Check Sapphire + Emerald combined requirement ──────────────────
       if (checkSapphireEmerald) {
-        const sapphireBought = counts['Sapphire'] || 0;
-        const emeraldBought = counts['Emerald'] || 0;
-
-        const sapphireBidding = user.currentBids.filter(bid => {
-          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Sapphire';
-        }).length;
-        const emeraldBidding = user.currentBids.filter(bid => {
-          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Emerald';
-        }).length;
+        const sapphireBought = boughtCounts['Sapphire'] || 0;
+        const emeraldBought = boughtCounts['Emerald'] || 0;
+        const sapphireBidding = biddingCounts['Sapphire'] || 0;
+        const emeraldBidding = biddingCounts['Emerald'] || 0;
 
         const sapphireTotal = sapphireBought + sapphireBidding;
         const emeraldTotal = emeraldBought + emeraldBidding;
@@ -1785,7 +1785,7 @@ async function lockUnderLimitAll(options = {}) {
           emeraldTotal < EMERALD_MINIMUM_TOTAL ||
           sapphireEmeraldTotal < SAPPHIRE_EMERALD_MINIMUM_TOTAL
         ) {
-          toLock.push(user._id);
+          toLockSet.add(userIdStr);
           details.push({
             userId: user._id,
             reason: 'sapphireEmeraldRequirement',
@@ -1810,12 +1810,21 @@ async function lockUnderLimitAll(options = {}) {
     }
 
     // ── 3. BULK UPDATE ───────────────────────────────────────────────────────
+    const toLock = Array.from(toLockSet).map((id) => new mongoose.Types.ObjectId(id));
     if (toLock.length) {
       await User.updateMany(
         { _id: { $in: toLock } },
         { $set: { isLocked: true } }
       );
     }
+    // Auto-unlock users who now satisfy enabled lock checks.
+    await User.updateMany(
+      {
+        isAdmin: { $ne: true },
+        _id: { $nin: toLock },
+      },
+      { $set: { isLocked: false } }
+    );
 
     // ── 4. RESPONSE ──────────────────────────────────────────────────────────
     const goldLocked = details.filter(d => d.reason === 'goldRequirement').length;
