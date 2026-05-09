@@ -592,7 +592,7 @@ async function lockUnderLimitJob() {
 // Requirement: 11:50 PM–12:45 AM with 5-minute check; after 12:45 AM run same logic every 2 minutes till 2:00 AM
 
 // 23:15 IST nightly – sell players that never received a counter bid
-cron.schedule('0 15 23 * * *', sellingSingleBidSinceStarting, {
+cron.schedule('0 0 23 * * *', sellingSingleBidSinceStarting, {
   timezone: 'Asia/Kolkata',
 });
 

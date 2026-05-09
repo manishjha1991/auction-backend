@@ -297,6 +297,10 @@ async function createPlayerIndexes() {
     // Complex filtering
     { isActive: 1, isSold: 1, type: 1, role: 1 },
     { isActive: 1, tradeLocked: 1 }
+    ,
+    // Sold winner lookup / sold card drill-downs
+    { isSold: 1, currentBidder: 1 },
+    { currentBidder: 1, isSold: 1, currentBid: -1 }
   ];
 
   const results = [];
@@ -892,6 +896,10 @@ async function createBidPlayerQueueIndexes() {
     { playerId: 1 }, // unique in schema
     { 'entries.userId': 1 },
     { 'entries.status': 1, updatedAt: -1 },
+    // Hot path: queue waiter existence check per player (e.g. hasQueuedWaiters)
+    { playerId: 1, 'entries.status': 1 },
+    // Hot path: user queue dashboard with status filtering
+    { 'entries.userId': 1, 'entries.status': 1 },
   ];
 
   const results = [];
@@ -1003,6 +1011,9 @@ async function createRetainedPlayerIndexes() {
     { userId: 1, retainedAt: -1 },
     { playerType: 1, isActive: 1 },
     { playerRole: 1, isActive: 1 }
+    ,
+    // Hot path: user+player active retention checks in admin/audit/report flows
+    { userId: 1, playerId: 1, isActive: 1 }
   ];
 
   const results = [];
