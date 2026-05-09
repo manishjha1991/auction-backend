@@ -459,7 +459,7 @@ router.get("/purses", async (req, res) => {
     // OPTIMIZATION: Fetch all data in parallel with single queries (excluding admin users)
     // 🚀 PERFORMANCE: All queries already use .lean() - optimized!
     const [users, allUserPlayers, allActiveBids, matchResults, worldCupTournaments] = await Promise.all([
-      User.find({ isAdmin: { $ne: true } }).select("name teamName purse _id").lean(),
+      User.find({ isAdmin: { $ne: true } }).select("name teamName purse _id currentBids").lean(),
       UserPlayer.find({ isActive: true })
         .select('userId playerId bidValue')
         .populate("playerId", "name type role profilePicture")
@@ -481,6 +481,7 @@ router.get("/purses", async (req, res) => {
     // OPTIMIZATION: Create lookup maps for O(1) access
     const userPlayersMap = new Map();
     const activeBidsMap = new Map();
+    const playerDetailsById = new Map();
     
     // Group user players by userId
     allUserPlayers.forEach(up => {
@@ -488,6 +489,9 @@ router.get("/purses", async (req, res) => {
         userPlayersMap.set(up.userId.toString(), []);
       }
       userPlayersMap.get(up.userId.toString()).push(up);
+      if (up.playerId?._id) {
+        playerDetailsById.set(up.playerId._id.toString(), up.playerId);
+      }
     });
     
     // Group active bids by bidder
@@ -496,7 +500,28 @@ router.get("/purses", async (req, res) => {
         activeBidsMap.set(bid.bidder._id.toString(), []);
       }
       activeBidsMap.get(bid.bidder._id.toString()).push(bid);
+      if (bid.playerId?._id) {
+        playerDetailsById.set(bid.playerId._id.toString(), bid.playerId);
+      }
     });
+
+    // Ensure purse screen includes all user.currentBids players,
+    // even if some bid rows are not present in allActiveBids snapshot.
+    const currentBidPlayerIds = new Set();
+    users.forEach((u) => {
+      (u.currentBids || []).forEach((b) => {
+        if (b?.playerId) currentBidPlayerIds.add(b.playerId.toString());
+      });
+    });
+    const missingPlayerIds = [...currentBidPlayerIds].filter((id) => !playerDetailsById.has(id));
+    if (missingPlayerIds.length > 0) {
+      const missingPlayers = await Player.find({ _id: { $in: missingPlayerIds } })
+        .select("name type role profilePicture")
+        .lean();
+      missingPlayers.forEach((p) => {
+        if (p?._id) playerDetailsById.set(p._id.toString(), p);
+      });
+    }
 
     // Precompute team-level win/loss counts once (avoid filtering full match list per user)
     const teamOutcomeMap = new Map();
@@ -552,14 +577,6 @@ router.get("/purses", async (req, res) => {
       const userPlayers = userPlayersMap.get(user._id.toString()) || [];
       const activeBids = activeBidsMap.get(user._id.toString()) || [];
 
-        // Group bids by playerId and select the highest bid for each player
-        const highestBidsByPlayer = activeBids.reduce((acc, bid) => {
-          if (!acc[bid.playerId._id] || acc[bid.playerId._id].bidAmount < bid.bidAmount) {
-            acc[bid.playerId._id] = bid; // Keep the highest bid for this player
-          }
-          return acc;
-        }, {});
-
         // Map sold players (from UserPlayer)
         const soldPlayers = userPlayers.map((entry) => ({
           id: entry.playerId._id,
@@ -573,18 +590,22 @@ router.get("/purses", async (req, res) => {
           biddingBy: null,
         }));
 
-        // Map all actively bid players (using highest bid per player)
-        const biddingPlayers = Object.values(highestBidsByPlayer).map((bid) => ({
-          id: bid.playerId._id,
-          name: bid.playerId.name,
+        // Map all actively locked bids from user.currentBids (source of truth for purse locks)
+        const biddingPlayers = (user.currentBids || []).map((currentBid) => {
+          const playerId = currentBid?.playerId?.toString?.() || currentBid?.playerId;
+          const player = playerDetailsById.get(playerId?.toString?.() || "");
+          return {
+          id: playerId || null,
+          name: player?.name || "Unknown Player",
           boughtValue: null, // Not yet sold, so no bought value
-          type: bid.playerId.type,
-          role: bid.playerId.role,
-          profilePicture: bid.playerId.profilePicture || null,
+          type: player?.type || null,
+          role: player?.role || null,
+          profilePicture: player?.profilePicture || null,
           isBidOn: true, // Actively being bid on
-          biddingPrice: bid.bidAmount,
+          biddingPrice: Number(currentBid?.amount || 0),
           biddingBy: user.name, // User placing the bid
-        }));
+        };
+      });
 
         const normalizedUserTeam = normalizeTeamName(user.teamName);
         const teamOutcome = teamOutcomeMap.get(user.teamName) || { wins: 0, losses: 0 };
