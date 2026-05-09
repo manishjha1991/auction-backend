@@ -380,6 +380,9 @@ async function runProxyContinuation(playerId, proxyUserId, io, options = {}) {
         outcome = "promote";
         return;
       }
+      // Keep active_proxy lock aligned with real current exposure on this player.
+      entry.lockedAmount = nextBid;
+      await doc.save();
       outcome = "bid";
     });
 
@@ -431,6 +434,7 @@ async function tryPromoteNextQueued(playerId, io) {
 
       await preparePromotedUser(head.userId, playerId, head, nextBid);
       headEntry.status = "active_proxy";
+      headEntry.lockedAmount = nextBid;
       await doc.save();
 
       const res = await placeBidCore({
@@ -445,6 +449,7 @@ async function tryPromoteNextQueued(playerId, io) {
 
       if (!res.ok) {
         await revertPreparePromotedUser(head.userId, playerId, nextBid, lockedSnapshot);
+        headEntry.lockedAmount = lockedSnapshot;
         const msg = String(res.message || "").toLowerCase();
         const permanentlyIneligible =
           res.status === 404 ||

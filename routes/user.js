@@ -835,6 +835,7 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
     const queueRowsByUser = new Map();
     const queueWaitingByUser = new Map();
     const queueProxyByUser = new Map();
+    const queueProxyByUserPlayer = new Map();
     const queueProxyPlayerIdsByUser = new Map();
 
     queueDocs.forEach((doc) => {
@@ -861,6 +862,9 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
           queueWaitingByUser.set(uid, (queueWaitingByUser.get(uid) || 0) + amount);
         } else if (status === 'active_proxy') {
           queueProxyByUser.set(uid, (queueProxyByUser.get(uid) || 0) + amount);
+          const byPlayer = queueProxyByUserPlayer.get(uid) || new Map();
+          byPlayer.set(pid || '__unknown__', (byPlayer.get(pid || '__unknown__') || 0) + amount);
+          queueProxyByUserPlayer.set(uid, byPlayer);
           const set = queueProxyPlayerIdsByUser.get(uid) || new Set();
           if (pid) set.add(pid);
           queueProxyPlayerIdsByUser.set(uid, set);
@@ -874,6 +878,7 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
 
       let manualBidLocked = 0;
       let queuePromotedBidLocked = 0;
+      const promotedBidByPlayer = new Map();
       const currentBidRows = [];
 
       (u.currentBids || []).forEach((b) => {
@@ -881,7 +886,10 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
         const amount = toNumber(b.amount);
         const player = pid ? playerById.get(pid) : null;
         const fromQueuePromotion = !!(pid && queueProxyPlayerIds.has(pid));
-        if (fromQueuePromotion) queuePromotedBidLocked += amount;
+        if (fromQueuePromotion) {
+          queuePromotedBidLocked += amount;
+          promotedBidByPlayer.set(pid, (promotedBidByPlayer.get(pid) || 0) + amount);
+        }
         else manualBidLocked += amount;
         currentBidRows.push({
           playerId: pid || null,
@@ -895,7 +903,14 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
 
       const soldSpent = soldSpendByUser.get(uid) || 0;
       const queueLockedWaiting = queueWaitingByUser.get(uid) || 0;
-      const queueLockedProxyReserve = queueProxyByUser.get(uid) || 0;
+      const queueProxyGross = queueProxyByUser.get(uid) || 0;
+      const queueProxyByPlayer = queueProxyByUserPlayer.get(uid) || new Map();
+      // For active_proxy rows, only count additional reserve beyond already-locked promoted bid.
+      let queueLockedProxyReserve = 0;
+      queueProxyByPlayer.forEach((proxyAmount, pid) => {
+        const promotedAmount = promotedBidByPlayer.get(pid) || 0;
+        queueLockedProxyReserve += Math.max(0, proxyAmount - promotedAmount);
+      });
       const committedTotal =
         soldSpent +
         manualBidLocked +
@@ -921,6 +936,7 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
           queuePromotedBidLocked,
           queueLockedWaiting,
           queueLockedProxyReserve,
+          queueLockedProxyGross: queueProxyGross,
           committedTotal,
         },
         counts: {
@@ -950,6 +966,7 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
         acc.queuePromotedBidLocked += t.breakdown.queuePromotedBidLocked;
         acc.queueLockedWaiting += t.breakdown.queueLockedWaiting;
         acc.queueLockedProxyReserve += t.breakdown.queueLockedProxyReserve;
+        acc.queueLockedProxyGross += t.breakdown.queueLockedProxyGross;
         acc.committedTotal += t.breakdown.committedTotal;
         return acc;
       },
@@ -963,6 +980,7 @@ router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
         queuePromotedBidLocked: 0,
         queueLockedWaiting: 0,
         queueLockedProxyReserve: 0,
+        queueLockedProxyGross: 0,
         committedTotal: 0,
       }
     );
