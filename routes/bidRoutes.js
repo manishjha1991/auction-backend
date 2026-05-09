@@ -1932,12 +1932,37 @@ router.get('/users-dashboard', async (req, res) => {
         bucket[playerId] = { top1: bidRow, top2: null };
         return;
       }
-      if (!current.top1 || bidRow.bidAmount > current.top1.bidAmount) {
+      if (!current.top1) {
+        current.top1 = bidRow;
+        return;
+      }
+      if (current.top1.bidderId === bidRow.bidderId) {
+        if (bidRow.bidAmount > current.top1.bidAmount) {
+          current.top1 = bidRow;
+        }
+        return;
+      }
+      if (!current.top2) {
+        if (bidRow.bidAmount > current.top1.bidAmount) {
+          current.top2 = current.top1;
+          current.top1 = bidRow;
+        } else {
+          current.top2 = bidRow;
+        }
+        return;
+      }
+      if (current.top2.bidderId === bidRow.bidderId) {
+        if (bidRow.bidAmount > current.top2.bidAmount) {
+          current.top2 = bidRow;
+        }
+        return;
+      }
+      if (bidRow.bidAmount > current.top1.bidAmount) {
         current.top2 = current.top1;
         current.top1 = bidRow;
         return;
       }
-      if (!current.top2 || bidRow.bidAmount > current.top2.bidAmount) {
+      if (bidRow.bidAmount > current.top2.bidAmount) {
         current.top2 = bidRow;
       }
     };
@@ -1991,13 +2016,26 @@ router.get('/users-dashboard', async (req, res) => {
       });
     });
 
-    // Group active bids by bidder (user) with winning/losing status
+    const allowedBidderIdsByPlayer = {};
+    Object.keys(bidsByPlayerTopTwo).forEach((playerId) => {
+      const topTwo = bidsByPlayerTopTwo[playerId] || {};
+      const ids = new Set();
+      if (topTwo.top1?.bidderId) ids.add(topTwo.top1.bidderId);
+      if (topTwo.top2?.bidderId) ids.add(topTwo.top2.bidderId);
+      allowedBidderIdsByPlayer[playerId] = ids;
+    });
+
+    // Group only top-two active bids by bidder (user) with winning/losing status
     const bidsByUser = {};
     const bidsByUserPlayerMap = {};
     
     activeBids.forEach(bid => {
       const bidderId = bid.bidder._id.toString();
       const playerId = bid.playerId._id.toString();
+      const allowedForPlayer = allowedBidderIdsByPlayer[playerId];
+      if (!allowedForPlayer || !allowedForPlayer.has(bidderId)) {
+        return;
+      }
       const topTwo = bidsByPlayerTopTwo[playerId] || {};
       const top1 = topTwo.top1 || null;
       const top2 = topTwo.top2 || null;
@@ -2093,12 +2131,37 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
         bucket[playerId] = { top1: bidRow, top2: null };
         return;
       }
-      if (!current.top1 || bidRow.bidAmount > current.top1.bidAmount) {
+      if (!current.top1) {
+        current.top1 = bidRow;
+        return;
+      }
+      if (current.top1.bidderId === bidRow.bidderId) {
+        if (bidRow.bidAmount > current.top1.bidAmount) {
+          current.top1 = bidRow;
+        }
+        return;
+      }
+      if (!current.top2) {
+        if (bidRow.bidAmount > current.top1.bidAmount) {
+          current.top2 = current.top1;
+          current.top1 = bidRow;
+        } else {
+          current.top2 = bidRow;
+        }
+        return;
+      }
+      if (current.top2.bidderId === bidRow.bidderId) {
+        if (bidRow.bidAmount > current.top2.bidAmount) {
+          current.top2 = bidRow;
+        }
+        return;
+      }
+      if (bidRow.bidAmount > current.top1.bidAmount) {
         current.top2 = current.top1;
         current.top1 = bidRow;
         return;
       }
-      if (!current.top2 || bidRow.bidAmount > current.top2.bidAmount) {
+      if (bidRow.bidAmount > current.top2.bidAmount) {
         current.top2 = bidRow;
       }
     };
@@ -2186,6 +2249,14 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
         bidderPurse: decimalToNumber(bid.bidder?.purse),
       });
     });
+    const allowedBidderIdsByPlayer = {};
+    Object.keys(bidsByPlayerTopTwo).forEach((playerId) => {
+      const topTwo = bidsByPlayerTopTwo[playerId] || {};
+      const ids = new Set();
+      if (topTwo.top1?.bidderId) ids.add(topTwo.top1.bidderId);
+      if (topTwo.top2?.bidderId) ids.add(topTwo.top2.bidderId);
+      allowedBidderIdsByPlayer[playerId] = ids;
+    });
 
     const myId = userId.toString();
     const myRunningMap = new Map();
@@ -2193,6 +2264,8 @@ router.get('/my-auction-hub/:userId', async (req, res) => {
     activeBids.forEach((bid) => {
       if (bid.bidder._id.toString() !== myId) return;
       const playerId = bid.playerId._id.toString();
+      const allowedForPlayer = allowedBidderIdsByPlayer[playerId];
+      if (!allowedForPlayer || !allowedForPlayer.has(myId)) return;
       const topTwo = bidsByPlayerTopTwo[playerId] || {};
       const top1 = topTwo.top1 || null;
       const top2 = topTwo.top2 || null;
