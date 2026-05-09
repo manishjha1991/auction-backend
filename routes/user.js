@@ -17,8 +17,10 @@ const Player = require('../models/Player');
 const Bid = require('../models/Bid');
 const Fixture = require('../models/Fixture');
 const UserPlayer = require('../models/UserPlayer');
+const BidPlayerQueue = require('../models/BidPlayerQueue');
 const TradeRequest = require('../models/TradeRequest');
 const ReleaseRequest = require('../models/ReleaseRequest');
+const authenticateJWT = require('../middleware/authJWT');
 const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const MatchResult = require('../models/MatchResult');
@@ -754,6 +756,215 @@ router.get("/purses", async (req, res) => {
   } catch (error) {
     console.error("Error fetching user purse data:", error);
     res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+router.get('/admin/purse-audit', authenticateJWT, async (req, res) => {
+  try {
+    if (!req.authenticatedUser?.isAdmin) {
+      return res.status(403).json({ message: 'Only admin can view purse audit.' });
+    }
+
+    const BASELINE_PURSE = 1000000000;
+    const toNumber = (value) => {
+      if (value == null) return 0;
+      if (typeof value === 'number') return value;
+      if (typeof value === 'string') return Number(value) || 0;
+      return Number(value?.toString?.() || 0);
+    };
+
+    const users = await User.find({ isAdmin: { $ne: true } })
+      .select('_id name teamName purse currentBids')
+      .lean();
+    const userIds = users.map((u) => u._id);
+
+    const [userPlayers, queueDocs] = await Promise.all([
+      UserPlayer.find({ isActive: true, userId: { $in: userIds } })
+        .select('userId playerId bidValue')
+        .lean(),
+      BidPlayerQueue.find({ 'entries.userId': { $in: userIds } })
+        .select('playerId entries')
+        .lean(),
+    ]);
+
+    const playerIds = new Set();
+    users.forEach((u) => {
+      (u.currentBids || []).forEach((b) => {
+        if (b?.playerId) playerIds.add(b.playerId.toString());
+      });
+    });
+    userPlayers.forEach((up) => {
+      if (up.playerId) playerIds.add(up.playerId.toString());
+    });
+    queueDocs.forEach((doc) => {
+      if (doc.playerId) playerIds.add(doc.playerId.toString());
+    });
+
+    const players = await Player.find({ _id: { $in: [...playerIds] } })
+      .select('_id name type isSold currentBid currentBidder')
+      .lean();
+    const playerById = new Map(players.map((p) => [p._id.toString(), p]));
+
+    const soldSpendByUser = new Map();
+    const soldRowsByUser = new Map();
+    userPlayers.forEach((up) => {
+      const uid = up.userId?.toString?.();
+      if (!uid) return;
+      soldSpendByUser.set(uid, (soldSpendByUser.get(uid) || 0) + toNumber(up.bidValue));
+      const rows = soldRowsByUser.get(uid) || [];
+      const pid = up.playerId?.toString?.();
+      const p = pid ? playerById.get(pid) : null;
+      rows.push({
+        playerId: pid || null,
+        playerName: p?.name || '-',
+        playerType: p?.type || '',
+        amount: toNumber(up.bidValue),
+      });
+      soldRowsByUser.set(uid, rows);
+    });
+
+    const queueRowsByUser = new Map();
+    const queueWaitingByUser = new Map();
+    const queueProxyByUser = new Map();
+    const queueProxyPlayerIdsByUser = new Map();
+
+    queueDocs.forEach((doc) => {
+      const pid = doc.playerId?.toString?.();
+      const player = pid ? playerById.get(pid) : null;
+      (doc.entries || []).forEach((entry) => {
+        const uid = entry.userId?.toString?.();
+        if (!uid) return;
+        const status = entry.status || 'queued';
+        if (status !== 'queued' && status !== 'active_proxy') return;
+        const amount = toNumber(entry.lockedAmount);
+        const rows = queueRowsByUser.get(uid) || [];
+        rows.push({
+          playerId: pid || null,
+          playerName: player?.name || '-',
+          playerType: player?.type || '',
+          status,
+          amount,
+          maxBid: toNumber(entry.maxBid),
+          joinedAt: entry.joinedAt || null,
+        });
+        queueRowsByUser.set(uid, rows);
+        if (status === 'queued') {
+          queueWaitingByUser.set(uid, (queueWaitingByUser.get(uid) || 0) + amount);
+        } else if (status === 'active_proxy') {
+          queueProxyByUser.set(uid, (queueProxyByUser.get(uid) || 0) + amount);
+          const set = queueProxyPlayerIdsByUser.get(uid) || new Set();
+          if (pid) set.add(pid);
+          queueProxyPlayerIdsByUser.set(uid, set);
+        }
+      });
+    });
+
+    const teams = users.map((u) => {
+      const uid = u._id.toString();
+      const queueProxyPlayerIds = queueProxyPlayerIdsByUser.get(uid) || new Set();
+
+      let manualBidLocked = 0;
+      let queuePromotedBidLocked = 0;
+      const currentBidRows = [];
+
+      (u.currentBids || []).forEach((b) => {
+        const pid = b.playerId?.toString?.();
+        const amount = toNumber(b.amount);
+        const player = pid ? playerById.get(pid) : null;
+        const fromQueuePromotion = !!(pid && queueProxyPlayerIds.has(pid));
+        if (fromQueuePromotion) queuePromotedBidLocked += amount;
+        else manualBidLocked += amount;
+        currentBidRows.push({
+          playerId: pid || null,
+          playerName: player?.name || '-',
+          playerType: player?.type || '',
+          amount,
+          source: fromQueuePromotion ? 'queue_promoted' : 'manual',
+          isSold: !!player?.isSold,
+        });
+      });
+
+      const soldSpent = soldSpendByUser.get(uid) || 0;
+      const queueLockedWaiting = queueWaitingByUser.get(uid) || 0;
+      const queueLockedProxyReserve = queueProxyByUser.get(uid) || 0;
+      const committedTotal =
+        soldSpent +
+        manualBidLocked +
+        queuePromotedBidLocked +
+        queueLockedWaiting +
+        queueLockedProxyReserve;
+      const expectedPurse = BASELINE_PURSE - committedTotal;
+      const actualPurse = toNumber(u.purse);
+
+      return {
+        userId: uid,
+        teamName: u.teamName || u.name || 'Unknown',
+        displayName: u.name || '',
+        purse: {
+          baseline: BASELINE_PURSE,
+          actual: actualPurse,
+          expected: expectedPurse,
+          delta: actualPurse - expectedPurse,
+        },
+        breakdown: {
+          soldSpent,
+          manualBidLocked,
+          queuePromotedBidLocked,
+          queueLockedWaiting,
+          queueLockedProxyReserve,
+          committedTotal,
+        },
+        counts: {
+          soldPlayers: (soldRowsByUser.get(uid) || []).length,
+          activeBidSlots: (u.currentBids || []).length,
+          queueEntries: (queueRowsByUser.get(uid) || []).length,
+        },
+        details: {
+          soldPlayers: soldRowsByUser.get(uid) || [],
+          activeBids: currentBidRows,
+          queueLocks: queueRowsByUser.get(uid) || [],
+        },
+      };
+    });
+
+    teams.sort((a, b) => a.teamName.localeCompare(b.teamName));
+
+    const totals = teams.reduce(
+      (acc, t) => {
+        acc.teamCount += 1;
+        acc.actualPurse += t.purse.actual;
+        acc.expectedPurse += t.purse.expected;
+        acc.delta += t.purse.delta;
+        acc.soldSpent += t.breakdown.soldSpent;
+        acc.manualBidLocked += t.breakdown.manualBidLocked;
+        acc.queuePromotedBidLocked += t.breakdown.queuePromotedBidLocked;
+        acc.queueLockedWaiting += t.breakdown.queueLockedWaiting;
+        acc.queueLockedProxyReserve += t.breakdown.queueLockedProxyReserve;
+        acc.committedTotal += t.breakdown.committedTotal;
+        return acc;
+      },
+      {
+        teamCount: 0,
+        actualPurse: 0,
+        expectedPurse: 0,
+        delta: 0,
+        soldSpent: 0,
+        manualBidLocked: 0,
+        queuePromotedBidLocked: 0,
+        queueLockedWaiting: 0,
+        queueLockedProxyReserve: 0,
+        committedTotal: 0,
+      }
+    );
+
+    return res.json({
+      generatedAt: new Date(),
+      totals,
+      teams,
+    });
+  } catch (error) {
+    console.error('Error building admin purse audit:', error);
+    return res.status(500).json({ message: 'Internal server error.' });
   }
 });
 
