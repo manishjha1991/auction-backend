@@ -364,7 +364,7 @@ async function exitOnlyWindowJob(windowMinutes) {
 }
 
 /**
- * One-time 11:45 PM IST sweep:
+ * One-time 11:48 PM IST sweep:
  * Sell any unsold player that currently has exactly one active bidder.
  * (Same intent as single-bid-only sell; no second-highest required.)
  * Queue rows are cleared as part of sell flow.
@@ -372,7 +372,7 @@ async function exitOnlyWindowJob(windowMinutes) {
 async function oneTimeSellAfterExitSweep() {
   const settings = await getCronSettings();
   if (settings.cronSingleBidEnabled === false) {
-    console.log('⏸️ One-time 11:45 PM sell sweep disabled via admin settings (cronSingleBidEnabled=false).');
+    console.log('⏸️ One-time 11:48 PM sell sweep disabled via admin settings (cronSingleBidEnabled=false).');
     return;
   }
 
@@ -398,7 +398,7 @@ async function oneTimeSellAfterExitSweep() {
       }
     );
 
-    console.log(`   ✅ One-time 11:45 PM sweep sold ${sold} player(s).`);
+    console.log(`   ✅ One-time 11:48 PM sweep sold ${sold} player(s).`);
   } catch (err) {
     console.error('⚠️ oneTimeSellAfterExitSweep error:', err.message);
   }
@@ -601,8 +601,8 @@ cron.schedule('0 0,5,10,15,20,25,30,35,40 23 * * *', () => exitOnlyWindowJob(5),
   timezone: 'Asia/Kolkata',
 });
 
-// 23:45 IST – one-time sell sweep for players where second-highest exited >= 5 minutes ago
-cron.schedule('0 45 23 * * *', () => oneTimeSellAfterExitSweep(), {
+// 23:48 IST – one-time sell sweep for players where second-highest exited >= 5 minutes ago
+cron.schedule('0 48 23 * * *', () => oneTimeSellAfterExitSweep(), {
   timezone: 'Asia/Kolkata',
 });
 
