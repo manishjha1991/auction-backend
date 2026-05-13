@@ -132,9 +132,16 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
 
 
 // Exit From Bid
-router.post("/:playerId/exit", async (req, res) => {
+router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
   const { playerId } = req.params;
-  const { userId } = req.body;
+  const userId = req.authenticatedUser._id.toString();
+  const requestedUserId = req.body?.userId;
+
+  if (requestedUserId && requestedUserId.toString() !== userId) {
+    return res.status(403).json({
+      message: "Unauthorized: You can only exit bids on your own behalf.",
+    });
+  }
 
   try {
     // Find the player
