@@ -17,6 +17,13 @@ const { placeBidCore } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
 
+function requireAdmin(req, res, next) {
+  if (!req.authenticatedUser?.isAdmin) {
+    return res.status(403).json({ message: 'Admin access required.' });
+  }
+  next();
+}
+
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   const { playerId } = req.params;
@@ -132,9 +139,20 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
 
 
 // Exit From Bid
-router.post("/:playerId/exit", async (req, res) => {
+router.post("/:playerId/exit", authenticateJWT, async (req, res) => {
   const { playerId } = req.params;
   const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ message: "User ID is required." });
+  }
+
+  const authenticatedUserId = req.authenticatedUser._id.toString();
+  if (!req.authenticatedUser.isAdmin && userId.toString() !== authenticatedUserId) {
+    return res.status(403).json({
+      message: "Unauthorized: You can only exit bids on your own behalf.",
+    });
+  }
 
   try {
     // Find the player
@@ -319,7 +337,7 @@ router.post("/:playerId/exit", async (req, res) => {
 });
 
 // Sold the player 
-router.post("/bid/sold", async (req, res) => {
+router.post("/bid/sold", authenticateJWT, requireAdmin, async (req, res) => {
   try {
     // The UI can send either:
     // 1) { playerID: "..." } for a single player
@@ -617,7 +635,7 @@ router.post("/bid/sold", async (req, res) => {
 });
 
 // Release Sold Player
-router.post("/release-player", async (req, res) => {
+router.post("/release-player", authenticateJWT, requireAdmin, async (req, res) => {
   const { playerId } = req.body;
 
   try {
@@ -762,7 +780,7 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
   }
 }
 
-router.post("/:playerId/exit-second-highest", async (req, res) => {
+router.post("/:playerId/exit-second-highest", authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { playerId } = req.params;
     const result = await exitSecondHighestForPlayerSingle(playerId, req.app.get('io'));
@@ -1089,7 +1107,7 @@ async function sellPlayer(playerId, io = null) {
   }
 }
 
-router.post('/players/:playerId?/soldcrone', async (req, res) => {
+router.post('/players/:playerId?/soldcrone', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { playerId: paramId } = req.params;
     const { resultMain, playerIDs, playerID } = req.body;
@@ -1360,7 +1378,7 @@ async function runBulkExitAll(io = null) {
 }
 
 // New batch endpoint
-router.post('/exit-second-highest/all', async (req, res) => {
+router.post('/exit-second-highest/all', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const io = req.app.get('io');
     const result = await runBulkExitAll(io);
@@ -1594,7 +1612,7 @@ async function lockUnderLimitAll(options = {}) {
   }
 }
 
-router.post('/lock-under-limit/all', async (_req, res) => {
+router.post('/lock-under-limit/all', authenticateJWT, requireAdmin, async (_req, res) => {
   try {
     const result = await lockUnderLimitAll();
     return res.json(result);
@@ -1800,9 +1818,16 @@ router.get('/users-dashboard', async (req, res) => {
 });
 
 // Personalized auction command center: running bids, purses, queues, notifications
-router.get('/my-auction-hub/:userId', async (req, res) => {
+router.get('/my-auction-hub/:userId', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
+    const authenticatedUserId = req.authenticatedUser._id.toString();
+    if (!req.authenticatedUser.isAdmin && userId.toString() !== authenticatedUserId) {
+      return res.status(403).json({
+        message: 'Unauthorized: You can only view your own auction hub.',
+      });
+    }
+
     const me = await User.findById(userId)
       .select('name teamName purse _id abbreviation isAdmin')
       .lean();
