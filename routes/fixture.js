@@ -286,9 +286,7 @@ router.get('/', async (req, res) => {
         ...fixture,
         // OVERRIDE with CURRENT team names (not old stored names)
         team1: team1Details.teamName || fixture.team1,
-        team2: team2Details.teamName || fixture.team2, 
-        team1: fixture.team1,
-        team2: fixture.team2,
+        team2: team2Details.teamName || fixture.team2,
 
         // Add extra details
         team1Details: {
