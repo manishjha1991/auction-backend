@@ -35,6 +35,8 @@ const AppSettingsSchema = new mongoose.Schema(
     tradeSeasonCap: { type: Number, default: 3, min: 1, max: 10 },
     /** Max trades between the same two teams (counts completed + any pending/counter/admin_pending), either direction. */
     maxTradesPerOpponentPair: { type: Number, default: 1, min: 1, max: 10 },
+    /** Starting database for CPL composite report (e.g., 'cpl_21'). If not set, uses current DB and goes back 2 seasons. */
+    cplReportStartDb: { type: String, default: '' },
   },
   { timestamps: true }
 );

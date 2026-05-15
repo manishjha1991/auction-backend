@@ -3,6 +3,7 @@ const { buildCplReportSnapshot } = require('../utils/cplReportHelpers');
 const { generateCplReportPdfBuffer } = require('../utils/cplReportPdfFromSnapshot');
 const Player = require('../models/Player');
 const PlayerCareerSummary = require('../models/PlayerCareerSummary');
+const AppSettings = require('../models/AppSettings');
 const {
   normName,
   rebuildAllLiveCareerSummaries,
@@ -33,7 +34,12 @@ const CAREER_SUMMARY_LIST_PROJECTION = {
 async function getReportSnapshotOrCached() {
   const hit = getCachedReportSnapshot();
   if (hit) return { data: hit, cacheHit: true };
-  const data = await buildCplReportSnapshot();
+  
+  // Load CPL report start database setting
+  const settings = await AppSettings.findOne({});
+  const startDb = settings?.cplReportStartDb || null;
+  
+  const data = await buildCplReportSnapshot(startDb);
   if (data.ok) setCachedReportSnapshot(data);
   return { data, cacheHit: false };
 }
@@ -170,6 +176,57 @@ router.get('/player-career-summary', async (req, res) => {
   } catch (err) {
     console.error('cpl-report player-career-summary error', err);
     res.status(500).json({ ok: false, message: err.message || 'Failed to build player career summary' });
+  }
+});
+
+/**
+ * GET /api/cpl-report/config
+ * Get CPL report configuration (starting database for composite report)
+ */
+router.get('/config', async (_req, res) => {
+  try {
+    const settings = await AppSettings.findOne({});
+    res.json({
+      cplReportStartDb: settings?.cplReportStartDb || '',
+    });
+  } catch (err) {
+    console.error('cpl-report config error', err);
+    res.status(500).json({ ok: false, message: err.message || 'Failed to load config' });
+  }
+});
+
+/**
+ * POST /api/cpl-report/config
+ * Set CPL report configuration (starting database for composite report)
+ */
+router.post('/config', async (req, res) => {
+  try {
+    const { cplReportStartDb } = req.body;
+    
+    let settings = await AppSettings.findOne({});
+    if (!settings) {
+      settings = new AppSettings();
+    }
+    
+    settings.cplReportStartDb = cplReportStartDb || '';
+    await settings.save();
+    
+    // Invalidate cache so next report request uses new setting
+    const { invalidateCache } = require('../utils/cache');
+    try {
+      invalidateCache('cpl-report:snapshot');
+    } catch (_) {
+      /* ignore */
+    }
+    
+    res.json({
+      success: true,
+      cplReportStartDb: settings.cplReportStartDb,
+      message: 'CPL report configuration updated',
+    });
+  } catch (err) {
+    console.error('cpl-report config update error', err);
+    res.status(500).json({ ok: false, message: err.message || 'Failed to update config' });
   }
 });
 

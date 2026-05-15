@@ -24,6 +24,7 @@ const UserSchema = new mongoose.Schema({
   careerWins: { type: Number, default: 0 },
   fairnessPoint:{ type: Number, default: 0 },
   isActive:{ type: Boolean, default: true },
+  isParticipating: { type: Boolean, default: true }, // Whether team is participating in current season
   abbreviation: { type: String, default: null },
   group: { type: String, enum: ['A', 'B', null], default: null },
   isLocked: { type: Boolean, default: false },
@@ -75,5 +76,6 @@ UserSchema.index({ teamName: 1 });
 UserSchema.index({ isActive: 1, isAdmin: 1 });
 UserSchema.index({ isTournamentReady: 1 });
 UserSchema.index({ allPlayersReleased: 1 });
+UserSchema.index({ isParticipating: 1 });
 
 module.exports = mongoose.model('User', UserSchema);

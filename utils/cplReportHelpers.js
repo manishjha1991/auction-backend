@@ -53,12 +53,13 @@ function getRunningCplDbNameHint() {
 }
 
 /**
- * Which DBs to load for the composite report (newest first).
+ * Which DBs to load for the composite report.
  * - If CPL_REPORT_DBS is set → use that comma-separated list (override).
- * - Else → running DB as newest, then N-1 and N-2 (three seasons total).
- *   Example: cpl_19 → cpl_19, cpl_18, cpl_17.
+ * - Else if startDbOverride is provided → use that as start, check which subsequent DBs exist.
+ * - Else → running DB as newest, then N-1 and N-2 (backward for current DB).
+ *   Example: cpl_21 set → checks cpl_21, cpl_22, cpl_23... (includes only existing ones).
  */
-function parseReportDbs() {
+async function parseReportDbs(startDbOverride = null) {
   const envList = process.env.CPL_REPORT_DBS;
   if (envList && String(envList).trim()) {
     return String(envList)
@@ -67,18 +68,52 @@ function parseReportDbs() {
       .filter(Boolean);
   }
 
-  const currentName = getRunningCplDbNameHint();
-  const n = seasonNumFromDbName(currentName);
+  const startName = startDbOverride || getRunningCplDbNameHint();
+  const n = seasonNumFromDbName(startName);
+  
   if (n != null && n >= 1) {
     const out = [];
-    for (let i = 0; i < 3; i++) {
-      const sn = n - i;
-      if (sn >= 1) out.push(`cpl_${sn}`);
+    if (startDbOverride) {
+      // When explicitly set by user: go forward and check which DBs exist
+      // Try up to 10 databases forward (reasonable limit)
+      const candidates = [];
+      for (let i = 0; i < 10; i++) {
+        candidates.push(`cpl_${n + i}`);
+      }
+      
+      // Check which databases actually exist
+      try {
+        const adminDb = mongoose.connection.db.admin();
+        const { databases } = await adminDb.listDatabases();
+        const existingDbNames = new Set(databases.map(db => db.name));
+        
+        // Include only existing databases from the candidates
+        for (const candidate of candidates) {
+          if (existingDbNames.has(candidate)) {
+            out.push(candidate);
+          } else {
+            // Stop when we hit a non-existent database
+            break;
+          }
+        }
+      } catch (err) {
+        console.error('Failed to list databases, using default range:', err);
+        // Fallback: include up to 3 databases
+        for (let i = 0; i < 3; i++) {
+          out.push(`cpl_${n + i}`);
+        }
+      }
+    } else {
+      // When using current DB: go backward (N, N-1, N-2)
+      for (let i = 0; i < 3; i++) {
+        const sn = n - i;
+        if (sn >= 1) out.push(`cpl_${sn}`);
+      }
     }
     return out;
   }
 
-  return ['cpl_19', 'cpl_18', 'cpl_17'];
+  return ['cpl_21'];
 }
 
 function parseMilestoneDbs() {
@@ -124,8 +159,22 @@ function addSeasonIndices(tableRows) {
 function buildCompositeRows(seasonResults) {
   const dbOrder = seasonResults.map((s) => s.dbName);
   const map = new Map();
+  
+  // Teams to exclude from composite report (by teamKey or abbreviation)
+  const excludedTeams = ['APX', 'APEX', 'APEX 31'];
+  
   for (const { dbName, indexed } of seasonResults) {
     for (const row of indexed) {
+      // Skip excluded teams
+      const teamKeyUpper = (row.teamKey || '').toUpperCase();
+      const teamNameUpper = (row.teamName || '').toUpperCase();
+      if (excludedTeams.some(excluded => 
+        teamKeyUpper.includes(excluded.toUpperCase()) || 
+        teamNameUpper.includes(excluded.toUpperCase())
+      )) {
+        continue;
+      }
+      
       if (!map.has(row.teamKey)) map.set(row.teamKey, { teamName: row.teamName, byDb: {} });
       map.get(row.teamKey).byDb[dbName] = row.seasonIndex;
     }
@@ -385,7 +434,7 @@ async function buildCplCareerPlayerSummary() {
   };
 }
 
-async function buildCplReportSnapshot() {
+async function buildCplReportSnapshot(startDb = null) {
   const base = getReportBaseUri();
   if (!base) {
     return {
@@ -395,7 +444,7 @@ async function buildCplReportSnapshot() {
     };
   }
 
-  const dbNames = parseReportDbs();
+  const dbNames = await parseReportDbs(startDb);
   const seasons = [];
   for (const dbName of dbNames) {
     seasons.push(await loadOneReportSeason(base, dbName));
