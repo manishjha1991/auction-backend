@@ -1553,11 +1553,12 @@ const calculateNRR = (fixtures, teamName, userId) => {
 
 router.get('/points-table', async (req, res) => {
   try {
-    // Fetch all users who have a valid team name, are active, and are NOT admins
+    // Fetch all users who have a valid team name, are active, participating, and are NOT admins
     const users = await User.find({ 
       teamName: { $exists: true, $ne: null, $ne: "NA" }, 
       isActive: true,
-      isAdmin: false // Exclude admin accounts
+      isAdmin: false, // Exclude admin accounts
+      isParticipating: { $ne: false } // Exclude non-participating teams
       // Removed isTournamentReady filter to include all teams for fairness management
     })
     .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage')
@@ -1690,7 +1691,8 @@ router.get('/points-table-grouped', async (_req, res) => {
       teamName: { $exists: true, $ne: null, $ne: 'NA' },
       isActive: true,
       isAdmin: false,
-      isTournamentReady: true
+      isTournamentReady: true,
+      isParticipating: { $ne: false } // Exclude non-participating teams
     })
       .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage group')
       .lean();
