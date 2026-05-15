@@ -1561,7 +1561,7 @@ router.get('/points-table', async (req, res) => {
       isParticipating: { $ne: false } // Exclude non-participating teams
       // Removed isTournamentReady filter to include all teams for fairness management
     })
-    .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage')
+    .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage themePrimary themeSecondary')
     .lean();
 
     console.log(users);
@@ -1637,7 +1637,9 @@ router.get('/points-table', async (req, res) => {
         losses,
         fairness,
         nrr,
-        teamImage
+        teamImage,
+        themePrimary: user.themePrimary || null,
+        themeSecondary: user.themeSecondary || null
       };
     });
 
@@ -1694,7 +1696,7 @@ router.get('/points-table-grouped', async (_req, res) => {
       isTournamentReady: true,
       isParticipating: { $ne: false } // Exclude non-participating teams
     })
-      .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage group')
+      .select('_id teamName abbreviation points matchesPlayed fairnessPoint teamImage group themePrimary themeSecondary')
       .lean();
 
     // Fetch all completed fixtures to calculate NRR
@@ -1724,7 +1726,9 @@ router.get('/points-table-grouped', async (_req, res) => {
         losses,
         fairness,
         nrr,
-        teamImage: u.teamImage || ''
+        teamImage: u.teamImage || '',
+        themePrimary: u.themePrimary || null,
+        themeSecondary: u.themeSecondary || null
       };
     };
 
