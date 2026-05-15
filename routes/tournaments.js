@@ -1293,13 +1293,21 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
               };
 
               let changed = false;
+              
+              console.log(`🔍 Semi-final update check:`);
+              console.log(`   Final before: team1="${finalFixture.team1}", team2="${finalFixture.team2}"`);
+              console.log(`   SF1 winner: "${semiFinal1.winner || 'none'}"`);
+              console.log(`   SF2 winner: "${semiFinal2.winner || 'none'}"`);
+              
               // Fill whichever final slot still shows the placeholder (supports normal and swapped sides)
               if (semiFinal1.winner) {
                 if (finalFixture.team1 === 'Winner of Semi-Final 1') {
+                  console.log(`   ✏️  Updating team1 from SF1`);
                   finalFixture.team1 = semiFinal1.winner;
                   finalFixture.team1UserId = getUserIdFromTeamName(semiFinal1.winner);
                   changed = true;
                 } else if (finalFixture.team2 === 'Winner of Semi-Final 1') {
+                  console.log(`   ✏️  Updating team2 from SF1`);
                   finalFixture.team2 = semiFinal1.winner;
                   finalFixture.team2UserId = getUserIdFromTeamName(semiFinal1.winner);
                   changed = true;
@@ -1307,10 +1315,12 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
               }
               if (semiFinal2.winner) {
                 if (finalFixture.team2 === 'Winner of Semi-Final 2') {
+                  console.log(`   ✏️  Updating team2 from SF2`);
                   finalFixture.team2 = semiFinal2.winner;
                   finalFixture.team2UserId = getUserIdFromTeamName(semiFinal2.winner);
                   changed = true;
                 } else if (finalFixture.team1 === 'Winner of Semi-Final 2') {
+                  console.log(`   ✏️  Updating team1 from SF2`);
                   finalFixture.team1 = semiFinal2.winner;
                   finalFixture.team1UserId = getUserIdFromTeamName(semiFinal2.winner);
                   changed = true;
