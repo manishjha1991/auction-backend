@@ -191,6 +191,12 @@ TournamentSchema.methods.toggleLock = function() {
 // Pre-save middleware to update status based on dates
 TournamentSchema.pre('save', function(next) {
   const now = new Date();
+
+  if (this.winner?.teamName || this.status === 'completed') {
+    this.status = 'completed';
+    next();
+    return;
+  }
   
   if (this.startDate <= now && this.endDate >= now) {
     this.status = 'running';
