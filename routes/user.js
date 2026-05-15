@@ -182,9 +182,28 @@ router.post('/login', async (req, res) => {
       streamLink: user.streamLink,
       purse: purseValue, // Include purse value
       token: token, // Include JWT token in response
+      themePrimary: user.themePrimary || null,
+      themeSecondary: user.themeSecondary || null,
     });
   } catch (err) {
     console.error('Error logging in:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+/** Squad colours for app shell — register before "/:userId/details". */
+router.get('/theme/:userId', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId).select('themePrimary themeSecondary').lean();
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    res.json({
+      themePrimary: user.themePrimary || null,
+      themeSecondary: user.themeSecondary || null,
+    });
+  } catch (error) {
+    console.error('theme lookup:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
