@@ -48,15 +48,35 @@ const DEFAULT_CAREER_SOURCE_LABEL =
   process.env.CPL_CAREER_SOURCE_LABEL ||
   'Data from cpl_15 to the current CPL (historical + live).';
 
+function overlayTopRankingTotals(careerRow, player) {
+  if (!careerRow || !player) return careerRow;
+  const totalRuns = Number(player.totalRuns) || 0;
+  const totalWickets = Number(player.totalWickets) || 0;
+  const innings = Number(player.matchesPlayed) || 0;
+  const totalBalls = Number(player.totalBalls) || 0;
+  const totalRunsGiven = Number(player.totalRunsGiven) || 0;
+  return {
+    ...careerRow,
+    totalRuns,
+    totalWickets,
+    innings,
+    battingStrikeRate: totalBalls ? Number(((totalRuns * 100) / totalBalls).toFixed(2)) : careerRow.battingStrikeRate,
+    battingAverage: innings ? Number((totalRuns / innings).toFixed(2)) : careerRow.battingAverage,
+    bowlingAverage: totalWickets ? Number((totalRunsGiven / totalWickets).toFixed(2)) : 0,
+  };
+}
+
 async function getCareerSummaryOrCached({ refresh = false, includeInactive = true } = {}) {
-  const cacheKey = ['current-db-player-career-summary-v3', includeInactive ? 'all' : 'active'];
+  const cacheKey = ['current-db-player-career-summary-v4-top-rankings', includeInactive ? 'all' : 'active'];
   const hit = refresh ? null : getCachedCareerSummary(cacheKey);
   if (hit) return { data: hit, cacheHit: true };
   const match = includeInactive ? {} : { isActive: true };
 
   let [summaries, allPlayers] = await Promise.all([
     PlayerCareerSummary.find({}).select(CAREER_SUMMARY_LIST_PROJECTION).lean(),
-    Player.find(match).select('_id name role').lean(),
+    Player.find(match)
+      .select('_id name role totalRuns totalWickets matchesPlayed totalBalls totalRunsGiven totalBallsBowled')
+      .lean(),
   ]);
 
   // First-time bootstrap: if summary docs are empty, rebuild from current DB playerstats.
@@ -87,7 +107,8 @@ async function getCareerSummaryOrCached({ refresh = false, includeInactive = tru
     const key = normName(p.name);
     const s = byPlayerId.get(idStr) || byKey.get(key);
     if (s) usedSummaryIds.add(String(s._id));
-    players.push(s ? mapCareerSummaryLeanToApiPlayer(s) : emptyCareerApiPlayerFromPlayer(p));
+    const row = s ? mapCareerSummaryLeanToApiPlayer(s) : emptyCareerApiPlayerFromPlayer(p);
+    players.push(overlayTopRankingTotals(row, p));
   }
 
   for (const s of summaries) {
