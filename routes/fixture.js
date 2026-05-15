@@ -224,18 +224,48 @@ router.get('/', async (req, res) => {
       .sort({ createdAt: 1 })
       .lean();
 
-    // 9) Enhance each fixture with user/team details, matched by teamName
-    const enhancedFixtures = allFixtures.map((fixture) => {
-      // Try to find user details by matching user.teamName === fixture.team1
-      const team1Details = teams.find(
-        (t) => t.teamName === fixture.team1
-      ) || {};
+    // Filter out fixtures involving non-participating teams
+    // Use userId for matching (more reliable than team name, which can change)
+    const participatingTeamIds = new Set(teams.map(t => t._id.toString()));
+    const participatingTeamNames = new Set(teams.map(t => t.teamName));
+    
+    const filteredFixtures = allFixtures.filter(fixture => {
+      // Try userId matching first (most reliable)
+      if (fixture.team1UserId && fixture.team2UserId) {
+        const team1Id = fixture.team1UserId.toString();
+        const team2Id = fixture.team2UserId.toString();
+        return participatingTeamIds.has(team1Id) && participatingTeamIds.has(team2Id);
+      }
+      
+      // Fallback to team name matching (for old fixtures without userId)
+      const team1Participating = participatingTeamNames.has(fixture.team1);
+      const team2Participating = participatingTeamNames.has(fixture.team2);
+      return team1Participating && team2Participating;
+    });
 
-      // Same for team2
-      const team2Details = teams.find(
-        (t) => t.teamName === fixture.team2
-      ) || {};
+    // 9) Enhance each fixture with user/team details
+    const enhancedFixtures = filteredFixtures.map((fixture) => {
+      // Find team1 by userId first (handles name changes), fallback to name matching
+      let team1Details = null;
+      if (fixture.team1UserId) {
+        team1Details = teams.find((t) => t._id.toString() === fixture.team1UserId.toString());
+      }
+      if (!team1Details) {
+        team1Details = teams.find((t) => t.teamName === fixture.team1);
+      }
+      team1Details = team1Details || {};
 
+      // Find team2 by userId first (handles name changes), fallback to name matching
+      let team2Details = null;
+      if (fixture.team2UserId) {
+        team2Details = teams.find((t) => t._id.toString() === fixture.team2UserId.toString());
+      }
+      if (!team2Details) {
+        team2Details = teams.find((t) => t.teamName === fixture.team2);
+      }
+      team2Details = team2Details || {};
+
+      // IMPORTANT: Use CURRENT team name from User document, not old fixture name
       const ownerTeam1 = {
         userId: team1Details._id || null,
         teamName: team1Details.teamName || fixture.team1 || 'Unknown',
@@ -254,7 +284,9 @@ router.get('/', async (req, res) => {
       // So we spread fixture directly (not fixture._doc)
       return {
         ...fixture,
-        // Keep the original team1/team2 in place 
+        // OVERRIDE with CURRENT team names (not old stored names)
+        team1: team1Details.teamName || fixture.team1,
+        team2: team2Details.teamName || fixture.team2, 
         team1: fixture.team1,
         team2: fixture.team2,
 
@@ -639,8 +671,30 @@ router.get('/filter', async (req, res) => {
       query.matchType = matchType;
     }
     
+    // Get participating teams
+    const participatingTeams = await User.find({
+      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isActive: true,
+      isParticipating: { $ne: false },
+      isAdmin: { $ne: true }
+    }).select('_id teamName').lean();
+    
+    const participatingTeamIds = new Set(participatingTeams.map(t => t._id.toString()));
+    const participatingTeamNames = new Set(participatingTeams.map(t => t.teamName));
+    
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const fixtures = await Fixture.find(query).sort({ createdAt: 1 }).lean();
+    const allFixtures = await Fixture.find(query).sort({ createdAt: 1 }).lean();
+    
+    // Filter out fixtures with non-participating teams (use userId matching)
+    const fixtures = allFixtures.filter(fixture => {
+      // Try userId matching first (handles team name changes)
+      if (fixture.team1UserId && fixture.team2UserId) {
+        return participatingTeamIds.has(fixture.team1UserId.toString()) && 
+               participatingTeamIds.has(fixture.team2UserId.toString());
+      }
+      // Fallback to team name matching
+      return participatingTeamNames.has(fixture.team1) && participatingTeamNames.has(fixture.team2);
+    });
     
     res.status(200).json(fixtures);
   } catch (error) {
@@ -652,11 +706,33 @@ router.get('/filter', async (req, res) => {
 // Get group stage fixtures only
 router.get('/group-stage', async (req, res) => {
   try {
+    // Get participating teams
+    const participatingTeams = await User.find({
+      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isActive: true,
+      isParticipating: { $ne: false },
+      isAdmin: { $ne: true }
+    }).select('_id teamName').lean();
+    
+    const participatingTeamIds = new Set(participatingTeams.map(t => t._id.toString()));
+    const participatingTeamNames = new Set(participatingTeams.map(t => t.teamName));
+    
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const fixtures = await Fixture.find({ 
+    const allFixtures = await Fixture.find({ 
       isActive: true, 
       matchType: 'group' 
     }).sort({ createdAt: 1 }).lean();
+    
+    // Filter out fixtures with non-participating teams (use userId matching)
+    const fixtures = allFixtures.filter(fixture => {
+      // Try userId matching first (handles team name changes)
+      if (fixture.team1UserId && fixture.team2UserId) {
+        return participatingTeamIds.has(fixture.team1UserId.toString()) && 
+               participatingTeamIds.has(fixture.team2UserId.toString());
+      }
+      // Fallback to team name matching
+      return participatingTeamNames.has(fixture.team1) && participatingTeamNames.has(fixture.team2);
+    });
     
     res.status(200).json(fixtures);
   } catch (error) {
@@ -668,11 +744,33 @@ router.get('/group-stage', async (req, res) => {
 // Get normal fixtures only
 router.get('/normal', async (req, res) => {
   try {
+    // Get participating teams
+    const participatingTeams = await User.find({
+      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isActive: true,
+      isParticipating: { $ne: false },
+      isAdmin: { $ne: true }
+    }).select('_id teamName').lean();
+    
+    const participatingTeamIds = new Set(participatingTeams.map(t => t._id.toString()));
+    const participatingTeamNames = new Set(participatingTeams.map(t => t.teamName));
+    
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const fixtures = await Fixture.find({ 
+    const allFixtures = await Fixture.find({ 
       isActive: true, 
       matchType: 'normal' 
     }).sort({ createdAt: 1 }).lean();
+    
+    // Filter out fixtures with non-participating teams (use userId matching)
+    const fixtures = allFixtures.filter(fixture => {
+      // Try userId matching first (handles team name changes)
+      if (fixture.team1UserId && fixture.team2UserId) {
+        return participatingTeamIds.has(fixture.team1UserId.toString()) && 
+               participatingTeamIds.has(fixture.team2UserId.toString());
+      }
+      // Fallback to team name matching
+      return participatingTeamNames.has(fixture.team1) && participatingTeamNames.has(fixture.team2);
+    });
     
     res.status(200).json(fixtures);
   } catch (error) {
