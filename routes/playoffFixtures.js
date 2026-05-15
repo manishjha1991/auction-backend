@@ -284,13 +284,13 @@ router.post('/initialize', async (req, res) => {
 
     if (mode === 'groups') {
       // GROUPS MODE: Top 3 from each group
-      // Use same filters as point table: teamName exists, not NA, isActive, not admin
-      // Note: isTournamentReady filter removed to match point table logic
+      // Use same filters as point table: teamName exists, not NA, isActive, not admin, participating
       const groupARaw = await User.find({ 
         teamName: { $exists: true, $ne: null, $ne: "NA" },
         group: 'A',
         isAdmin: false,
-        isActive: true
+        isActive: true,
+        isParticipating: { $ne: false } // Exclude non-participating teams
       })
         .select('_id teamName points matchesPlayed fairnessPoint')
         .lean();
@@ -318,7 +318,8 @@ router.post('/initialize', async (req, res) => {
         teamName: { $exists: true, $ne: null, $ne: "NA" },
         group: 'B',
         isAdmin: false,
-        isActive: true
+        isActive: true,
+        isParticipating: { $ne: false } // Exclude non-participating teams
       })
         .select('_id teamName points matchesPlayed fairnessPoint')
         .lean();
@@ -350,19 +351,35 @@ router.post('/initialize', async (req, res) => {
         });
       }
 
-      // Check if all qualifying teams have completed 6 matches
-      const allQualifyingTeams = [...groupATeams, ...groupBTeams];
-      const allTeamsCompleted6Games = allQualifyingTeams.every(team => (team.matchesPlayed || 0) >= 6);
+      // Calculate required games per group (each team plays everyone in their group once)
+      const requiredGamesGroupA = groupARaw.length - 1; // Total teams in group A minus 1
+      const requiredGamesGroupB = groupBRaw.length - 1; // Total teams in group B minus 1
       
-      if (!allTeamsCompleted6Games) {
-        const incompleteTeams = allQualifyingTeams.filter(team => (team.matchesPlayed || 0) < 6);
+      // Check if all qualifying teams have completed required matches
+      const allQualifyingTeams = [...groupATeams, ...groupBTeams];
+      const groupAIncomplete = groupATeams.filter(team => (team.matchesPlayed || 0) < requiredGamesGroupA);
+      const groupBIncomplete = groupBTeams.filter(team => (team.matchesPlayed || 0) < requiredGamesGroupB);
+      const hasIncomplete = groupAIncomplete.length > 0 || groupBIncomplete.length > 0;
+      
+      if (hasIncomplete) {
         return res.status(400).json({ 
-          message: 'All qualifying teams must complete 6 matches before initializing playoffs',
-          incompleteTeams: incompleteTeams.map(team => ({
-            teamName: team.teamName,
-            group: team.group,
-            matchesPlayed: team.matchesPlayed || 0
-          }))
+          message: 'All qualifying teams must complete required matches before initializing playoffs',
+          requiredGamesGroupA,
+          requiredGamesGroupB,
+          incompleteTeams: [
+            ...groupAIncomplete.map(team => ({
+              teamName: team.teamName,
+              group: 'A',
+              matchesPlayed: team.matchesPlayed || 0,
+              required: requiredGamesGroupA
+            })),
+            ...groupBIncomplete.map(team => ({
+              teamName: team.teamName,
+              group: 'B',
+              matchesPlayed: team.matchesPlayed || 0,
+              required: requiredGamesGroupB
+            }))
+          ]
         });
       }
 
@@ -448,12 +465,12 @@ router.post('/initialize', async (req, res) => {
     } else {
       // NORMAL MODE: Original format with top 6 overall teams
       // Use same filters and sorting as point table endpoint
-      // Filter: teamName exists, not NA, isActive, not admin
-      // Sort: points desc, fairness desc, matchesPlayed asc, teamName asc
+      // Filter: teamName exists, not NA, isActive, not admin, participating
       const allTeams = await User.find({ 
         teamName: { $exists: true, $ne: null, $ne: "NA" },
         isAdmin: false,
-        isActive: true
+        isActive: true,
+        isParticipating: { $ne: false } // Exclude non-participating teams
       })
         .select('_id teamName points matchesPlayed fairnessPoint')
         .lean();
@@ -494,16 +511,22 @@ router.post('/initialize', async (req, res) => {
       }).slice(0, 6);
 
       if (teams.length < 6) {
-        return res.status(400).json({ message: 'Need at least 6 teams to initialize playoffs' });
+        return res.status(400).json({ message: 'Need at least 6 participating teams to initialize playoffs' });
       }
 
+      // Calculate required games based on participating teams count
+      const participatingTeamsCount = allTeams.length;
+      const requiredGames = participatingTeamsCount - 1; // Each team plays every other participating team once
+
       // Check if all top 6 teams have completed required games
-      const allTeamsCompletedGames = teams.every(team => (team.matchesPlayed || 0) >= 13);
+      const allTeamsCompletedGames = teams.every(team => (team.matchesPlayed || 0) >= requiredGames);
 
       if (!allTeamsCompletedGames) {
-        const incompleteTeams = teams.filter(team => (team.matchesPlayed || 0) < 13);
+        const incompleteTeams = teams.filter(team => (team.matchesPlayed || 0) < requiredGames);
         return res.status(400).json({
-          message: 'All top 6 teams must complete 13 matches before initializing playoffs',
+          message: `All top 6 teams must complete ${requiredGames} matches before initializing playoffs (${participatingTeamsCount} participating teams)`,
+          requiredGames,
+          participatingTeamsCount,
           incompleteTeams: incompleteTeams.map(team => ({
             teamName: team.teamName,
             matchesPlayed: team.matchesPlayed || 0

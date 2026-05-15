@@ -160,21 +160,8 @@ function buildCompositeRows(seasonResults) {
   const dbOrder = seasonResults.map((s) => s.dbName);
   const map = new Map();
   
-  // Teams to exclude from composite report (by teamKey or abbreviation)
-  const excludedTeams = ['APX', 'APEX', 'APEX 31'];
-  
   for (const { dbName, indexed } of seasonResults) {
     for (const row of indexed) {
-      // Skip excluded teams
-      const teamKeyUpper = (row.teamKey || '').toUpperCase();
-      const teamNameUpper = (row.teamName || '').toUpperCase();
-      if (excludedTeams.some(excluded => 
-        teamKeyUpper.includes(excluded.toUpperCase()) || 
-        teamNameUpper.includes(excluded.toUpperCase())
-      )) {
-        continue;
-      }
-      
       if (!map.has(row.teamKey)) map.set(row.teamKey, { teamName: row.teamName, byDb: {} });
       map.get(row.teamKey).byDb[dbName] = row.seasonIndex;
     }

@@ -79,6 +79,25 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'Missing required fields.' });
     }
 
+    // Check if user is participating in current season
+    const fromUser = await User.findById(fromUserId).select('isParticipating teamName').lean();
+    if (!fromUser) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+    if (fromUser.isParticipating === false) {
+      return res.status(403).json({ 
+        message: 'You are not participating in the current season. You cannot make trades.' 
+      });
+    }
+
+    // Check if target user is participating
+    const requestedOwner = await getOwnerOfPlayer(requestedPlayerId);
+    if (requestedOwner && requestedOwner.isParticipating === false) {
+      return res.status(403).json({ 
+        message: 'The target team is not participating in the current season. You cannot trade with them.' 
+      });
+    }
+
     const rules = await getTradeRules();
 
     // Enforce max active outgoing trade requests per user (same cap as season trades)

@@ -23,12 +23,13 @@ router.get('/', async (req, res) => {
 
   try {
     
-    // 1) Fetch teams (users) that have a valid teamName, are active, tournament ready, and are not admin.
+    // 1) Fetch teams (users) that have a valid teamName, are active, tournament ready, participating, and are not admin.
     // 🚀 PERFORMANCE: Use .lean() for faster queries
     const teams = await User.find({
       teamName: { $exists: true, $ne: null, $ne: 'NA' },
       isActive: true,
       isTournamentReady: true, // Only include users who are tournament ready
+      isParticipating: { $ne: false }, // Exclude non-participating teams
       isAdmin: { $ne: true } // Exclude admin teams
     })
       .populate('boughtPlayers')
@@ -339,6 +340,23 @@ router.post('/save', isAdmin, async (req, res) => {
       group,
       matchType,
     } = req.body;
+
+    // Check if teams are participating (only for new fixtures or when teams are being changed)
+    if (team1 && team2) {
+      const team1User = await User.findOne({ teamName: team1, isActive: true }).select('isParticipating teamName').lean();
+      const team2User = await User.findOne({ teamName: team2, isActive: true }).select('isParticipating teamName').lean();
+      
+      if (team1User && team1User.isParticipating === false) {
+        return res.status(403).json({ 
+          error: `${team1} is not participating in the current season. Cannot create or update fixture.` 
+        });
+      }
+      if (team2User && team2User.isParticipating === false) {
+        return res.status(403).json({ 
+          error: `${team2} is not participating in the current season. Cannot create or update fixture.` 
+        });
+      }
+    }
 
     // Validate score format: must be in "runs/wickets" format (e.g., "107/10", "150/5")
     const scoreFormatRegex = /^\d+\/\d+$/; // Matches "number/number" format

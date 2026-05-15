@@ -117,6 +117,7 @@ async function fetchPointTableFromConnection(conn) {
         teamName: { $exists: true, $ne: null, $ne: 'NA' },
         isActive: true,
         isAdmin: { $ne: true },
+        isParticipating: { $ne: false }, // Exclude non-participating teams
       })
       .project({ _id: 1, teamName: 1, abbreviation: 1, points: 1, matchesPlayed: 1, fairnessPoint: 1 })
       .toArray(),
