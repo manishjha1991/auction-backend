@@ -44,6 +44,9 @@ router.post('/update', async (req, res) => {
     const { teamUpdates } = req.body;
     // teamUpdates: [{ teamId, isParticipating }]
     
+    console.log('📝 Participation update request received:');
+    console.log(`   Total teams to update: ${teamUpdates?.length || 0}`);
+    
     if (!Array.isArray(teamUpdates)) {
       return res.status(400).json({
         success: false,
@@ -52,12 +55,27 @@ router.post('/update', async (req, res) => {
     }
     
     let updated = 0;
+    const updateDetails = [];
+    
     for (const { teamId, isParticipating } of teamUpdates) {
+      const team = await User.findById(teamId).select('teamName');
+      const newStatus = !!isParticipating;
+      
       await User.findByIdAndUpdate(teamId, {
-        $set: { isParticipating: !!isParticipating },
+        $set: { isParticipating: newStatus },
+      });
+      
+      updateDetails.push({
+        team: team?.teamName || teamId,
+        status: newStatus ? 'PARTICIPATING' : 'NOT PARTICIPATING'
       });
       updated++;
     }
+    
+    console.log('✅ Updated participation status:');
+    updateDetails.forEach(detail => {
+      console.log(`   - ${detail.team}: ${detail.status}`);
+    });
     
     res.json({
       success: true,
@@ -65,7 +83,7 @@ router.post('/update', async (req, res) => {
       updated,
     });
   } catch (error) {
-    console.error('Error updating participating teams:', error);
+    console.error('❌ Error updating participating teams:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to update teams',
