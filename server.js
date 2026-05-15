@@ -43,6 +43,7 @@ const cplReportRoutes = require('./routes/cplReport');
 const adminRosterOpsRoutes = require('./routes/adminRosterOps');
 const dbMigrationRoutes = require('./routes/dbMigration');
 const participatingTeamsRoutes = require('./routes/participatingTeams');
+const cacheRoutes = require('./routes/cache');
 // require('./scheduler');
 
 // Allow Express to trust proxy headers (needed to read real client IPs)
@@ -208,6 +209,7 @@ app.use('/api/cpl-report', cplReportRoutes);
 app.use('/api/admin/roster', adminRosterOpsRoutes);
 app.use('/api/db-migration', dbMigrationRoutes);
 app.use('/api/participating-teams', participatingTeamsRoutes);
+app.use('/api/cache', cacheRoutes);
 
 
 // 🚀 NOTIFICATION: Socket user mapping for targeted notifications
