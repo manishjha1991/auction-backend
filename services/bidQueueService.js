@@ -78,13 +78,17 @@ async function shouldBlockManualBid(playerId, bidderId) {
   return !active.includes(bidderId.toString());
 }
 
-async function refundPurse(userId, amount) {
-  if (amount <= 0) return;
-  const user = await User.findById(userId);
-  if (!user) return;
-  const p = parseFloat(user.purse.toString()) + amount;
-  user.purse = mongoose.Types.Decimal128.fromString(String(p));
-  await user.save();
+function setPurse(user, amount) {
+  user.purse = mongoose.Types.Decimal128.fromString(String(amount));
+}
+
+async function restoreUserPurse(user, originalPurse, context) {
+  try {
+    setPurse(user, originalPurse);
+    await user.save();
+  } catch (rollbackError) {
+    console.error(`[bidQueue] Failed to restore purse after ${context}:`, rollbackError);
+  }
 }
 
 function emitQueuePersonal(io, userId, payload) {
@@ -101,9 +105,21 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
   const refund = entry.lockedAmount;
   const userId = entry.userId;
   const player = await Player.findById(playerId).select("name").lean();
+  const user = await User.findById(userId);
+  const originalPurse = user ? parseFloat(user.purse.toString()) : null;
+  if (user && refund > 0) {
+    setPurse(user, originalPurse + refund);
+    await user.save();
+  }
   doc.entries.pull(subdocId);
-  await doc.save();
-  await refundPurse(userId, refund);
+  try {
+    await doc.save();
+  } catch (saveError) {
+    if (user) {
+      await restoreUserPurse(user, originalPurse, "queue removal save failure");
+    }
+    throw saveError;
+  }
   emitQueuePersonal(io, userId, {
     type: "removed",
     reason,
@@ -148,7 +164,7 @@ async function preparePromotedUser(userId, playerId, queueEntry, nextBidAmount) 
   const M = queueEntry.lockedAmount;
   const refund = M - nextBidAmount;
   const purse = parseFloat(user.purse.toString()) + refund;
-  user.purse = mongoose.Types.Decimal128.fromString(String(purse));
+  setPurse(user, purse);
   const ex = user.currentBids.find((b) => b.playerId.toString() === playerId);
   if (ex) ex.amount = nextBidAmount;
   else user.currentBids.push({ playerId, amount: nextBidAmount });
@@ -159,7 +175,7 @@ async function revertPreparePromotedUser(userId, playerId, nextBidAmount, locked
   const user = await User.findById(userId);
   const undoRefund = lockedMax - nextBidAmount;
   const p = parseFloat(user.purse.toString()) - undoRefund;
-  user.purse = mongoose.Types.Decimal128.fromString(String(p));
+  setPurse(user, p);
   user.currentBids = user.currentBids.filter((b) => b.playerId.toString() !== playerId);
   await user.save();
 }
@@ -171,7 +187,7 @@ async function forceExitProxyUser(userId, playerId, io) {
   const locked = bidOnPlayer ? bidOnPlayer.amount : 0;
   if (locked > 0) {
     const p = parseFloat(user.purse.toString()) + locked;
-    user.purse = mongoose.Types.Decimal128.fromString(String(p));
+    setPurse(user, p);
   }
   user.currentBids = user.currentBids.filter((b) => b.playerId.toString() !== playerId);
   await user.save();
@@ -306,7 +322,12 @@ async function tryPromoteNextQueued(playerId, io) {
 
       await preparePromotedUser(head.userId, playerId, head, nextBid);
       headEntry.status = "active_proxy";
-      await doc.save();
+      try {
+        await doc.save();
+      } catch (saveError) {
+        await revertPreparePromotedUser(head.userId, playerId, nextBid, lockedSnapshot);
+        throw saveError;
+      }
 
       const res = await placeBidCore({
         playerId,
@@ -412,7 +433,7 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       return { ok: false, status: 400, message: "Insufficient purse to lock your max bid." };
     }
 
-    user.purse = mongoose.Types.Decimal128.fromString(String(purse - maxBid));
+    setPurse(user, purse - maxBid);
     await user.save();
 
     doc.entries.push({
@@ -423,7 +444,12 @@ async function enqueueUser({ playerId, userId, maxBid, io }) {
       joinedAt: new Date(),
       maxEditTradesRemaining: null,
     });
-    await doc.save();
+    try {
+      await doc.save();
+    } catch (saveError) {
+      await restoreUserPurse(user, purse, "enqueue queue save failure");
+      throw saveError;
+    }
 
     emitQueuePersonal(io, userId, {
       type: "joined",
@@ -498,11 +524,16 @@ async function updateQueueMax({ playerId, userId, maxBid, io }) {
       };
     }
 
-    user.purse = mongoose.Types.Decimal128.fromString(String(purse - delta));
+    setPurse(user, purse - delta);
     entry.maxBid = maxBid;
     entry.lockedAmount += delta;
     await user.save();
-    await doc.save();
+    try {
+      await doc.save();
+    } catch (saveError) {
+      await restoreUserPurse(user, purse, "queue max update save failure");
+      throw saveError;
+    }
 
     await emitBidQueueUpdated(io, playerId);
     return { ok: true };
