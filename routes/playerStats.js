@@ -372,6 +372,66 @@ const updatePlayerCumulativeStats = async (playerId) => {
   }
 };
 
+const resolvePlayerOwner = async (playerId) => {
+  if (!playerId) return null;
+
+  let ownerUser = await User.findOne({ boughtPlayers: playerId })
+    .select('_id teamName isAdmin')
+    .lean();
+
+  if (!ownerUser) {
+    const rosterEntry = await UserPlayer.findOne({ playerId, isActive: true })
+      .select('userId')
+      .lean();
+    if (rosterEntry?.userId) {
+      ownerUser = await User.findById(rosterEntry.userId)
+        .select('_id teamName isAdmin')
+        .lean();
+    }
+  }
+
+  return ownerUser;
+};
+
+const assertCanEditPlayerStats = async (requestedByUserId, playerId) => {
+  const ownerUser = await resolvePlayerOwner(playerId);
+  if (!ownerUser) {
+    const error = new Error('No user found who owns this player');
+    error.status = 400;
+    throw error;
+  }
+
+  if (!requestedByUserId) {
+    return ownerUser;
+  }
+
+  const requester = await User.findById(requestedByUserId).select('_id isAdmin').lean();
+  if (!requester) {
+    const error = new Error('Requesting user not found');
+    error.status = 403;
+    throw error;
+  }
+
+  if (requester.isAdmin || String(requester._id) === String(ownerUser._id)) {
+    return ownerUser;
+  }
+
+  const error = new Error('Only the player owner or an admin can update these stats');
+  error.status = 403;
+  throw error;
+};
+
+const normalizeOpponentUserId = async (rawOpponentUserId, opponentTeamName) => {
+  if (rawOpponentUserId && mongoose.Types.ObjectId.isValid(String(rawOpponentUserId))) {
+    return rawOpponentUserId;
+  }
+  const name = (opponentTeamName || rawOpponentUserId || '').trim();
+  if (!name) return null;
+  const regex = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+  const opponent = await User.findOne({ teamName: regex, isAdmin: false }).select('_id').lean();
+  return opponent?._id || null;
+};
+
 const applyPlayerStatDelta = async (playerId, delta = {}) => {
   const {
     runs = 0,
@@ -490,7 +550,7 @@ const upsertVenueMatchEntry = async (
 const savePlayerStatsEntry = async (payload = {}) => {
   const {
     playerId,
-    opponentUserId,
+    opponentUserId: rawOpponentUserId,
     battingStats,
     bowlingStats,
     wicketsTaken,
@@ -508,6 +568,10 @@ const savePlayerStatsEntry = async (payload = {}) => {
     teamInningsOrder: rawTeamInningsOrder,
     matchWinnerSide: rawMatchWinnerSide,
     forceCreate: rawForceCreate,
+    existingStatsId: rawExistingStatsId,
+    playerStatsId: rawPlayerStatsId,
+    requestedByUserId: rawRequestedByUserId,
+    opponentTeamName,
   } = payload;
 
   const venue = typeof rawVenue === 'string' ? rawVenue.trim() : rawVenue || null;
@@ -520,20 +584,19 @@ const savePlayerStatsEntry = async (payload = {}) => {
     throw error;
   }
 
-  const ownerUser = await User.findOne({
-    boughtPlayers: playerId,
-  });
-
-  if (!ownerUser) {
-    const error = new Error('No user found who owns this playerId');
-    error.status = 400;
-    throw error;
-  }
-
+  const ownerUser = await assertCanEditPlayerStats(
+    rawRequestedByUserId || payload.userId,
+    playerId
+  );
   const userId = ownerUser._id;
+  const opponentUserId = await normalizeOpponentUserId(
+    rawOpponentUserId,
+    opponentTeamName
+  );
   const wcStage = isWcScore ? normalizeWcStage(rawWcStage) : null;
   const tournamentId = rawTournamentId || null;
   const forceCreate = rawForceCreate === true || rawForceCreate === 'true';
+  const existingStatsId = rawExistingStatsId || rawPlayerStatsId || null;
 
   if (isWcScore && !wcStage) {
     const error = new Error('wcStage is required when isWcScore is true (super8 | semi | final)');
@@ -541,16 +604,27 @@ const savePlayerStatsEntry = async (payload = {}) => {
     throw error;
   }
 
-  // Decide what existing entry (if any) to overwrite based on score type.
-  // - WC entries are bucketed by (player, owner, opponent, tournamentId, wcStage)
-  //   → same opponent in the SAME stage of the SAME tournament overwrites
-  //   → different stage / different tournament creates a new entry
-  // - Playoff entries always create new (existing behavior)
-  // - Regular entries dedup on (player, owner, opponent) but exclude WC/playoff buckets
+  // Decide what existing entry (if any) to overwrite.
+  // - existingStatsId: explicit edit from player-stats UI (works for regular, playoff, WC)
+  // - WC entries: bucketed by (player, owner, opponent, tournamentId, wcStage)
+  // - Regular entries: dedup on (player, owner, opponent), excluding WC/playoff buckets
+  // - Playoff entries without existingStatsId always create new
   // - forceCreate=true bypasses overwrite lookup and always creates a fresh row
   let existingStats = null;
   if (!forceCreate) {
-    if (isWcScore) {
+    if (existingStatsId) {
+      existingStats = await PlayerStats.findById(existingStatsId);
+      if (!existingStats) {
+        const error = new Error('Existing stats entry not found');
+        error.status = 404;
+        throw error;
+      }
+      if (String(existingStats.playerId) !== String(playerId)) {
+        const error = new Error('Existing stats entry does not belong to this player');
+        error.status = 400;
+        throw error;
+      }
+    } else if (isWcScore) {
       existingStats = await PlayerStats.findOne({
         playerId,
         userId,
@@ -559,6 +633,13 @@ const savePlayerStatsEntry = async (payload = {}) => {
         'metadata.isWcScore': true,
         'metadata.wcStage': wcStage,
       });
+    } else if (isPlayoffScore && opponentUserId) {
+      existingStats = await PlayerStats.findOne({
+        playerId,
+        userId,
+        opponentUserId,
+        'metadata.isPlayoffScore': true,
+      }).sort({ createdAt: -1 });
     } else if (!isPlayoffScore) {
       existingStats = await PlayerStats.findOne({
         playerId,
@@ -622,6 +703,9 @@ const savePlayerStatsEntry = async (payload = {}) => {
     };
 
     existingStats.isMom = !!isMom;
+    if (opponentUserId) {
+      existingStats.opponentUserId = opponentUserId;
+    }
     
     // Store economy and extras in metadata
     if (!existingStats.metadata) {
@@ -655,6 +739,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
 
     await existingStats.save();
     
+    const hasStatChanges = Object.values(deltaTotals).some((v) => v !== 0);
+
     // Apply delta to player totals (non-blocking - don't fail OCR upload if this fails)
     try {
       console.log(`📊 Updating player ${playerId} totals with delta:`, deltaTotals);
@@ -668,12 +754,20 @@ const savePlayerStatsEntry = async (payload = {}) => {
 
     // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when stats are updated
     cache.del('stats-overview');
+    invalidateCache('player-stats-list');
     invalidateCache('players:data'); // Invalidate top rankings cache
 
     // Mirror to persistent venue ledger (survives PlayerStats wipes).
     await upsertVenueMatchEntry(existingStats, { matchId });
 
-    return { action: 'updated', doc: existingStats };
+    return {
+      action: 'updated',
+      doc: existingStats,
+      noChanges: !hasStatChanges,
+      message: hasStatChanges
+        ? 'Player stats updated successfully'
+        : 'No changes detected — values saved match what was already stored',
+    };
   }
 
   deltaTotals.runs = newTotals.runs;
@@ -726,6 +820,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
 
     // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when new stats are added
     cache.del('stats-overview');
+    invalidateCache('player-stats-list');
     invalidateCache('players:data'); // Invalidate top rankings cache
 
     // Mirror to persistent venue ledger (survives PlayerStats wipes).
@@ -737,10 +832,16 @@ const savePlayerStatsEntry = async (payload = {}) => {
 router.get('/list', async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (2 minute cache for player stats list)
   const { userId } = req.query;
+  const skipCache =
+    req.query.nocache === '1' ||
+    req.query.nocache === 'true' ||
+    req.query.nocache === 'yes';
   const cacheKey = `player-stats-list:${userId}`;
-  const cached = cacheConfig.medium.get(cacheKey);
-  if (cached) {
-    return res.status(200).json(cached);
+  if (!skipCache) {
+    const cached = cacheConfig.medium.get(cacheKey);
+    if (cached) {
+      return res.status(200).json(cached);
+    }
   }
 
   try {
@@ -758,12 +859,12 @@ router.get('/list', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Skip if user is not tournament ready
-    if (!user.isTournamentReady) {
+    const isAdmin = user.isAdmin;
+
+    // Non-admin users must be tournament ready; admins can always manage stats
+    if (!isAdmin && !user.isTournamentReady) {
       return res.status(403).json({ message: 'User is not tournament ready' });
     }
-
-    const isAdmin = user.isAdmin;
     let playersToSend = [];
 
     // Helper function to convert balls into overs (X.Y format)
@@ -795,8 +896,55 @@ router.get('/list', async (req, res) => {
 
     playersToSend = playersResult;
 
-    // 🚀 PERFORMANCE: Batch fetch all PlayerStats for all players at once (instead of N queries)
     const allPlayerIds = playersToSend.map(p => p._id);
+
+    // Map each player to their owning team (needed when admin views all players)
+    const ownerByPlayerId = new Map();
+    if (isAdmin && allPlayerIds.length > 0) {
+      const [rosterRows, ownerUsersFromBought] = await Promise.all([
+        UserPlayer.find({ playerId: { $in: allPlayerIds }, isActive: true })
+          .select('playerId userId')
+          .lean(),
+        User.find({ boughtPlayers: { $in: allPlayerIds } })
+          .select('_id teamName boughtPlayers')
+          .lean(),
+      ]);
+
+      rosterRows.forEach((row) => {
+        ownerByPlayerId.set(String(row.playerId), { ownerUserId: row.userId });
+      });
+
+      ownerUsersFromBought.forEach((owner) => {
+        (owner.boughtPlayers || []).forEach((pid) => {
+          const key = String(pid);
+          if (allPlayerIds.some((id) => String(id) === key) && !ownerByPlayerId.has(key)) {
+            ownerByPlayerId.set(key, { ownerUserId: owner._id });
+          }
+        });
+      });
+
+      const ownerUserIds = [
+        ...new Set(
+          [...ownerByPlayerId.values()]
+            .map((entry) => entry.ownerUserId)
+            .filter(Boolean)
+            .map(String)
+        ),
+      ];
+      const ownerUsers = ownerUserIds.length
+        ? await User.find({ _id: { $in: ownerUserIds } }).select('_id teamName').lean()
+        : [];
+      const ownerTeamByUserId = new Map(
+        ownerUsers.map((owner) => [String(owner._id), owner.teamName || 'Unknown'])
+      );
+
+      ownerByPlayerId.forEach((entry, playerKey) => {
+        entry.ownerTeamName = ownerTeamByUserId.get(String(entry.ownerUserId)) || 'Unknown';
+        ownerByPlayerId.set(playerKey, entry);
+      });
+    }
+
+    // 🚀 PERFORMANCE: Batch fetch all PlayerStats for all players at once (instead of N queries)
     const allStats = allPlayerIds.length > 0 
       ? await PlayerStats.find({ 
           playerId: { $in: allPlayerIds } 
@@ -834,6 +982,8 @@ router.get('/list', async (req, res) => {
 
       // Calculate batting performance per match (using pre-fetched opponent data)
       const battingStats = stats.map((stat) => ({
+        statId: stat._id,
+        opponentUserId: stat.opponentUserId || null,
         match: stat.matchName,
         runs: stat.battingStats?.runs || 0,
         balls: stat.battingStats?.balls || 0,
@@ -846,6 +996,8 @@ router.get('/list', async (req, res) => {
 
       // Calculate bowling performance per match (using pre-fetched opponent data)
       const bowlingStats = stats.map((stat) => ({
+        statId: stat._id,
+        opponentUserId: stat.opponentUserId || null,
         match: stat.matchName,
         overs: convertBallsToOvers(stat.bowlingStats?.ballsBowled),
         wickets: stat.bowlingStats?.wickets || 0,
@@ -869,12 +1021,16 @@ router.get('/list', async (req, res) => {
         0
       );
       
+      const ownerInfo = isAdmin ? ownerByPlayerId.get(String(player._id)) : null;
+
       return {
         _id: player._id,
         name: player.name,
         type: player.type,
         role: player.role,
-        team: user.teamName, // Get team name from the user document
+        team: isAdmin ? (ownerInfo?.ownerTeamName || 'Unknown') : user.teamName,
+        ownerUserId: isAdmin ? ownerInfo?.ownerUserId || null : user._id,
+        ownerTeamName: isAdmin ? ownerInfo?.ownerTeamName || 'Unknown' : user.teamName,
         matchPerformance: {
           batting: battingStats,
           bowling: bowlingStats
@@ -953,7 +1109,8 @@ router.post('/store', async (req, res) => {
     const result = await savePlayerStatsEntry(req.body);
     if (result.action === 'updated') {
       return res.status(200).json({
-        message: 'Player stats updated successfully',
+        message: result.message || 'Player stats updated successfully',
+        noChanges: !!result.noChanges,
         data: result.doc,
       });
     }
@@ -970,6 +1127,7 @@ router.post('/store', async (req, res) => {
   } finally {
     // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when stats are saved/updated
     cache.del('stats-overview');
+    invalidateCache('player-stats-list');
     invalidateCache('players:data'); // Invalidate top rankings cache
     venueAnalyticsCache.flushAll();
   }
