@@ -406,6 +406,69 @@ router.post('/:id/reject', requireUser, async (req, res) => {
   }
 });
 
+  return submission;
+}
+
+function applyPendingSubmissionFields(submission, body) {
+  if (body.winner !== undefined) submission.winner = body.winner;
+  if (body.margin !== undefined) submission.margin = String(body.margin || '').trim();
+  if (body.team1Score !== undefined) submission.team1Score = String(body.team1Score || '').trim();
+  if (body.team2Score !== undefined) submission.team2Score = String(body.team2Score || '').trim();
+  if (body.team1Overs !== undefined) submission.team1Overs = String(body.team1Overs || '').trim();
+  if (body.team2Overs !== undefined) submission.team2Overs = String(body.team2Overs || '').trim();
+  if (body.team1Fairness !== undefined) submission.team1Fairness = Number(body.team1Fairness);
+  if (body.team2Fairness !== undefined) submission.team2Fairness = Number(body.team2Fairness);
+  if (body.mom !== undefined) {
+    submission.mom = {
+      name: body.mom?.name?.trim() || null,
+      score: body.mom?.score != null && body.mom.score !== '' ? Number(body.mom.score) : null,
+      wickets:
+        body.mom?.wickets != null && body.mom.wickets !== '' ? Number(body.mom.wickets) : null,
+    };
+  }
+}
+
+// POST /api/fixture-submissions/admin/:id/update — save edits only, stays pending
+router.post('/admin/:id/update', requireAdmin, async (req, res) => {
+  try {
+    const submission = await FixtureSubmission.findById(req.params.id);
+    if (!submission) return res.status(404).json({ error: 'Submission not found' });
+    if (submission.status !== 'pending') {
+      return res.status(400).json({ error: 'Submission is no longer pending' });
+    }
+
+    const body = req.body || {};
+    const merged = {
+      fixtureId: submission.fixtureId,
+      winner: body.winner ?? submission.winner,
+      margin: body.margin ?? submission.margin,
+      team1Score: body.team1Score ?? submission.team1Score,
+      team2Score: body.team2Score ?? submission.team2Score,
+      team1Overs: body.team1Overs ?? submission.team1Overs,
+      team2Overs: body.team2Overs ?? submission.team2Overs,
+      mom: body.mom ?? submission.mom,
+      team1Fairness: body.team1Fairness ?? submission.team1Fairness,
+      team2Fairness: body.team2Fairness ?? submission.team2Fairness,
+    };
+
+    const errors = validateSubmissionBody(merged);
+    if (errors.length) {
+      return res.status(400).json({ error: errors.join('; ') });
+    }
+
+    applyPendingSubmissionFields(submission, merged);
+    await submission.save();
+
+    res.json({
+      message: 'Submission updated. Still pending until you approve.',
+      submission,
+    });
+  } catch (err) {
+    console.error('Update fixture submission error:', err);
+    res.status(500).json({ error: err.message || 'Update failed' });
+  }
+});
+
 // POST /api/fixture-submissions/admin/:id/approve
 router.post('/admin/:id/approve', requireAdmin, async (req, res) => {
   try {
