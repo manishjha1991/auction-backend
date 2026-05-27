@@ -280,6 +280,32 @@ router.get('/my', requireUser, async (req, res) => {
   }
 });
 
+// GET /api/fixture-submissions/pending-by-team?teamName= — for points table match list
+router.get('/pending-by-team', async (req, res) => {
+  try {
+    const teamName = String(req.query.teamName || '').trim();
+    if (!teamName) {
+      return res.status(400).json({ error: 'teamName query parameter is required' });
+    }
+    const mine = normalizeTeamKey(teamName);
+    const list = await FixtureSubmission.find({ status: 'pending' })
+      .select(
+        'fixtureId team1 team2 submitterName submitterTeamName winner margin team1Score team2Score createdAt'
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const filtered = list.filter(
+      (s) =>
+        mine === normalizeTeamKey(s.team1 || '') || mine === normalizeTeamKey(s.team2 || '')
+    );
+    res.json(filtered);
+  } catch (err) {
+    console.error('Pending-by-team error:', err);
+    res.status(500).json({ error: 'Failed to load pending submissions' });
+  }
+});
+
 // GET /api/fixture-submissions/opponent/pending — awaiting confirmation from opposing team
 router.get('/opponent/pending', requireUser, async (req, res) => {
   try {
