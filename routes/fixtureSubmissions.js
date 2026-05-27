@@ -406,9 +406,6 @@ router.post('/:id/reject', requireUser, async (req, res) => {
   }
 });
 
-  return submission;
-}
-
 function applyPendingSubmissionFields(submission, body) {
   if (body.winner !== undefined) submission.winner = body.winner;
   if (body.margin !== undefined) submission.margin = String(body.margin || '').trim();
