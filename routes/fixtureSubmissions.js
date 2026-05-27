@@ -63,7 +63,7 @@ const validateSubmissionBody = (body) => {
   }
   if (!String(body.team1Overs || '').trim()) errors.push('Team 1 overs is required');
   if (!String(body.team2Overs || '').trim()) errors.push('Team 2 overs is required');
-  if (!body.mom?.name?.trim()) errors.push('Man of the Match is required');
+  // MoM is optional — only winner, scores, overs, fairness are required
   if (body.team1Fairness === '' || body.team1Fairness == null) {
     errors.push('Team 1 fairness is required');
   }
