@@ -4,6 +4,7 @@ const Notification = require('../models/Notification');
 const BidNotification = require('../models/BidNotification');
 const Schedule = require('../models/Schedule');
 const { checkDBHealth, safeQuery } = require('../middleware/dbHealth');
+const authenticateJWT = require('../middleware/authJWT');
 
 // Apply database health check to all routes
 router.use(checkDBHealth);
@@ -69,11 +70,12 @@ router.get('/', async (req, res) => {
 });
 
 // Deactivate bid notifications where this user is current or second bidder (auction hub "clear")
-router.post('/bid/clear-for-user', async (req, res) => {
+router.post('/bid/clear-for-user', authenticateJWT, async (req, res) => {
   try {
-    const userId = req.body?.userId != null ? String(req.body.userId) : '';
-    if (!userId) {
-      return res.status(400).json({ message: 'userId is required' });
+    const userId = String(req.authenticatedUser._id);
+    const requestedUserId = req.body?.userId != null ? String(req.body.userId) : '';
+    if (requestedUserId && requestedUserId !== userId) {
+      return res.status(403).json({ message: 'You can only clear your own bid alerts' });
     }
     await BidNotification.updateMany(
       {

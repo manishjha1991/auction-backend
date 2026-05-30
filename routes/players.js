@@ -11,6 +11,7 @@ const { cacheConfig, invalidateCache, flushStatsOverviewCache } = require('../ut
 const multerMemory = require('../config/multerMemory');
 const { saveProfilePictureLocal } = require('../utils/saveProfilePictureLocal');
 const { removeLocalProfilePictureIfSafe } = require('../utils/removeLocalProfilePictureIfSafe');
+const authenticateJWT = require('../middleware/authJWT');
 const router = express.Router();
 const formatPrice = (value) => {
   if (value >= 10000000) {
@@ -234,14 +235,10 @@ router.post('/:playerId/deactivate', async (req, res) => {
 async function handleAdminProfilePictureLocal(req, res) {
   try {
     const { playerId } = req.params;
-    const actingUserId = req.body?.userId || req.body?.adminUserId;
-    if (!actingUserId) {
-      return res.status(400).json({ message: 'userId is required' });
-    }
     if (!req.file?.buffer) {
       return res.status(400).json({ message: 'Image file required (field name: profilePicture)' });
     }
-    const actor = await User.findById(actingUserId).select('isAdmin boughtPlayers').lean();
+    const actor = await User.findById(req.authenticatedUser._id).select('isAdmin boughtPlayers').lean();
     if (!actor) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -285,6 +282,7 @@ async function handleAdminProfilePictureLocal(req, res) {
 
 router.post(
   '/:playerId/admin/profile-picture',
+  authenticateJWT,
   multerMemory.single('profilePicture'),
   handleAdminProfilePictureLocal
 );
