@@ -341,6 +341,7 @@ router.post("/bid/sold", async (req, res) => {
 
     // We'll store the result for each player
     const results = [];
+    const io = req.app.get('io');
 
     // Process each player ID with the EXACT same logic as your single "sold" code
     for (const pid of idsToSell) {
@@ -567,6 +568,8 @@ router.post("/bid/sold", async (req, res) => {
           }
         }
 
+        await bidQueueService.clearQueueForSoldPlayer(pid, io);
+
         results.push({
           playerID: pid,
           status: "success",
@@ -586,7 +589,6 @@ router.post("/bid/sold", async (req, res) => {
     }
 
     // Emit socket event for player sold (affects purse values)
-    const io = req.app.get('io');
     if (io) {
       io.emit('player_sold', {
         message: 'Player(s) sold - purse values updated',
@@ -1070,6 +1072,8 @@ async function sellPlayer(playerId, io = null) {
       });
       throw new Error(`Player status verification failed for ${playerId}`);
     }
+
+    await bidQueueService.clearQueueForSoldPlayer(playerId, io);
 
     return {
       playerID: playerId,
@@ -1800,9 +1804,12 @@ router.get('/users-dashboard', async (req, res) => {
 });
 
 // Personalized auction command center: running bids, purses, queues, notifications
-router.get('/my-auction-hub/:userId', async (req, res) => {
+router.get('/my-auction-hub/:userId', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
+    if (String(req.authenticatedUser._id) !== String(userId)) {
+      return res.status(403).json({ message: 'You can only view your own auction hub.' });
+    }
     const me = await User.findById(userId)
       .select('name teamName purse _id abbreviation isAdmin')
       .lean();

@@ -25,8 +25,14 @@ const MatchResult = require('../models/MatchResult');
 const Tournament = require('../models/Tournament');
 const multer = require('multer');
 const path = require('path');
+const authenticateJWT = require('../middleware/authJWT');
 // Configure Multer for file uploads
 const upload = multer({ dest: 'uploads/' });
+
+function canManageUser(req, targetUserId) {
+  const actor = req.authenticatedUser;
+  return !!actor && (actor.isAdmin || String(actor._id) === String(targetUserId));
+}
 
 // Signup Route
 router.post('/signup', async (req, res) => {
@@ -784,12 +790,16 @@ router.get("/purses", async (req, res) => {
 
 //Edit Profile Api 
 
-router.put('/:id', upload.single('teamImage'), async (req, res) => {
+router.put('/:id', authenticateJWT, upload.single('teamImage'), async (req, res) => {
   try {
     const userId = req.params.id;
     const { name, teamName, timezone, streamLink, abbreviation } = req.body;
     
     console.log('Profile update request:', { userId, name, teamName, timezone, streamLink });
+
+    if (!canManageUser(req, userId)) {
+      return res.status(403).json({ message: 'Only the team owner or an admin can update this profile.' });
+    }
 
     // Validate inputs
     if (!name || !teamName) {
@@ -1627,22 +1637,17 @@ router.get('/:userId/roster', async (req, res) => {
 });
 
 // PUT: set squad captain (team owner or admin; player must be on active roster)
-router.put('/:userId/captain', async (req, res) => {
+router.put('/:userId/captain', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { playerId, requesterUserId } = req.body || {};
-    if (!requesterUserId) {
-      return res.status(400).json({ message: 'requesterUserId is required' });
-    }
+    const { playerId } = req.body || {};
 
-    const requester = await User.findById(requesterUserId).select('isAdmin').lean();
     const teamUser = await User.findById(userId);
     if (!teamUser) {
       return res.status(404).json({ message: 'Team not found' });
     }
 
-    const isOwner = String(requesterUserId) === String(userId);
-    if (!requester?.isAdmin && !isOwner) {
+    if (!canManageUser(req, userId)) {
       return res.status(403).json({ message: 'Only the team owner or an admin can set captain' });
     }
 
@@ -1696,22 +1701,17 @@ function normalizeThemeHex(input) {
 }
 
 // PUT: squad card colours for Team Squads page (owner for self, or admin for any team)
-router.put('/:userId/squad-theme', async (req, res) => {
+router.put('/:userId/squad-theme', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { requesterUserId, themePrimary, themeSecondary } = req.body || {};
-    if (!requesterUserId) {
-      return res.status(400).json({ message: 'requesterUserId is required' });
-    }
+    const { themePrimary, themeSecondary } = req.body || {};
 
-    const requester = await User.findById(requesterUserId).select('isAdmin').lean();
     const teamUser = await User.findById(userId);
     if (!teamUser) {
       return res.status(404).json({ message: 'Team not found' });
     }
 
-    const isOwner = String(requesterUserId) === String(userId);
-    if (!requester?.isAdmin && !isOwner) {
+    if (!canManageUser(req, userId)) {
       return res.status(403).json({
         message: 'Only the team owner or an admin can change squad colours',
       });

@@ -93,6 +93,36 @@ function emitQueuePersonal(io, userId, payload) {
   ids.forEach((sid) => io.to(sid).emit("bid_queue_personal", payload));
 }
 
+async function clearQueueForSoldPlayer(playerId, io) {
+  return withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) return { refundedCount: 0, refundedAmount: 0 };
+
+    const player = await Player.findById(playerId).select("name").lean();
+    let refundedCount = 0;
+    let refundedAmount = 0;
+
+    for (const entry of doc.entries) {
+      if (entry.status !== "queued") continue;
+      const refund = Number(entry.lockedAmount) || 0;
+      await refundPurse(entry.userId, refund);
+      refundedCount += 1;
+      refundedAmount += refund;
+      emitQueuePersonal(io, entry.userId, {
+        type: "removed",
+        reason: "player_sold",
+        playerId: playerId.toString(),
+        playerName: player?.name || "",
+        refund,
+      });
+    }
+
+    await BidPlayerQueue.deleteOne({ _id: doc._id });
+    await emitBidQueueUpdated(io, playerId, 0);
+    return { refundedCount, refundedAmount };
+  });
+}
+
 async function removeQueuedEntryById(playerId, subdocId, reason, io) {
   const doc = await BidPlayerQueue.findOne({ playerId });
   if (!doc) return;
@@ -741,6 +771,7 @@ module.exports = {
   updateQueueMax,
   getQueueState,
   listMyQueueMemberships,
+  clearQueueForSoldPlayer,
   isPromotedProxyBidder,
   resignActiveProxyToManual,
   afterBidPlaced,
