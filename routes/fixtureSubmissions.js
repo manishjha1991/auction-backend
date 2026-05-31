@@ -227,12 +227,7 @@ router.post('/submit', requireUser, async (req, res) => {
 
     const user = req.authUser;
     const isAdmin = !!user.isAdmin;
-    const isInFixture =
-      fixture.team1 === user.teamName ||
-      fixture.team2 === user.teamName ||
-      isAdmin;
-
-    if (!isInFixture) {
+    if (!isAdmin && !userInFixture(user, fixture)) {
       return res.status(403).json({
         error: 'You can only submit results for fixtures involving your team.',
       });
