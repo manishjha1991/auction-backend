@@ -15,6 +15,7 @@ const RetainedPlayer = require('../models/RetainedPlayer');
 const { invalidateCache } = require('../utils/cache');
 const { placeBidCore } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
+const { withPlayerBidLock } = require('../utils/bidQueueMutex');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
 
 // Place a bid
@@ -82,33 +83,39 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
   }
 
   try {
-    const blocked = await bidQueueService.shouldBlockManualBid(playerId, authenticatedUserId);
-    if (blocked) {
-      return res.status(409).json({
-        message:
-          "Manual bidding is paused for this player while users are in the bid queue. Join the queue or wait until it clears. Only the two active bidders may bid.",
-      });
-    }
-
-    const proxyBidder = await bidQueueService.isPromotedProxyBidder(
-      playerId,
-      authenticatedUserId
-    );
-    if (proxyBidder) {
-      return res.status(403).json({
-        message:
-          "You were promoted from the bid queue: auto-bidding is active up to your max. You cannot place manual bids — use Exit to leave the auction.",
-      });
-    }
-
     const io = req.app.get("io");
-    const result = await placeBidCore({
-      playerId,
-      bidderId: bidder,
-      clientIP,
-      deviceFingerprint,
-      isSuspiciousIP,
-      io,
+    const result = await withPlayerBidLock(playerId, async () => {
+      const blocked = await bidQueueService.shouldBlockManualBid(playerId, authenticatedUserId);
+      if (blocked) {
+        return {
+          ok: false,
+          status: 409,
+          message:
+            "Manual bidding is paused for this player while users are in the bid queue. Join the queue or wait until it clears. Only the two active bidders may bid.",
+        };
+      }
+
+      const proxyBidder = await bidQueueService.isPromotedProxyBidder(
+        playerId,
+        authenticatedUserId
+      );
+      if (proxyBidder) {
+        return {
+          ok: false,
+          status: 403,
+          message:
+            "You were promoted from the bid queue: auto-bidding is active up to your max. You cannot place manual bids — use Exit to leave the auction.",
+        };
+      }
+
+      return placeBidCore({
+        playerId,
+        bidderId: bidder,
+        clientIP,
+        deviceFingerprint,
+        isSuspiciousIP,
+        io,
+      });
     });
 
     if (!result.ok) {
@@ -206,6 +213,12 @@ router.post("/:playerId/exit", async (req, res) => {
           await player.save();
 
           const ioAdmin = req.app.get("io");
+          await bidQueueService.removeUserQueueEntriesForPlayer({
+            playerId,
+            userId: secondHighestBid.bidder,
+            reason: "auction_exit",
+            io: ioAdmin,
+          });
           await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin);
 
           return res.json({
@@ -243,6 +256,14 @@ router.post("/:playerId/exit", async (req, res) => {
     // Mark the user's bid for this player as inactive
     await Bid.updateMany({ playerId, bidder: userId }, { $set: { isActive: false, isBidOn: false } });
 
+    const io = req.app.get('io');
+    await bidQueueService.removeUserQueueEntriesForPlayer({
+      playerId,
+      userId,
+      reason: "auction_exit",
+      io,
+    });
+
     // Update the player's current bid and bidder
     const otherBidders = activeBids.filter((bid) => bid.bidder.toString() !== userId);
     if (otherBidders.length > 0) {
@@ -256,7 +277,6 @@ router.post("/:playerId/exit", async (req, res) => {
     }
     await player.save();
     // Emit exit notification for admin branch
-    const io = req.app.get('io');
     const notificationData = {
       message: `Bid exit: ${user.name} (2nd highest) has exited the bid on ${player.name}. Locked amount refunded.`,
       playername: player.name,
@@ -732,6 +752,12 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
           { playerId, bidder: secondHighestBid.bidder },
           { $set: { isActive: false, isBidOn: false } }
         );
+        await bidQueueService.removeUserQueueEntriesForPlayer({
+          playerId,
+          userId: secondHighestBid.bidder,
+          reason: "system_exit",
+          io,
+        });
 
         // Update the player's current bid and bidder
         const remainingBidders = activeBids.filter((bid) => bid.bidder.toString() !== secondHighestBid.bidder);
@@ -747,6 +773,8 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
         player.lastExitAt = new Date();
         player.lastExitBy = 'system';
         await player.save();
+
+        await bidQueueService.tryPromoteNextQueued(playerId, io);
 
         return {
           message: "The second-highest bidder has exited successfully. Locked amount refunded.",
