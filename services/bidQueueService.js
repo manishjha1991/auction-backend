@@ -114,6 +114,47 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
   await emitBidQueueUpdated(io, playerId);
 }
 
+async function removeUserQueueEntriesForPlayer({ playerId, userId, reason = "exited", io }) {
+  if (!isEnabled()) return { removedCount: 0 };
+
+  return withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) return { removedCount: 0 };
+
+    const uid = userId.toString();
+    const entriesToRemove = doc.entries.filter((e) => e.userId.toString() === uid);
+    if (!entriesToRemove.length) return { removedCount: 0 };
+
+    const queuedRefund = entriesToRemove
+      .filter((e) => e.status === "queued")
+      .reduce((sum, e) => sum + (Number(e.lockedAmount) || 0), 0);
+
+    for (const entry of entriesToRemove) {
+      doc.entries.pull(entry._id);
+    }
+
+    if (!doc.entries.length) {
+      await BidPlayerQueue.deleteOne({ _id: doc._id });
+    } else {
+      await doc.save();
+    }
+
+    if (queuedRefund > 0) {
+      await refundPurse(userId, queuedRefund);
+    }
+
+    emitQueuePersonal(io, userId, {
+      type: "removed",
+      reason,
+      playerId: playerId.toString(),
+      refund: queuedRefund,
+    });
+    await emitBidQueueUpdated(io, playerId);
+
+    return { removedCount: entriesToRemove.length, refunded: queuedRefund };
+  });
+}
+
 async function pruneQueuedOverMax(playerId, io) {
   if (!isEnabled()) return;
   await withPlayerBidLock(playerId, async () => {
@@ -743,6 +784,7 @@ module.exports = {
   listMyQueueMemberships,
   isPromotedProxyBidder,
   resignActiveProxyToManual,
+  removeUserQueueEntriesForPlayer,
   afterBidPlaced,
   runProxyContinuation,
 };
