@@ -5,6 +5,8 @@ const User = require('../models/User');
 const {
   saveFixtureResult,
   buildFixtureSaveBodyFromSubmission,
+  resolveWinnerName,
+  resolveWinnerUserId,
 } = require('../utils/fixtureSaveService');
 
 const router = express.Router();
@@ -73,14 +75,23 @@ const validateSubmissionBody = (body) => {
   return errors;
 };
 
-const buildSubmissionPayload = (body, fixture, user) => ({
+const buildSubmissionPayload = (body, fixture, user) => {
+  const winnerUserId = resolveWinnerUserId(body.winner, fixture);
+  const winner = winnerUserId
+    ? String(winnerUserId) === String(fixture.team1UserId)
+      ? fixture.team1
+      : fixture.team2
+    : resolveWinnerName(body.winner, fixture) || body.winner;
+
+  return {
   fixtureId: fixture._id,
   submittedBy: user._id,
   submitterName: user.name || user.username || '',
   submitterTeamName: user.teamName || '',
   team1: fixture.team1,
   team2: fixture.team2,
-  winner: body.winner,
+  winner,
+  winnerUserId: winnerUserId || null,
   margin: String(body.margin || '').trim(),
   team1Score: String(body.team1Score || '').trim(),
   team2Score: String(body.team2Score || '').trim(),
@@ -94,11 +105,19 @@ const buildSubmissionPayload = (body, fixture, user) => ({
   },
   team1Fairness: Number(body.team1Fairness),
   team2Fairness: Number(body.team2Fairness),
-});
+};
+};
 
 async function applyFixtureSave(submission, req) {
   const fixture = await Fixture.findById(submission.fixtureId);
   if (!fixture) throw new Error('Fixture not found');
+  if (!fixture.team1UserId || !fixture.team2UserId) {
+    const err = new Error(
+      `This fixture (${fixture.team1} vs ${fixture.team2}) is missing team user IDs. Ask admin to fix the fixture before confirming.`
+    );
+    err.status = 400;
+    throw err;
+  }
 
   const payload = buildFixtureSaveBodyFromSubmission(submission, fixture);
   return saveFixtureResult(payload, { req });
@@ -176,6 +195,25 @@ async function processApproval(submission, req, overrides = {}, allowOverrides =
   }
 
   Object.assign(submission, merged);
+
+  const fixture = await Fixture.findById(submission.fixtureId);
+  if (!fixture?.team1UserId || !fixture?.team2UserId) {
+    const err = new Error(
+      `Fixture (${fixture?.team1} vs ${fixture?.team2}) is missing team user IDs. Cannot confirm result.`
+    );
+    err.status = 400;
+    throw err;
+  }
+  const winnerUserId = resolveWinnerUserId(submission.winner, fixture);
+  if (!winnerUserId) {
+    const err = new Error('Winner must be one of the two teams in this fixture.');
+    err.status = 400;
+    throw err;
+  }
+  submission.winnerUserId = winnerUserId;
+  submission.winner =
+    String(winnerUserId) === String(fixture.team1UserId) ? fixture.team1 : fixture.team2;
+
   await applyFixtureSave(submission, req);
 
   submission.status = 'approved';
@@ -223,6 +261,16 @@ router.post('/submit', requireUser, async (req, res) => {
     const fixture = await Fixture.findById(req.body.fixtureId);
     if (!fixture || !fixture.isActive) {
       return res.status(404).json({ error: 'Fixture not found' });
+    }
+    if (!fixture.team1UserId || !fixture.team2UserId) {
+      return res.status(400).json({
+        error: 'This fixture is missing team user IDs. Contact admin before submitting a result.',
+      });
+    }
+    if (!resolveWinnerUserId(req.body.winner, fixture)) {
+      return res.status(400).json({
+        error: 'Winner must be one of the two teams in this fixture.',
+      });
     }
 
     const user = req.authUser;
@@ -401,8 +449,22 @@ router.post('/:id/reject', requireUser, async (req, res) => {
   }
 });
 
-function applyPendingSubmissionFields(submission, body) {
-  if (body.winner !== undefined) submission.winner = body.winner;
+function applyPendingSubmissionFields(submission, body, fixture) {
+  if (body.winner !== undefined) {
+    submission.winner = body.winner;
+    if (fixture) {
+      submission.winnerUserId = resolveWinnerUserId(body.winner, fixture);
+      const winnerUserId = submission.winnerUserId;
+      if (winnerUserId) {
+        submission.winner =
+          String(winnerUserId) === String(fixture.team1UserId)
+            ? fixture.team1
+            : fixture.team2;
+      } else {
+        submission.winner = resolveWinnerName(body.winner, fixture) || body.winner;
+      }
+    }
+  }
   if (body.margin !== undefined) submission.margin = String(body.margin || '').trim();
   if (body.team1Score !== undefined) submission.team1Score = String(body.team1Score || '').trim();
   if (body.team2Score !== undefined) submission.team2Score = String(body.team2Score || '').trim();
@@ -448,7 +510,7 @@ router.post('/admin/:id/update', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: errors.join('; ') });
     }
 
-    applyPendingSubmissionFields(submission, merged);
+    applyPendingSubmissionFields(submission, merged, await Fixture.findById(submission.fixtureId));
     await submission.save();
 
     res.json({

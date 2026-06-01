@@ -384,6 +384,52 @@ router.post('/save', isAdmin, async (req, res) => {
   }
 });
 
+// Admin: apply points for a completed fixture when stats were never written (e.g. OCR name mismatch).
+router.post('/reapply-points/:id', isAdmin, async (req, res) => {
+  try {
+    const fixture = await Fixture.findById(req.params.id);
+    if (!fixture) return res.status(404).json({ error: 'Fixture not found' });
+    if (!fixture.winner) {
+      return res.status(400).json({ error: 'This fixture has no winner yet.' });
+    }
+    if (fixture.pointsTableApplied) {
+      return res.status(400).json({
+        error: 'Points were already applied for this fixture. Use Save to edit the result instead.',
+      });
+    }
+
+    const result = await saveFixtureResult(
+      {
+        _id: fixture._id,
+        team1: fixture.team1,
+        team2: fixture.team2,
+        team1UserId: fixture.team1UserId,
+        team2UserId: fixture.team2UserId,
+        winner: fixture.winner,
+        margin: fixture.margin,
+        team1Score: fixture.team1Score,
+        team2Score: fixture.team2Score,
+        team1Overs: fixture.team1Overs,
+        team2Overs: fixture.team2Overs,
+        mom: fixture.mom,
+        team1Fairness: fixture.team1Fairness,
+        team2Fairness: fixture.team2Fairness,
+        group: fixture.group,
+        matchType: fixture.matchType,
+      },
+      { req }
+    );
+
+    res.status(200).json({
+      message: 'Points table updated for this fixture.',
+      ...result,
+    });
+  } catch (error) {
+    console.error('Reapply points error:', error);
+    res.status(500).json({ error: error.message || 'Failed to reapply points' });
+  }
+});
+
 // Get fixtures filtered by group or match type
 router.get('/filter', async (req, res) => {
   try {

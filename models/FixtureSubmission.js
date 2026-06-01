@@ -18,6 +18,11 @@ const FixtureSubmissionSchema = new mongoose.Schema(
     team1: { type: String, required: true },
     team2: { type: String, required: true },
     winner: { type: String, default: null },
+    winnerUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
     margin: { type: String, default: null },
     team1Score: { type: String, default: null },
     team2Score: { type: String, default: null },

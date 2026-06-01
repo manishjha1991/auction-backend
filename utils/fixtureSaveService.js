@@ -11,6 +11,158 @@ const { applyCareerLeagueResult } = require('./careerUserCounters');
 
 const SCORE_FORMAT_REGEX = /^\d+\/\d+$/;
 
+const normalizeTeamKey = (value = '') =>
+  String(value || '')
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase();
+
+const escapeRegex = (value = '') => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Match User by exact teamName, then case-insensitive, then normalized key via userId on fixture. */
+async function findUserForTeam(teamName, userId) {
+  if (userId) {
+    const byId = await User.findById(userId);
+    if (byId) return byId;
+  }
+  if (!teamName || !String(teamName).trim()) return null;
+
+  const trimmed = String(teamName).trim();
+  const exact = await User.findOne({ teamName: trimmed });
+  if (exact) return exact;
+
+  const loose = await User.findOne({
+    teamName: { $regex: new RegExp(`^${escapeRegex(trimmed)}$`, 'i') },
+  });
+  if (loose) return loose;
+
+  const key = normalizeTeamKey(trimmed);
+  if (!key) return null;
+
+  const candidates = await User.find({
+    teamName: { $exists: true, $nin: [null, '', 'NA'] },
+    isAdmin: { $ne: true },
+  })
+    .select('teamName')
+    .lean();
+
+  const hit = candidates.find((u) => normalizeTeamKey(u.teamName) === key);
+  return hit ? User.findById(hit._id) : null;
+}
+
+/** Load both team owners by fixture user IDs — never by team name string. */
+async function loadFixtureTeamUsers(fixture) {
+  if (!fixture?.team1UserId || !fixture?.team2UserId) {
+    throw new Error(
+      `Fixture "${fixture?.team1 || '?'} vs ${fixture?.team2 || '?'}" is missing team user IDs. Cannot update points table.`
+    );
+  }
+
+  const [team1User, team2User] = await Promise.all([
+    User.findById(fixture.team1UserId),
+    User.findById(fixture.team2UserId),
+  ]);
+
+  if (!team1User || !team2User) {
+    throw new Error(
+      `Could not load both team users for fixture ${fixture._id} (team1UserId=${fixture.team1UserId}, team2UserId=${fixture.team2UserId}).`
+    );
+  }
+
+  return { team1User, team2User };
+}
+
+/**
+ * Which team won — resolved via user IDs on the fixture, with normalized name fallback.
+ * Returns team1UserId or team2UserId of the winning side.
+ */
+function resolveWinnerUserId(winner, fixture) {
+  if (!winner || !fixture) return null;
+
+  const winnerStr = String(winner).trim();
+  if (fixture.team1UserId && winnerStr === String(fixture.team1UserId)) return fixture.team1UserId;
+  if (fixture.team2UserId && winnerStr === String(fixture.team2UserId)) return fixture.team2UserId;
+
+  const wKey = normalizeTeamKey(winnerStr);
+  if (!wKey) return null;
+
+  if (fixture.team1UserId && wKey === normalizeTeamKey(fixture.team1)) return fixture.team1UserId;
+  if (fixture.team2UserId && wKey === normalizeTeamKey(fixture.team2)) return fixture.team2UserId;
+
+  return null;
+}
+
+/** Map OCR/submission winner to the fixture's canonical team1 or team2 display string. */
+function resolveWinnerName(winner, fixture) {
+  if (!winner || !fixture) return winner;
+
+  const winnerUserId = resolveWinnerUserId(winner, fixture);
+  if (winnerUserId && fixture.team1UserId && String(winnerUserId) === String(fixture.team1UserId)) {
+    return fixture.team1;
+  }
+  if (winnerUserId && fixture.team2UserId && String(winnerUserId) === String(fixture.team2UserId)) {
+    return fixture.team2;
+  }
+
+  const wKey = normalizeTeamKey(winner);
+  if (wKey && wKey === normalizeTeamKey(fixture.team1)) return fixture.team1;
+  if (wKey && wKey === normalizeTeamKey(fixture.team2)) return fixture.team2;
+  return winner;
+}
+
+function isTeam1Winner(fixture, winner) {
+  const winnerUserId = resolveWinnerUserId(winner, fixture);
+  if (winnerUserId && fixture.team1UserId) {
+    return String(winnerUserId) === String(fixture.team1UserId);
+  }
+  return resolveWinnerName(winner, fixture) === fixture.team1;
+}
+
+async function revertPointsTableStats(fixture, winner, team1Fairness, team2Fairness) {
+  const { team1User, team2User } = await loadFixtureTeamUsers(fixture);
+  const winnerUserId = resolveWinnerUserId(winner, fixture);
+  if (!winnerUserId) {
+    throw new Error(`Cannot revert points: unknown winner "${winner}" for fixture ${fixture._id}`);
+  }
+
+  if (String(winnerUserId) === String(fixture.team1UserId)) {
+    team1User.points = Math.max(0, (team1User.points || 0) - 2);
+  } else {
+    team2User.points = Math.max(0, (team2User.points || 0) - 2);
+  }
+
+  team1User.fairnessPoint = Math.max(0, (team1User.fairnessPoint || 0) - (team1Fairness || 0));
+  team2User.fairnessPoint = Math.max(0, (team2User.fairnessPoint || 0) - (team2Fairness || 0));
+  team1User.matchesPlayed = Math.max(0, (team1User.matchesPlayed || 0) - 1);
+  team2User.matchesPlayed = Math.max(0, (team2User.matchesPlayed || 0) - 1);
+
+  await Promise.all([team1User.save(), team2User.save()]);
+}
+
+async function applyPointsTableStats(fixture) {
+  const { team1User, team2User } = await loadFixtureTeamUsers(fixture);
+  const winnerUserId = resolveWinnerUserId(fixture.winner, fixture);
+  if (!winnerUserId) {
+    throw new Error(
+      `Cannot update points table: winner "${fixture.winner}" does not match either team in fixture ${fixture._id}.`
+    );
+  }
+
+  if (String(winnerUserId) === String(fixture.team1UserId)) {
+    team1User.points = (team1User.points || 0) + 2;
+  } else if (String(winnerUserId) === String(fixture.team2UserId)) {
+    team2User.points = (team2User.points || 0) + 2;
+  } else {
+    throw new Error(`Winner user ${winnerUserId} is not part of fixture ${fixture._id}`);
+  }
+
+  team1User.fairnessPoint = (team1User.fairnessPoint || 0) + (fixture.team1Fairness || 0);
+  team2User.fairnessPoint = (team2User.fairnessPoint || 0) + (fixture.team2Fairness || 0);
+  team1User.matchesPlayed = (team1User.matchesPlayed || 0) + 1;
+  team2User.matchesPlayed = (team2User.matchesPlayed || 0) + 1;
+
+  await Promise.all([team1User.save(), team2User.save()]);
+}
+
 function validateFixturePayload(body) {
   const {
     team1Score,
@@ -40,15 +192,11 @@ function validateFixturePayload(body) {
   return { team1OversStr, team2OversStr };
 }
 
-async function assertTeamsParticipating(team1, team2) {
-  if (!team1 || !team2) return;
+async function assertTeamsParticipating(team1, team2, team1UserId, team2UserId) {
+  if (!team1 && !team2) return;
 
-  const team1User = await User.findOne({ teamName: team1, isActive: true })
-    .select('isParticipating teamName')
-    .lean();
-  const team2User = await User.findOne({ teamName: team2, isActive: true })
-    .select('isParticipating teamName')
-    .lean();
+  const team1User = await findUserForTeam(team1, team1UserId);
+  const team2User = await findUserForTeam(team2, team2UserId);
 
   if (team1User && team1User.isParticipating === false) {
     throw new Error(`${team1} is not participating in the current season. Cannot create or update fixture.`);
@@ -82,8 +230,8 @@ async function findFixtureDocument(body) {
     let userId2 = team2UserId || null;
 
     if (!userId1 || !userId2) {
-      const team1UserLookup = await User.findOne({ teamName: team1, isActive: true }).lean();
-      const team2UserLookup = await User.findOne({ teamName: team2, isActive: true }).lean();
+      const team1UserLookup = await findUserForTeam(team1, userId1);
+      const team2UserLookup = await findUserForTeam(team2, userId2);
       userId1 = userId1 || (team1UserLookup ? team1UserLookup._id : null);
       userId2 = userId2 || (team2UserLookup ? team2UserLookup._id : null);
     }
@@ -131,22 +279,31 @@ async function saveFixtureResult(body, options = {}) {
     matchType,
   } = body;
 
-  await assertTeamsParticipating(team1, team2);
+  await assertTeamsParticipating(team1, team2, team1UserId, team2UserId);
   const { team1OversStr, team2OversStr } = validateFixturePayload(body);
 
   let fixture = await findFixtureDocument(body);
   let oldWinnerBeforeSave = null;
+  let prevStatsApplied = false;
+  let prevTeam1Fairness = 0;
+  let prevTeam2Fairness = 0;
+  const canonicalWinner =
+    winner !== undefined && winner !== null && fixture
+      ? resolveWinnerName(winner, fixture)
+      : winner !== undefined && winner !== null
+        ? winner
+        : undefined;
 
   if (!fixture) {
     let finalUserId1 = team1UserId || null;
     let finalUserId2 = team2UserId || null;
 
     if (!finalUserId1 && team1) {
-      const team1User = await User.findOne({ teamName: team1, isActive: true });
+      const team1User = await findUserForTeam(team1, null);
       finalUserId1 = team1User?._id || null;
     }
     if (!finalUserId2 && team2) {
-      const team2User = await User.findOne({ teamName: team2, isActive: true });
+      const team2User = await findUserForTeam(team2, null);
       finalUserId2 = team2User?._id || null;
     }
 
@@ -155,7 +312,7 @@ async function saveFixtureResult(body, options = {}) {
       team2,
       team1UserId: finalUserId1,
       team2UserId: finalUserId2,
-      winner,
+      winner: canonicalWinner,
       margin,
       mom: mom
         ? {
@@ -175,7 +332,10 @@ async function saveFixtureResult(body, options = {}) {
     });
   } else {
     oldWinnerBeforeSave = fixture.winner;
-    if (winner !== undefined) fixture.winner = winner;
+    prevStatsApplied = !!fixture.pointsTableApplied;
+    prevTeam1Fairness = fixture.team1Fairness || 0;
+    prevTeam2Fairness = fixture.team2Fairness || 0;
+    if (canonicalWinner !== undefined) fixture.winner = resolveWinnerName(canonicalWinner, fixture);
     if (margin !== undefined) fixture.margin = margin;
     if (mom !== undefined) {
       fixture.mom = {
@@ -201,15 +361,15 @@ async function saveFixtureResult(body, options = {}) {
     }
 
     if (!fixture.team1UserId || !fixture.team2UserId) {
-      const team1User = await User.findOne({ teamName: fixture.team1, isActive: true });
-      const team2User = await User.findOne({ teamName: fixture.team2, isActive: true });
+      const team1User = await findUserForTeam(fixture.team1, fixture.team1UserId);
+      const team2User = await findUserForTeam(fixture.team2, fixture.team2UserId);
       if (team1User && !fixture.team1UserId) fixture.team1UserId = team1User._id;
       if (team2User && !fixture.team2UserId) fixture.team2UserId = team2User._id;
     }
 
-    if (fixture.winner && !fixture.winnerUserId) {
-      const winnerUser = await User.findOne({ teamName: fixture.winner, isActive: true });
-      if (winnerUser) fixture.winnerUserId = winnerUser._id;
+    if (fixture.winner) {
+      const winnerUserId = resolveWinnerUserId(fixture.winner, fixture);
+      if (winnerUserId) fixture.winnerUserId = winnerUserId;
     }
   }
 
@@ -217,32 +377,36 @@ async function saveFixtureResult(body, options = {}) {
     throw new Error('Missing required fields: team1 and team2 are required');
   }
 
+  if (fixture.winner && (!fixture.team1UserId || !fixture.team2UserId)) {
+    throw new Error(
+      `Cannot save result: fixture "${fixture.team1} vs ${fixture.team2}" is missing team1UserId or team2UserId.`
+    );
+  }
+
+  if (fixture.winner && !resolveWinnerUserId(fixture.winner, fixture)) {
+    throw new Error(
+      `Cannot save result: winner "${fixture.winner}" does not match either team in this fixture.`
+    );
+  }
+
   await fixture.save();
   invalidateCache('fixtures:');
 
   if (fixture.winner) {
-    try {
-      const team1User = await User.findOne({ teamName: fixture.team1 });
-      const team2User = await User.findOne({ teamName: fixture.team2 });
+    if (oldWinnerBeforeSave && prevStatsApplied) {
+      await revertPointsTableStats(
+        fixture,
+        oldWinnerBeforeSave,
+        prevTeam1Fairness,
+        prevTeam2Fairness
+      );
+    }
 
-      if (team1User && team2User) {
-        if (fixture.winner === fixture.team1) {
-          team1User.points = (team1User.points || 0) + 2;
-          team2User.points = (team2User.points || 0) + 0;
-        } else {
-          team1User.points = (team1User.points || 0) + 0;
-          team2User.points = (team2User.points || 0) + 2;
-        }
+    await applyPointsTableStats(fixture);
+    fixture.pointsTableApplied = true;
+    await Fixture.updateOne({ _id: fixture._id }, { $set: { pointsTableApplied: true } });
 
-        team1User.fairnessPoint = (team1User.fairnessPoint || 0) + (fixture.team1Fairness || 0);
-        team2User.fairnessPoint = (team2User.fairnessPoint || 0) + (fixture.team2Fairness || 0);
-        team1User.matchesPlayed = (team1User.matchesPlayed || 0) + 1;
-        team2User.matchesPlayed = (team2User.matchesPlayed || 0) + 1;
-
-        await Promise.all([team1User.save(), team2User.save()]);
-      }
-
-      if (oldWinnerBeforeSave && oldWinnerBeforeSave !== fixture.winner && headToHeadModule.revertAndResyncForRecord) {
+    if (oldWinnerBeforeSave && oldWinnerBeforeSave !== fixture.winner && headToHeadModule.revertAndResyncForRecord) {
         Fixture.updateOne({ _id: fixture._id }, { $set: { headToHeadSynced: false } })
           .then(() =>
             headToHeadModule.revertAndResyncForRecord(fixture.team1, fixture.team2, oldWinnerBeforeSave)
@@ -261,9 +425,6 @@ async function saveFixtureResult(body, options = {}) {
           oldWinnerName: oldWinnerBeforeSave || null,
         }).catch((err) => console.error('Career counters:', err));
       }
-    } catch (pointsError) {
-      console.error('Error updating points:', pointsError);
-    }
   }
 
   if (options.req) {
@@ -279,14 +440,22 @@ async function saveFixtureResult(body, options = {}) {
 
 module.exports = {
   saveFixtureResult,
+  resolveWinnerName,
+  resolveWinnerUserId,
   buildFixtureSaveBodyFromSubmission(submission, fixture) {
+    const winnerUserId = resolveWinnerUserId(submission.winner, fixture);
+    const winner = winnerUserId
+      ? String(winnerUserId) === String(fixture.team1UserId)
+        ? fixture.team1
+        : fixture.team2
+      : resolveWinnerName(submission.winner, fixture);
     return {
       _id: fixture._id,
       team1: fixture.team1,
       team2: fixture.team2,
       team1UserId: fixture.team1UserId,
       team2UserId: fixture.team2UserId,
-      winner: submission.winner,
+      winner,
       margin: submission.margin,
       team1Score: submission.team1Score,
       team2Score: submission.team2Score,
