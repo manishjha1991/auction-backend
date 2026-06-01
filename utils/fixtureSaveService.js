@@ -255,11 +255,64 @@ async function findFixtureDocument(body) {
 }
 
 /**
+ * Same payload shape as POST /api/fixtures/save (Fixtures.js handleSaveFixture).
+ * OCR approval and manual fixture edit both build this, then call saveFixtureResult().
+ */
+function buildFixtureSavePayload(fixture, fields) {
+  return {
+    _id: fixture._id,
+    team1: fixture.team1,
+    team2: fixture.team2,
+    team1UserId: fixture.team1UserId,
+    team2UserId: fixture.team2UserId,
+    group: fixture.group,
+    matchType: fixture.matchType,
+    winner: fields.winner,
+    margin: fields.margin,
+    team1Score: fields.team1Score,
+    team2Score: fields.team2Score,
+    team1Overs: fields.team1Overs,
+    team2Overs: fields.team2Overs,
+    mom: fields.mom,
+    team1Fairness: fields.team1Fairness,
+    team2Fairness: fields.team2Fairness,
+  };
+}
+
+/** Align request body with the fixture record in DB (user IDs win over display names). */
+function normalizeBodyWithFixture(body, fixture) {
+  const normalized = { ...body, _id: fixture._id };
+
+  normalized.team1UserId = fixture.team1UserId;
+  normalized.team2UserId = fixture.team2UserId;
+  normalized.team1 = fixture.team1;
+  normalized.team2 = fixture.team2;
+  normalized.group = body.group !== undefined ? body.group : fixture.group;
+  normalized.matchType = body.matchType !== undefined ? body.matchType : fixture.matchType;
+
+  if (body.winner != null && body.winner !== '') {
+    const winnerUserId = resolveWinnerUserId(body.winner, fixture);
+    if (!winnerUserId) {
+      throw new Error(
+        `Winner "${body.winner}" does not match either team in this fixture. Pick the winning team and try again.`
+      );
+    }
+    normalized.winner =
+      String(winnerUserId) === String(fixture.team1UserId) ? fixture.team1 : fixture.team2;
+  }
+
+  return normalized;
+}
+
+/**
  * @param {object} body Same shape as POST /api/fixtures/save body
  * @param {object} [options]
  * @param {import('express').Request} [options.req] For socket emit on points table update
  */
 async function saveFixtureResult(body, options = {}) {
+  let fixture = await findFixtureDocument(body);
+  const saveBody = fixture ? normalizeBodyWithFixture(body, fixture) : body;
+
   const {
     _id,
     team1,
@@ -277,12 +330,11 @@ async function saveFixtureResult(body, options = {}) {
     team2Fairness,
     group,
     matchType,
-  } = body;
+  } = saveBody;
 
   await assertTeamsParticipating(team1, team2, team1UserId, team2UserId);
-  const { team1OversStr, team2OversStr } = validateFixturePayload(body);
+  const { team1OversStr, team2OversStr } = validateFixturePayload(saveBody);
 
-  let fixture = await findFixtureDocument(body);
   let oldWinnerBeforeSave = null;
   let prevStatsApplied = false;
   let prevTeam1Fairness = 0;
@@ -440,22 +492,12 @@ async function saveFixtureResult(body, options = {}) {
 
 module.exports = {
   saveFixtureResult,
+  buildFixtureSavePayload,
   resolveWinnerName,
   resolveWinnerUserId,
   buildFixtureSaveBodyFromSubmission(submission, fixture) {
-    const winnerUserId = resolveWinnerUserId(submission.winner, fixture);
-    const winner = winnerUserId
-      ? String(winnerUserId) === String(fixture.team1UserId)
-        ? fixture.team1
-        : fixture.team2
-      : resolveWinnerName(submission.winner, fixture);
-    return {
-      _id: fixture._id,
-      team1: fixture.team1,
-      team2: fixture.team2,
-      team1UserId: fixture.team1UserId,
-      team2UserId: fixture.team2UserId,
-      winner,
+    return buildFixtureSavePayload(fixture, {
+      winner: submission.winner,
       margin: submission.margin,
       team1Score: submission.team1Score,
       team2Score: submission.team2Score,
@@ -464,8 +506,6 @@ module.exports = {
       mom: submission.mom,
       team1Fairness: submission.team1Fairness,
       team2Fairness: submission.team2Fairness,
-      group: fixture.group,
-      matchType: fixture.matchType,
-    };
+    });
   },
 };

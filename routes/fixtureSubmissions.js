@@ -119,6 +119,7 @@ async function applyFixtureSave(submission, req) {
     throw err;
   }
 
+  // Identical code path to POST /api/fixtures/save (Fixtures.js admin edit)
   const payload = buildFixtureSaveBodyFromSubmission(submission, fixture);
   return saveFixtureResult(payload, { req });
 }
