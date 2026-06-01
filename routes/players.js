@@ -9,9 +9,28 @@ const UserPlayer = require("../models/UserPlayer");
 const ReleaseRequest = require("../models/ReleaseRequest");
 const { cacheConfig, invalidateCache, flushStatsOverviewCache } = require('../utils/cache');
 const multerMemory = require('../config/multerMemory');
+const authenticateJWT = require('../middleware/authJWT');
 const { saveProfilePictureLocal } = require('../utils/saveProfilePictureLocal');
 const { removeLocalProfilePictureIfSafe } = require('../utils/removeLocalProfilePictureIfSafe');
 const router = express.Router();
+
+function requireAdmin(req, res, next) {
+  if (!req.authenticatedUser?.isAdmin) {
+    return res.status(403).json({ message: 'Admin access required' });
+  }
+  return next();
+}
+
+async function removePlayerPictureIfUnused(storedPath, currentPlayerId) {
+  if (!storedPath) return;
+  const sharedPlayer = await Player.exists({
+    _id: { $ne: currentPlayerId },
+    profilePicture: storedPath,
+  });
+  if (sharedPlayer) return;
+  await removeLocalProfilePictureIfSafe(storedPath);
+}
+
 const formatPrice = (value) => {
   if (value >= 10000000) {
     return `${(value / 10000000).toFixed(1)} cr`; // Convert to crores if >= 1 crore
@@ -21,7 +40,7 @@ const formatPrice = (value) => {
   return `${value}`; // Return raw value for smaller amounts
 };
 // Insert Player
-router.post('/player', upload.single('profilePicture'), async (req, res) => {
+router.post('/player', authenticateJWT, requireAdmin, upload.single('profilePicture'), async (req, res) => {
   try {
     const { name, type, role, basePrice, basePriceUnit, overallScore, style } = req.body;
 
@@ -58,7 +77,7 @@ router.post('/player', upload.single('profilePicture'), async (req, res) => {
 });
 
 // Edit Player
-router.put('/player/:playerID', upload.single('profilePicture'), async (req, res) => {
+router.put('/player/:playerID', authenticateJWT, requireAdmin, upload.single('profilePicture'), async (req, res) => {
   try {
     const { playerID } = req.params;
     const existing = await Player.findOne({ playerID }).select('profilePicture');
@@ -66,7 +85,7 @@ router.put('/player/:playerID', upload.single('profilePicture'), async (req, res
       return res.status(404).json({ message: 'Player not found' });
     }
 
-    const updates = { ...req.body };
+    const { profilePicture: _ignoredProfilePicture, ...updates } = req.body;
     let previousPicture = null;
     if (req.file) {
       previousPicture = existing.profilePicture;
@@ -80,7 +99,7 @@ router.put('/player/:playerID', upload.single('profilePicture'), async (req, res
     );
 
     if (req.file && previousPicture) {
-      await removeLocalProfilePictureIfSafe(previousPicture);
+      await removePlayerPictureIfUnused(previousPicture, updatedPlayer._id);
     }
 
     res.status(200).json({ message: 'Player updated successfully', player: updatedPlayer });
@@ -91,7 +110,7 @@ router.put('/player/:playerID', upload.single('profilePicture'), async (req, res
 });
 
 // Delete Player
-router.delete('/player/:playerID', async (req, res) => {
+router.delete('/player/:playerID', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { playerID } = req.params;
 
@@ -196,17 +215,9 @@ router.get("/:playerId/bids", async (req, res) => {
 });
 
 // Admin: deactivate a player (only if unsold and active)
-router.post('/:playerId/deactivate', async (req, res) => {
+router.post('/:playerId/deactivate', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { playerId } = req.params;
-    const { adminUserId } = req.body;
-    if (!adminUserId) {
-      return res.status(400).json({ message: 'Admin user ID is required' });
-    }
-    const admin = await User.findById(adminUserId).select('isAdmin name');
-    if (!admin || !admin.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can deactivate players' });
-    }
 
     const player = await Player.findById(playerId);
     if (!player) {
@@ -234,16 +245,12 @@ router.post('/:playerId/deactivate', async (req, res) => {
 async function handleAdminProfilePictureLocal(req, res) {
   try {
     const { playerId } = req.params;
-    const actingUserId = req.body?.userId || req.body?.adminUserId;
-    if (!actingUserId) {
-      return res.status(400).json({ message: 'userId is required' });
-    }
+    const actor = req.authenticatedUser;
     if (!req.file?.buffer) {
       return res.status(400).json({ message: 'Image file required (field name: profilePicture)' });
     }
-    const actor = await User.findById(actingUserId).select('isAdmin boughtPlayers').lean();
     if (!actor) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(401).json({ message: 'Authentication required' });
     }
     const player = await Player.findById(playerId);
     if (!player) {
@@ -266,7 +273,7 @@ async function handleAdminProfilePictureLocal(req, res) {
     player.profilePicture = relativePath;
     player.updatedAt = new Date();
     await player.save();
-    await removeLocalProfilePictureIfSafe(previousPath);
+    await removePlayerPictureIfUnused(previousPath, player._id);
     invalidateCache('players:data');
     invalidateCache('players:data:all');
     invalidateCache('user-purses');
@@ -285,6 +292,7 @@ async function handleAdminProfilePictureLocal(req, res) {
 
 router.post(
   '/:playerId/admin/profile-picture',
+  authenticateJWT,
   multerMemory.single('profilePicture'),
   handleAdminProfilePictureLocal
 );

@@ -446,17 +446,24 @@ router.get('/:id', isAuthenticated, async (req, res) => {
       return res.status(404).json({ error: 'Tournament not found' });
     }
 
+    const subscribedTeams = tournament.subscribedTeams || [];
+    const userId = req.user._id.toString();
     const tournamentWithUserStatus = {
-      ...tournament.toObject(),
-      subscriptionCount: tournament.subscribedTeams.length,
-      slotsLeft: tournament.maxSlots - tournament.subscribedTeams.length,
-      isUserSubscribed: tournament.isUserSubscribed(req.user._id),
-      subscribedTeams: tournament.subscribedTeams.map(team => ({
-        ...team,
-        userId: team.userId._id,
-        teamName: team.userId.teamName || team.teamName,
-        teamImage: team.userId.teamImage || team.teamImage
-      }))
+      ...tournament,
+      subscriptionCount: subscribedTeams.length,
+      slotsLeft: tournament.maxSlots - subscribedTeams.length,
+      isUserSubscribed: subscribedTeams.some(
+        (team) => String(team.userId?._id || team.userId) === userId
+      ),
+      subscribedTeams: subscribedTeams.map(team => {
+        const subscribedUser = team.userId;
+        return {
+          ...team,
+          userId: subscribedUser?._id || subscribedUser,
+          teamName: subscribedUser?.teamName || team.teamName,
+          teamImage: subscribedUser?.teamImage || team.teamImage
+        };
+      })
     };
 
     res.json(tournamentWithUserStatus);
