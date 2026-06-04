@@ -358,6 +358,7 @@ router.post("/bid/sold", async (req, res) => {
 
         // 2. Check if the player is already sold
         if (player.isSold) {
+          await bidQueueService.refundQueueForSoldPlayer(pid, req.app.get('io'));
           results.push({
             playerID: pid,
             status: "error",
@@ -566,6 +567,8 @@ router.post("/bid/sold", async (req, res) => {
             throw new Error(`Player status verification failed for ${pid}`);
           }
         }
+
+        await bidQueueService.refundQueueForSoldPlayer(pid, req.app.get('io'));
 
         results.push({
           playerID: pid,
@@ -876,6 +879,7 @@ async function sellPlayer(playerId, io = null) {
       };
     }
     if (pl.isSold) {
+      await bidQueueService.refundQueueForSoldPlayer(playerId, io);
       return {
         playerID: playerId,
         status: 'error',
@@ -1070,6 +1074,8 @@ async function sellPlayer(playerId, io = null) {
       });
       throw new Error(`Player status verification failed for ${playerId}`);
     }
+
+    await bidQueueService.refundQueueForSoldPlayer(playerId, io);
 
     return {
       playerID: playerId,

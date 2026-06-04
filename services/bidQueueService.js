@@ -114,6 +114,37 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
   await emitBidQueueUpdated(io, playerId);
 }
 
+async function refundQueueForSoldPlayer(playerId, io) {
+  return withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) {
+      return { refundedCount: 0, refundedAmount: 0 };
+    }
+
+    let refundedCount = 0;
+    let refundedAmount = 0;
+    for (const entry of doc.entries) {
+      if (entry.status !== "queued") continue;
+      const refund = Number(entry.lockedAmount) || 0;
+      if (refund > 0) {
+        await refundPurse(entry.userId, refund);
+        refundedCount += 1;
+        refundedAmount += refund;
+        emitQueuePersonal(io, entry.userId, {
+          type: "removed",
+          reason: "sold",
+          playerId: playerId.toString(),
+          refund,
+        });
+      }
+    }
+
+    await BidPlayerQueue.deleteOne({ _id: doc._id });
+    await emitBidQueueUpdated(io, playerId, 0);
+    return { refundedCount, refundedAmount };
+  });
+}
+
 async function pruneQueuedOverMax(playerId, io) {
   if (!isEnabled()) return;
   await withPlayerBidLock(playerId, async () => {
@@ -745,4 +776,5 @@ module.exports = {
   resignActiveProxyToManual,
   afterBidPlaced,
   runProxyContinuation,
+  refundQueueForSoldPlayer,
 };

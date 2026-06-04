@@ -1,44 +1,40 @@
 /**
- * Reentrant per-player mutex: nested withPlayerBidLock for same playerId runs inline so bid queue + promotion + proxy do not deadlock.
+ * Reentrant per-player mutex.
+ *
+ * Nested calls in the same async chain run inline, while independent requests
+ * for the same player serialize behind the existing chain.
  */
 
+const { AsyncLocalStorage } = require("async_hooks");
+
 const chains = new Map();
-const depth = new Map();
+const heldLocksStorage = new AsyncLocalStorage();
 
 function withPlayerBidLock(playerId, fn) {
   const key = String(playerId);
-  const d = depth.get(key) || 0;
-  if (d > 0) {
-    depth.set(key, d + 1);
-    return Promise.resolve()
-      .then(() => fn())
-      .finally(() => {
-        const v = depth.get(key) - 1;
-        if (v <= 0) depth.delete(key);
-        else depth.set(key, v);
-      });
+  const heldLocks = heldLocksStorage.getStore();
+
+  if (heldLocks?.has(key)) {
+    return Promise.resolve().then(() => fn());
   }
 
-  const prev = chains.get(key) || Promise.resolve();
-  const next = prev
-    .then(async () => {
-      depth.set(key, (depth.get(key) || 0) + 1);
-      try {
-        return await fn();
-      } finally {
-        const v = (depth.get(key) || 1) - 1;
-        if (v <= 0) depth.delete(key);
-        else depth.set(key, v);
-      }
+  const previous = chains.get(key) || Promise.resolve();
+  const run = previous
+    .catch(() => {
+      // A failed prior lock holder must not poison the queue for future callers.
     })
-    .catch((err) => {
-      throw err;
-    })
-    .finally(() => {
-      if (chains.get(key) === next) {
-        chains.delete(key);
-      }
+    .then(() => {
+      const nextHeldLocks = new Set(heldLocks || []);
+      nextHeldLocks.add(key);
+      return heldLocksStorage.run(nextHeldLocks, () => Promise.resolve().then(() => fn()));
     });
+
+  const next = run.finally(() => {
+    if (chains.get(key) === next) {
+      chains.delete(key);
+    }
+  });
+
   chains.set(key, next);
   return next;
 }
