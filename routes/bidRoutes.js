@@ -567,6 +567,8 @@ router.post("/bid/sold", async (req, res) => {
           }
         }
 
+        await bidQueueService.dissolveQueueForPlayer(pid, req.app.get("io"), "player_sold");
+
         results.push({
           playerID: pid,
           status: "success",
@@ -747,6 +749,8 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
         player.lastExitAt = new Date();
         player.lastExitBy = 'system';
         await player.save();
+
+        await bidQueueService.tryPromoteNextQueued(playerId, io);
 
         return {
           message: "The second-highest bidder has exited successfully. Locked amount refunded.",
@@ -1071,6 +1075,8 @@ async function sellPlayer(playerId, io = null) {
       throw new Error(`Player status verification failed for ${playerId}`);
     }
 
+    await bidQueueService.dissolveQueueForPlayer(playerId, io, "player_sold");
+
     return {
       playerID: playerId,
       status: 'success',
@@ -1318,6 +1324,8 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
       io.emit('bid_exit_notification', notificationData);
     }
   }
+
+  await bidQueueService.tryPromoteNextQueued(playerId, io);
 
   return {
     playerId,
