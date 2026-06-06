@@ -114,6 +114,47 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
   await emitBidQueueUpdated(io, playerId);
 }
 
+async function dissolveQueueForPlayer(playerId, io, reason = "player_sold") {
+  return withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) {
+      await emitBidQueueUpdated(io, playerId, 0);
+      return { removedCount: 0, refundedCount: 0 };
+    }
+
+    const player = await Player.findById(playerId).select("name").lean();
+    let removedCount = 0;
+    let refundedCount = 0;
+
+    for (const entry of doc.entries) {
+      removedCount += 1;
+      if (entry.status === "queued") {
+        await refundPurse(entry.userId, entry.lockedAmount);
+        refundedCount += 1;
+        emitQueuePersonal(io, entry.userId, {
+          type: "removed",
+          reason,
+          playerId: playerId.toString(),
+          playerName: player?.name || "",
+          refund: entry.lockedAmount,
+        });
+      } else if (entry.status === "active_proxy") {
+        emitQueuePersonal(io, entry.userId, {
+          type: "removed",
+          reason,
+          playerId: playerId.toString(),
+          playerName: player?.name || "",
+          refund: 0,
+        });
+      }
+    }
+
+    await BidPlayerQueue.deleteOne({ _id: doc._id });
+    await emitBidQueueUpdated(io, playerId, 0);
+    return { removedCount, refundedCount };
+  });
+}
+
 async function pruneQueuedOverMax(playerId, io) {
   if (!isEnabled()) return;
   await withPlayerBidLock(playerId, async () => {
@@ -733,6 +774,7 @@ module.exports = {
   countQueued,
   getAllQueuedCountsByPlayer,
   getActiveBidderIds,
+  dissolveQueueForPlayer,
   pruneQueuedOverMax,
   tryPromoteNextQueued,
   triggerProxyAfterOpponentBid,
