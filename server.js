@@ -18,6 +18,7 @@ const bidQueueRoutes = require('./routes/bidQueueRoutes');
 const playerStatsRoutes = require('./routes/playerStats'); // Adjust path
 const fixtureRoutes = require('./routes/fixture'); // Adjust path
 const fixtureSubmissionRoutes = require('./routes/fixtureSubmissions');
+const playoffSubmissionRoutes = require('./routes/playoffSubmissions');
 const app = express();
 const server = http.createServer(app);
 const notificationRoutes = require('./routes/notifications');
@@ -182,6 +183,7 @@ app.use('/api/player', playerRoutes); // This sets the base route for players
 app.use('/api/users', userRoutes); // Mount the route
 app.use('/api/fixtures', fixtureRoutes);
 app.use('/api/fixture-submissions', fixtureSubmissionRoutes);
+app.use('/api/playoff-submissions', playoffSubmissionRoutes);
 app.use('/api', playerRoutes);
 app.use('/api/bids', bidRoutes); // Mount bid routes
 app.use('/api/bid-queue', bidQueueRoutes);
