@@ -8,6 +8,7 @@ const User = require("../models/User");
 const UserPlayer = require("../models/UserPlayer");
 const ReleaseRequest = require("../models/ReleaseRequest");
 const { cacheConfig, invalidateCache, flushStatsOverviewCache } = require('../utils/cache');
+const authenticateJWT = require('../middleware/authJWT');
 const multerMemory = require('../config/multerMemory');
 const { saveProfilePictureLocal } = require('../utils/saveProfilePictureLocal');
 const { removeLocalProfilePictureIfSafe } = require('../utils/removeLocalProfilePictureIfSafe');
@@ -234,16 +235,12 @@ router.post('/:playerId/deactivate', async (req, res) => {
 async function handleAdminProfilePictureLocal(req, res) {
   try {
     const { playerId } = req.params;
-    const actingUserId = req.body?.userId || req.body?.adminUserId;
-    if (!actingUserId) {
-      return res.status(400).json({ message: 'userId is required' });
+    const actor = req.authenticatedUser;
+    if (!actor) {
+      return res.status(401).json({ message: 'Authentication required' });
     }
     if (!req.file?.buffer) {
       return res.status(400).json({ message: 'Image file required (field name: profilePicture)' });
-    }
-    const actor = await User.findById(actingUserId).select('isAdmin boughtPlayers').lean();
-    if (!actor) {
-      return res.status(404).json({ message: 'User not found' });
     }
     const player = await Player.findById(playerId);
     if (!player) {
@@ -285,6 +282,7 @@ async function handleAdminProfilePictureLocal(req, res) {
 
 router.post(
   '/:playerId/admin/profile-picture',
+  authenticateJWT,
   multerMemory.single('profilePicture'),
   handleAdminProfilePictureLocal
 );
