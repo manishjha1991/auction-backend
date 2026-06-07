@@ -12,6 +12,7 @@ const {
   isTradeLocked,
   setTradeLockOnPlayers,
   autoRejectTradesInvolvingPlayers,
+  clearActiveTradesForPlayers,
   TRADE_LOCK_HOURS,
 } = require('../utils/tradeApprovalShared');
 const { clampTradesUsed } = require('../utils/tradeConstants');
@@ -436,7 +437,15 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
     } else if (decision === 'reject') {
       trade.status = 'rejected';
       trade.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
-      
+
+      // Clear duplicate/stale active trades for the same players so teams can propose again
+      await autoRejectTradesInvolvingPlayers(
+        adminUserId,
+        [trade.offeredPlayer, trade.requestedPlayer],
+        trade._id,
+        'Auto-rejected: admin rejected related trade involving these players',
+      );
+
       // Admin rejection does NOT affect trade count - only completed trades count
       // No need to revert anything since tradesUsed is only incremented on approval
     } else {
@@ -447,6 +456,48 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
     res.json(trade);
   } catch (err) {
     console.error('Admin decide error', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// POST /api/trades/admin/clear-stuck-for-players - Admin: reject active trades blocking named players
+router.post('/admin/clear-stuck-for-players', async (req, res) => {
+  try {
+    const { adminUserId, playerIds, playerNames } = req.body;
+    if (!adminUserId) {
+      return res.status(400).json({ message: 'adminUserId required' });
+    }
+    const admin = await User.findById(adminUserId).select('isAdmin').lean();
+    if (!admin?.isAdmin) {
+      return res.status(403).json({ message: 'Only admin can clear stuck player trades' });
+    }
+
+    let ids = Array.isArray(playerIds) ? playerIds.filter(Boolean) : [];
+    if (Array.isArray(playerNames) && playerNames.length > 0) {
+      for (const raw of playerNames) {
+        const name = String(raw || '').trim();
+        if (!name) continue;
+        const match = await Player.findOne({ name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') })
+          .select('_id name')
+          .lean();
+        if (match) ids.push(match._id);
+      }
+    }
+    ids = [...new Set(ids.map(String))];
+    if (ids.length === 0) {
+      return res.status(400).json({ message: 'playerIds or playerNames required' });
+    }
+
+    const result = await clearActiveTradesForPlayers(adminUserId, ids);
+    res.json({
+      message: result.cleared
+        ? `Cleared ${result.cleared} active trade request(s)`
+        : 'No active trade requests found for these players',
+      ...result,
+      playerIds: ids,
+    });
+  } catch (err) {
+    console.error('Clear stuck player trades error', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

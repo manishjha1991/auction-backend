@@ -44,12 +44,18 @@ async function setTradeLockOnPlayers(playerIds) {
 }
 
 /**
- * Auto-reject other active trade requests that involve either player.
+ * Auto-reject active trade requests that involve either player.
  * @param {import('mongoose').Types.ObjectId|string} adminUserId
  * @param {Array} playerIds - two player ObjectIds
- * @param {import('mongoose').Types.ObjectId|string|null} excludeTradeId - set when approving an existing TradeRequest
+ * @param {import('mongoose').Types.ObjectId|string|null} excludeTradeId - skip one trade (e.g. the one being decided)
+ * @param {string} message - history note for auto-rejected trades
  */
-async function autoRejectTradesInvolvingPlayers(adminUserId, playerIds, excludeTradeId = null) {
+async function autoRejectTradesInvolvingPlayers(
+  adminUserId,
+  playerIds,
+  excludeTradeId = null,
+  message = 'Auto-rejected: player traded to another team',
+) {
   const activeStatuses = ['pending', 'counter', 'admin_pending'];
   const filter = {
     status: { $in: activeStatuses },
@@ -66,11 +72,48 @@ async function autoRejectTradesInvolvingPlayers(adminUserId, playerIds, excludeT
     o.history.push({
       byUser: adminUserId,
       action: 'reject',
-      message: 'Auto-rejected: player traded to another team',
+      message,
     });
     await o.save();
   }
   return others.length;
+}
+
+const ACTIVE_TRADE_STATUSES = ['pending', 'counter', 'admin_pending'];
+
+/**
+ * Reject all active trade requests involving any of the given players.
+ * @returns {{ cleared: number, tradeIds: string[] }}
+ */
+async function clearActiveTradesForPlayers(
+  actorUserId,
+  playerIds,
+  note = 'Auto-rejected: cleared stuck active trade for player(s)',
+) {
+  const activeTrades = await TradeRequest.find({
+    status: { $in: ACTIVE_TRADE_STATUSES },
+    $or: [
+      { offeredPlayer: { $in: playerIds } },
+      { requestedPlayer: { $in: playerIds } },
+    ],
+  });
+
+  const tradeIds = [];
+  for (const t of activeTrades) {
+    t.status = 'rejected';
+    if (!t.adminDecision?.status) {
+      t.adminDecision = {
+        status: 'rejected',
+        decidedBy: actorUserId,
+        decidedAt: new Date(),
+        note: 'Cleared stuck active trade',
+      };
+    }
+    t.history.push({ byUser: actorUserId, action: 'reject', message: note });
+    await t.save();
+    tradeIds.push(String(t._id));
+  }
+  return { cleared: tradeIds.length, tradeIds };
 }
 
 module.exports = {
@@ -78,4 +121,6 @@ module.exports = {
   isTradeLocked,
   setTradeLockOnPlayers,
   autoRejectTradesInvolvingPlayers,
+  clearActiveTradesForPlayers,
+  ACTIVE_TRADE_STATUSES,
 };
