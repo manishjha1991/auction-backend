@@ -19,6 +19,9 @@ const namesArg = args[args.indexOf('--names') + 1];
 
 const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017';
 const dbName = process.env.MONGO_DB_NAME || undefined;
+// Override: node scripts/clearStuckPlayerTrades.js --db cpl_22 --names "..." --apply
+const dbArg = args[args.indexOf('--db') + 1];
+const effectiveDb = dbArg || dbName;
 
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -65,7 +68,7 @@ async function run() {
     return;
   }
 
-  const connectOpts = dbName ? { dbName } : {};
+  const connectOpts = effectiveDb ? { dbName: effectiveDb } : {};
   await mongoose.connect(mongoUri, connectOpts);
   console.log(`Connected: ${mongoose.connection.name}${dryRun ? ' [DRY RUN]' : ''}`);
 

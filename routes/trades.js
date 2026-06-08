@@ -109,10 +109,40 @@ router.post('/', async (req, res) => {
         { offeredPlayer: requestedPlayerId },
         { requestedPlayer: offeredPlayerId }
       ]
-    }).lean();
+    })
+      .populate('offeredPlayer', 'name')
+      .populate('requestedPlayer', 'name')
+      .populate('fromUser', 'teamName')
+      .populate('toUser', 'teamName')
+      .lean();
     if (activeTrade) {
+      const off = activeTrade.offeredPlayer?.name || 'a player';
+      const req = activeTrade.requestedPlayer?.name || 'a player';
+      const fromTeam = activeTrade.fromUser?.teamName || 'Another team';
+      const toTeam = activeTrade.toUser?.teamName || 'Another team';
+      const blockedNames = new Set([off, req]);
+      const [offeredMeta, requestedMeta] = await Promise.all([
+        Player.findById(offeredPlayerId).select('name').lean(),
+        Player.findById(requestedPlayerId).select('name').lean(),
+      ]);
+      const yours = offeredMeta?.name || 'Your player';
+      const theirs = requestedMeta?.name || 'Target player';
+      const blockedLabel = blockedNames.has(theirs)
+        ? theirs
+        : blockedNames.has(yours)
+          ? yours
+          : `${off} or ${req}`;
+      const statusHint =
+        activeTrade.status === 'admin_pending'
+          ? 'It is already waiting for admin approval — see Your Trades below or ask admin to approve/reject it.'
+          : activeTrade.status === 'pending'
+            ? 'It is still waiting for the other team — withdraw that proposal first if you want to send a new one.'
+            : 'Withdraw or resolve that trade before sending another proposal.';
       return res.status(409).json({
-        message: 'One or both players already have an active trade request. Please wait for admin decision or withdraw the existing request.'
+        message:
+          `${blockedLabel} is already in an active trade (${off} ↔ ${req}, ${fromTeam} → ${toTeam}). ${statusHint}`,
+        blockingTradeId: String(activeTrade._id),
+        blockingTradeStatus: activeTrade.status,
       });
     }
 
