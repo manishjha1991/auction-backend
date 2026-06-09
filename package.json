@@ -4,7 +4,7 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "node --test test",
+    "test": "node --test test/*.test.js",
     "start": "node server.js",
     "check-purse-diff": "node check-user-purse-difference.js",
     "update-purse": "node update-purse-to-100-minus-players.js",
