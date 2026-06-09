@@ -339,6 +339,8 @@ router.post("/bid/sold", async (req, res) => {
       return res.status(400).json({ message: "No player ID(s) provided." });
     }
 
+    const io = req.app.get('io');
+
     // We'll store the result for each player
     const results = [];
 
@@ -567,6 +569,8 @@ router.post("/bid/sold", async (req, res) => {
           }
         }
 
+        await bidQueueService.drainBidQueueOnPlayerSold(pid, io);
+
         results.push({
           playerID: pid,
           status: "success",
@@ -586,7 +590,6 @@ router.post("/bid/sold", async (req, res) => {
     }
 
     // Emit socket event for player sold (affects purse values)
-    const io = req.app.get('io');
     if (io) {
       io.emit('player_sold', {
         message: 'Player(s) sold - purse values updated',
@@ -1070,6 +1073,8 @@ async function sellPlayer(playerId, io = null) {
       });
       throw new Error(`Player status verification failed for ${playerId}`);
     }
+
+    await bidQueueService.drainBidQueueOnPlayerSold(playerId, io);
 
     return {
       playerID: playerId,
