@@ -157,6 +157,7 @@ async function computeBundleTradeApproval(bundleId, focusTrade) {
         typeCounts: { ...counts },
         purse: purseNum(userDoc.purse),
         legsInvolved: 0,
+        legsAlreadyReserved: 0,
         usage,
       });
     }
@@ -209,6 +210,10 @@ async function computeBundleTradeApproval(bundleId, focusTrade) {
     t2.purse += requestedValue - offeredValue;
     t1.legsInvolved += 1;
     t2.legsInvolved += 1;
+    if (trade.status === 'admin_pending') {
+      t1.legsAlreadyReserved += 1;
+      t2.legsAlreadyReserved += 1;
+    }
 
     if (offeredPlayer?.type) {
       t1.typeCounts[offeredPlayer.type] = Math.max(0, (t1.typeCounts[offeredPlayer.type] || 0) - 1);
@@ -242,11 +247,15 @@ async function computeBundleTradeApproval(bundleId, focusTrade) {
         `After all bundle legs, ${name} would break player-type limits (Sapphire/Emerald/Gold/Silver caps).`
       );
     }
-    const slotsNeeded = state.legsInvolved;
-    if (state.usage.effectiveUsed + slotsNeeded > rules.tradeSeasonCap) {
-      blockers.push(
-        `${name} does not have enough season trade slots for this bundle (${state.usage.effectiveUsed} used + ${slotsNeeded} legs > ${rules.tradeSeasonCap} cap).`
-      );
+    // admin_pending legs are already in effectiveUsed via reservedSlots — only count legs not yet reserved
+    const incrementalSlots = state.legsInvolved - (state.legsAlreadyReserved || 0);
+    const projectedUsed = state.usage.effectiveUsed + incrementalSlots;
+    if (projectedUsed > rules.tradeSeasonCap) {
+      const detail =
+        incrementalSlots === 0
+          ? `${state.usage.effectiveUsed} effective slots (cap ${rules.tradeSeasonCap})`
+          : `${state.usage.effectiveUsed} used + ${incrementalSlots} unreserved leg(s) > ${rules.tradeSeasonCap} cap`;
+      blockers.push(`${name} does not have enough season trade slots for this bundle (${detail}).`);
     }
   }
 
