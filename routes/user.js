@@ -1840,18 +1840,10 @@ router.get('/:userId/trades-usage', async (req, res) => {
     const { userId } = req.params;
     const user = await User.findById(userId).select('tradesUsed');
     if (!user) return res.status(404).json({ message: 'User not found' });
-    const used = clampTradesUsed(user.tradesUsed);
-    const rules = await getTradeRules();
-    const cap = rules.tradeSeasonCap;
-    const remaining = Math.max(0, cap - used);
+    const { getTradeUsageSummary } = require('../utils/tradeSlotReservation');
+    const summary = await getTradeUsageSummary(userId);
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.json({
-      tradesUsed: used,
-      cap,
-      remaining,
-      maxActiveOutgoing: rules.maxActiveOutgoingTrades,
-      maxTradesPerOpponentPair: rules.maxTradesPerOpponentPair,
-    });
+    res.json(summary);
   } catch (e) {
     console.error('Trade usage error', e);
     res.status(500).json({ message: 'Internal server error' });

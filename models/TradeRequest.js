@@ -18,6 +18,7 @@ const TradeRequestSchema = new mongoose.Schema(
     toUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     offeredPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'Player', required: true },
     requestedPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'Player', required: true },
+    bundleId: { type: mongoose.Schema.Types.ObjectId, ref: 'TradeBundle', default: null },
     status: {
       type: String,
       enum: ['pending', 'counter', 'rejected', 'withdrawn', 'admin_pending', 'completed'],

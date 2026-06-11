@@ -102,6 +102,14 @@ router.post('/', async (req, res) => {
     }
     if (!user) return res.status(404).json({ message: 'User not found' });
 
+    const rules = await getTradeRules();
+    try {
+      const { assertHasTradeSlotRemaining } = require('../utils/tradeSlotReservation');
+      await assertHasTradeSlotRemaining(userId, rules);
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ message: e.message });
+    }
+
     // Create an initial bid at base price and lock funds, so that existing sold API can finalize later
     const basePrice = Number(player.basePrice || 0);
     const purse = Number(user.purse ? parseFloat(user.purse.toString()) : 0);

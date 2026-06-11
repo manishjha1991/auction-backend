@@ -22,6 +22,16 @@ const {
   getTradeApprovalBlockers,
   validateTradeForAdminApproval,
 } = require('../utils/tradeApprovalBlockers');
+const { createTradeProposal } = require('../utils/tradeProposalHelper');
+const { assertHasTradeSlotRemaining } = require('../utils/tradeSlotReservation');
+const { assertCanApproveTrades } = require('../utils/tradeAdminGuards');
+const { executeApprovedTrade } = require('../utils/tradeExecution');
+const { tryAutoApproveBundle, syncBundleStatus, attachTradeToBundle } = require('../utils/tradeBundleService');
+const TradeApprovalAudit = require('../models/TradeApprovalAudit');
+const { getClientIp } = require('../utils/network');
+const tradeBundleRoutes = require('./tradeBundles');
+
+router.use('/bundles', tradeBundleRoutes);
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
@@ -75,171 +85,20 @@ router.get('/insights/:userId', async (req, res) => {
 // POST create trade request
 router.post('/', async (req, res) => {
   try {
-    const { fromUserId, offeredPlayerId, requestedPlayerId } = req.body;
-    if (!fromUserId || !offeredPlayerId || !requestedPlayerId) {
-      return res.status(400).json({ message: 'Missing required fields.' });
-    }
-
-    const rules = await getTradeRules();
-
-    // Enforce max active outgoing trade requests per user (same cap as season trades)
-    const activeCount = await TradeRequest.countDocuments({
-      fromUser: fromUserId,
-      status: { $in: ['pending', 'counter', 'admin_pending'] }
+    const { fromUserId, offeredPlayerId, requestedPlayerId, bundleId } = req.body;
+    const result = await createTradeProposal({
+      fromUserId,
+      offeredPlayerId,
+      requestedPlayerId,
+      bundleId: bundleId || null,
     });
-    if (activeCount >= rules.maxActiveOutgoingTrades) {
-      return res.status(400).json({
-        message: `Trade limit reached: You can have at most ${rules.maxActiveOutgoingTrades} active trade requests.`,
-      });
+    if (!result.ok) {
+      return res.status(result.statusCode || 400).json({ message: result.message, ...result.extra });
     }
-
-    // Enforce total trade usage cap (completed trades + approved releases → tradesUsed)
-    // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const proposer = await User.findById(fromUserId).select('tradesUsed').lean();
-    if (proposer && clampTradesUsed(proposer.tradesUsed) >= rules.tradeSeasonCap) {
-      return res.status(400).json({ message: `You have used all ${rules.tradeSeasonCap} trades.` });
+    if (bundleId && result.trade) {
+      await attachTradeToBundle(bundleId, result.trade);
     }
-
-    // Prevent duplicate/parallel trade requests for the same players while active
-    const activeTrade = await TradeRequest.findOne({
-      status: { $in: ['pending', 'counter', 'admin_pending'] },
-      $or: [
-        { offeredPlayer: offeredPlayerId },
-        { requestedPlayer: requestedPlayerId },
-        { offeredPlayer: requestedPlayerId },
-        { requestedPlayer: offeredPlayerId }
-      ]
-    })
-      .populate('offeredPlayer', 'name')
-      .populate('requestedPlayer', 'name')
-      .populate('fromUser', 'teamName')
-      .populate('toUser', 'teamName')
-      .lean();
-    if (activeTrade) {
-      const off = activeTrade.offeredPlayer?.name || 'a player';
-      const req = activeTrade.requestedPlayer?.name || 'a player';
-      const fromTeam = activeTrade.fromUser?.teamName || 'Another team';
-      const toTeam = activeTrade.toUser?.teamName || 'Another team';
-      const blockedNames = new Set([off, req]);
-      const [offeredMeta, requestedMeta] = await Promise.all([
-        Player.findById(offeredPlayerId).select('name').lean(),
-        Player.findById(requestedPlayerId).select('name').lean(),
-      ]);
-      const yours = offeredMeta?.name || 'Your player';
-      const theirs = requestedMeta?.name || 'Target player';
-      const blockedLabel = blockedNames.has(theirs)
-        ? theirs
-        : blockedNames.has(yours)
-          ? yours
-          : `${off} or ${req}`;
-      const statusHint =
-        activeTrade.status === 'admin_pending'
-          ? 'It is already waiting for admin approval — see Your Trades below or ask admin to approve/reject it.'
-          : activeTrade.status === 'pending'
-            ? 'It is still waiting for the other team — withdraw that proposal first if you want to send a new one.'
-            : 'Withdraw or resolve that trade before sending another proposal.';
-      return res.status(409).json({
-        message:
-          `${blockedLabel} is already in an active trade (${off} ↔ ${req}, ${fromTeam} → ${toTeam}). ${statusHint}`,
-        blockingTradeId: String(activeTrade._id),
-        blockingTradeStatus: activeTrade.status,
-      });
-    }
-
-    const [fromUser, offeredOwner, requestedOwner] = await Promise.all([
-      User.findById(fromUserId), // Not using .lean() - might be modified later
-      getOwnerOfPlayer(offeredPlayerId),
-      getOwnerOfPlayer(requestedPlayerId)
-    ]);
-
-    if (!fromUser || !offeredOwner || !requestedOwner) {
-      return res.status(404).json({ message: 'User or players not found.' });
-    }
-
-    // Check if user is participating in current season
-    if (fromUser.isParticipating === false) {
-      return res.status(403).json({ 
-        message: 'You are not participating in the current season. You cannot make trades.' 
-      });
-    }
-
-    // Check if target user is participating
-    if (requestedOwner.isParticipating === false) {
-      return res.status(403).json({ 
-        message: 'The target team is not participating in the current season. You cannot trade with them.' 
-      });
-    }
-
-    // BASIC VALIDATION ONLY (for proposal creation)
-    // Heavy validation (type limits, purse, etc.) happens at admin approval
-    if (String(offeredOwner._id) !== String(fromUser._id)) {
-      return res.status(403).json({ message: 'You do not own the offered player.' });
-    }
-
-    if (String(requestedOwner._id) === String(fromUser._id)) {
-      return res.status(400).json({ message: 'Requested player is already in your team.' });
-    }
-
-    try {
-      await assertPairAllowsNewProposal(
-        fromUserId,
-        requestedOwner._id,
-        rules.maxTradesPerOpponentPair
-      );
-    } catch (e) {
-      if (e.statusCode) return res.status(e.statusCode).json({ message: e.message });
-      throw e;
-    }
-
-    const [offeredPlayer, requestedPlayer, offeredUP, requestedUP] = await Promise.all([
-      // 🚀 PERFORMANCE: Use .lean() for read-only queries
-      Player.findById(offeredPlayerId).lean(),
-      Player.findById(requestedPlayerId).lean(),
-      UserPlayer.findOne({ playerId: offeredPlayerId, isActive: true }).populate('userId').lean(),
-      UserPlayer.findOne({ playerId: requestedPlayerId, isActive: true }).populate('userId').lean()
-    ]);
-
-    if (!offeredUP || !requestedUP) {
-      return res.status(400).json({ message: 'One or both players are not available for trade.' });
-    }
-
-    const lockHint = `Trade-locked for ${TRADE_LOCK_HOURS} hours after a completed trade or after being picked from unsold`;
-    if (await isTradeLocked(offeredPlayer)) {
-      return res.status(409).json({
-        message: `Your offered player cannot be traded yet (${lockHint}).`,
-      });
-    }
-    if (await isTradeLocked(requestedPlayer)) {
-      return res.status(409).json({
-        message: `The requested player cannot be traded yet (${lockHint}).`,
-      });
-    }
-
-    // REMOVED: Heavy validation (type limits, purse validation) - moved to admin approval
-    // Only basic validation remains for proposal creation
-    // This allows users to propose trades that might be invalid, but admin will catch them
-
-    const trade = await TradeRequest.create({
-      fromUser: fromUser._id,
-      toUser: requestedOwner._id,
-      offeredPlayer: offeredPlayer._id,
-      requestedPlayer: requestedPlayer._id,
-      status: 'pending',
-      history: [
-        { byUser: fromUser._id, action: 'propose', message: 'Initial proposal', offeredPlayer: offeredPlayer._id, requestedPlayer: requestedPlayer._id }
-      ]
-    });
-
-    // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const populatedDoc = await TradeRequest.findById(trade._id)
-      .populate('fromUser', 'name teamName')
-      .populate('toUser', 'name teamName')
-      .populate('offeredPlayer', 'name type role profilePicture')
-      .populate('requestedPlayer', 'name type role profilePicture');
-
-    const createdObj = populatedDoc.toObject({ virtuals: true });
-    createdObj.approvalWarnings = await getTradeApprovalBlockers(populatedDoc);
-    res.status(201).json(createdObj);
+    res.status(201).json(result.payload);
   } catch (err) {
     console.error('Create trade error', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -261,6 +120,20 @@ router.post('/:tradeId/respond', async (req, res) => {
     }
 
     if (decision === 'accept') {
+      try {
+        await assertHasTradeSlotRemaining(byUserId);
+      } catch (e) {
+        return res.status(e.statusCode || 400).json({ message: e.message });
+      }
+
+      const blockers = await getTradeApprovalBlockers(trade);
+      if (blockers.length) {
+        return res.status(400).json({
+          message: 'Cannot accept: trade would fail validation. Fix purse/roster issues first.',
+          approvalWarnings: blockers,
+        });
+      }
+
       trade.status = 'admin_pending';
       trade.history.push({ byUser: byUserId, action: 'accept', message });
     } else if (decision === 'reject') {
@@ -271,6 +144,13 @@ router.post('/:tradeId/respond', async (req, res) => {
     }
 
     await trade.save();
+
+    let bundleAutoResult = null;
+    if (decision === 'accept' && trade.bundleId) {
+      await syncBundleStatus(trade.bundleId);
+      bundleAutoResult = await tryAutoApproveBundle(trade.bundleId, getClientIp(req));
+    }
+
     const populated = await TradeRequest.findById(trade._id)
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
@@ -281,6 +161,9 @@ router.post('/:tradeId/respond', async (req, res) => {
       respondObj.approvalWarnings = await getTradeApprovalBlockers(populated);
     } else {
       respondObj.approvalWarnings = [];
+    }
+    if (bundleAutoResult) {
+      respondObj.bundleAutoResult = bundleAutoResult;
     }
     res.json(respondObj);
   } catch (err) {
@@ -355,10 +238,37 @@ router.get('/user/:userId', async (req, res) => {
   }
 });
 
+// GET approval audit log (all logged-in users via userId query)
+router.get('/approval-audit', async (req, res) => {
+  try {
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const audits = await TradeApprovalAudit.find()
+      .populate('decidedBy', 'name teamName email')
+      .populate('bundleId', 'title shareCode')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json(audits);
+  } catch (err) {
+    console.error('Approval audit error', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 // GET trades pending admin approval
 router.get('/admin/pending', async (req, res) => {
   try {
-    const trades = await TradeRequest.find({ status: 'admin_pending' })
+    const { adminUserId } = req.query;
+    if (adminUserId) {
+      const admin = await User.findById(adminUserId).select('isAdmin').lean();
+      if (!admin?.isAdmin) {
+        return res.status(403).json({ message: 'Only admin can view pending trades' });
+      }
+    }
+    const trades = await TradeRequest.find({
+      status: 'admin_pending',
+      $or: [{ bundleId: null }, { bundleId: { $exists: false } }],
+    })
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role profilePicture')
@@ -374,6 +284,13 @@ router.get('/admin/pending', async (req, res) => {
 // GET trades history for admin (completed, rejected, withdrawn)
 router.get('/admin/history', async (req, res) => {
   try {
+    const { adminUserId } = req.query;
+    if (adminUserId) {
+      const admin = await User.findById(adminUserId).select('isAdmin').lean();
+      if (!admin?.isAdmin) {
+        return res.status(403).json({ message: 'Only admin can view trade history' });
+      }
+    }
     const trades = await TradeRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
@@ -396,79 +313,41 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
     const trade = await TradeRequest.findById(tradeId);
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
 
+    if (trade.bundleId) {
+      return res.status(400).json({
+        message: 'Bundled trades auto-approve as a group when all legs are accepted. Use bundle reject if needed.',
+      });
+    }
+
+    if (trade.status !== 'admin_pending') {
+      return res.status(400).json({ message: 'Only admin_pending trades can be decided.' });
+    }
+
     if (decision === 'approve') {
-      const validation = await validateTradeForAdminApproval(trade);
-      if (!validation.ok) {
-        return res.status(400).json({ message: validation.blockers.join(' ') });
+      await assertCanApproveTrades(adminUserId);
+
+      const result = await executeApprovedTrade(trade, adminUserId, note);
+      if (!result.ok) {
+        return res.status(400).json({ message: result.blockers.join(' ') });
       }
 
-      const {
-        team1,
-        team2,
-        offeredUP,
-        requestedUP,
-        offeredPlayer,
-        requestedPlayer,
-        newTeam1Purse,
-        newTeam2Purse,
-      } = validation;
+      await TradeApprovalAudit.create({
+        type: 'standalone_approve',
+        tradeId: trade._id,
+        decidedBy: adminUserId,
+        clientIp: getClientIp(req),
+        note: note || '',
+      });
 
-      // ALL VALIDATIONS PASSED - Proceed with trade execution
-      console.log('✅ Trade validation passed - executing trade...');
+      return res.json(result.trade);
+    }
 
-      // Perform the swap same as players trade in players route
-      offeredUP.userId = team2._id;
-      requestedUP.userId = team1._id;
-      offeredUP.updatedAt = new Date();
-      requestedUP.updatedAt = new Date();
+    if (decision === 'reject') {
+      await assertCanApproveTrades(adminUserId);
 
-      // Update purses
-      team1.purse = newTeam1Purse;
-      team2.purse = newTeam2Purse;
-
-      // CRITICAL FIX: Update boughtPlayers arrays
-      // Remove offered player from team1 and add requested player
-      team1.boughtPlayers = team1.boughtPlayers.filter(id => !id.equals(trade.offeredPlayer));
-      team1.boughtPlayers.push(trade.requestedPlayer);
-      
-      // Remove requested player from team2 and add offered player
-      team2.boughtPlayers = team2.boughtPlayers.filter(id => !id.equals(trade.requestedPlayer));
-      team2.boughtPlayers.push(trade.offeredPlayer);
-
-      // Save all updates
-      await Promise.all([
-        offeredUP.save(),
-        requestedUP.save(),
-        team1.save(),
-        team2.save()
-      ]);
-
-      await setTradeLockOnPlayers([trade.offeredPlayer, trade.requestedPlayer]);
-      try {
-        invalidateCache('players:data');
-      } catch (_) {}
-
-      trade.status = 'completed';
-      trade.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
-
-      // Each completed trade counts as one slot per team. A later unsold pick (e.g. to refill Sapphire after a cross-tier swap) is a separate slot unless it pairs to a same-tier release — see routes/picks.js.
-      try {
-        await Promise.all([
-          User.findByIdAndUpdate(trade.fromUser, { $inc: { tradesUsed: 1 } }),
-          User.findByIdAndUpdate(trade.toUser, { $inc: { tradesUsed: 1 } }),
-        ]);
-      } catch {}
-
-      await autoRejectTradesInvolvingPlayers(
-        adminUserId,
-        [trade.offeredPlayer, trade.requestedPlayer],
-        trade._id,
-      );
-    } else if (decision === 'reject') {
       trade.status = 'rejected';
       trade.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
 
-      // Clear duplicate/stale active trades for the same players so teams can propose again
       await autoRejectTradesInvolvingPlayers(
         adminUserId,
         [trade.offeredPlayer, trade.requestedPlayer],
@@ -476,15 +355,22 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
         'Auto-rejected: admin rejected related trade involving these players',
       );
 
-      // Admin rejection does NOT affect trade count - only completed trades count
-      // No need to revert anything since tradesUsed is only incremented on approval
-    } else {
-      return res.status(400).json({ message: 'Invalid decision' });
+      await trade.save();
+
+      await TradeApprovalAudit.create({
+        type: 'standalone_reject',
+        tradeId: trade._id,
+        decidedBy: adminUserId,
+        clientIp: getClientIp(req),
+        note: note || '',
+      });
+
+      return res.json(trade);
     }
 
-    await trade.save();
-    res.json(trade);
+    return res.status(400).json({ message: 'Invalid decision' });
   } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     console.error('Admin decide error', err);
     res.status(500).json({ message: 'Internal server error' });
   }

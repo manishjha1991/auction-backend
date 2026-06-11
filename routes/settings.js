@@ -33,13 +33,107 @@ router.get('/', async (_req, res) => {
       requiredGames: doc.requiredGames ?? 13,
       tradeSeasonCap: tradeRules.tradeSeasonCap,
       maxTradesPerOpponentPair: tradeRules.maxTradesPerOpponentPair,
+      tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
+      enableTradeBundles: doc.enableTradeBundles !== false,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });
 
+router.get('/trade-commissioners', async (req, res) => {
+  try {
+    const doc = await getSettingsDoc();
+    const candidates = await User.find({
+      isActive: { $ne: false },
+      $or: [{ isAdmin: true }, { teamName: { $in: [null, ''] } }, { teamName: { $exists: false } }],
+    })
+      .select('name email teamName isCommissioner isAdmin')
+      .sort({ isCommissioner: -1, isAdmin: -1, name: 1 })
+      .lean();
+    res.json({
+      tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
+      enableTradeBundles: doc.enableTradeBundles !== false,
+      admins: candidates,
+      candidates,
+      commissionerUserId: candidates.find((a) => a.isCommissioner)?._id || null,
+    });
+  } catch (e) {
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+router.post('/trade-commissioners', async (req, res) => {
+  try {
+    const { adminUserId, commissionerUserId, tradeApprovalMode, enableTradeBundles } = req.body;
+    const admin = await User.findById(adminUserId);
+    if (!admin || !admin.isAdmin) {
+      return res.status(403).json({ message: 'Only admin can update trade commissioner settings' });
+    }
+
+    const doc = await getSettingsDoc();
+    if (tradeApprovalMode === 'any_admin' || tradeApprovalMode === 'commissioner_only') {
+      doc.tradeApprovalMode = tradeApprovalMode;
+    }
+    if (typeof enableTradeBundles === 'boolean') {
+      doc.enableTradeBundles = enableTradeBundles;
+    }
+    await doc.save();
+
+    if (commissionerUserId) {
+      const target = await User.findById(commissionerUserId);
+      if (!target) return res.status(404).json({ message: 'Commissioner user not found' });
+      await User.updateMany({}, { $set: { isCommissioner: false } });
+      target.isCommissioner = true;
+      target.isAdmin = true;
+      await target.save();
+    }
+
+    const admins = await User.find({ isAdmin: true })
+      .select('name email teamName isCommissioner isAdmin')
+      .sort({ name: 1 })
+      .lean();
+
+    res.json({
+      message: 'Trade commissioner settings saved',
+      tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
+      enableTradeBundles: doc.enableTradeBundles !== false,
+      admins,
+      commissionerUserId: admins.find((a) => a.isCommissioner)?._id || null,
+    });
+  } catch (e) {
+    console.error('trade-commissioners save error', e);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+router.post('/revoke-team-owner-admins', async (req, res) => {
+  try {
+    const { adminUserId } = req.body;
+    const admin = await User.findById(adminUserId);
+    if (!admin || !admin.isAdmin) {
+      return res.status(403).json({ message: 'Only admin can revoke team owner admin access' });
+    }
+
+    const result = await User.updateMany(
+      {
+        isAdmin: true,
+        teamName: { $exists: true, $nin: [null, ''] },
+      },
+      { $set: { isAdmin: false, isCommissioner: false } }
+    );
+
+    res.json({
+      message: `Removed admin access from ${result.modifiedCount} team-owner account(s). Commissioner/neutral admin accounts (no team) are unchanged.`,
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (e) {
+    console.error('revoke-team-owner-admins error', e);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 router.post('/', async (req, res) => {
   try {
-    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories, requiredGames, tradeSeasonCap, maxTradesPerOpponentPair } = req.body;
+    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories, requiredGames, tradeSeasonCap, maxTradesPerOpponentPair, tradeApprovalMode, enableTradeBundles } = req.body;
     const admin = await User.findById(adminUserId);
     if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update settings' });
     const doc = await getSettingsDoc();
@@ -72,6 +166,12 @@ router.post('/', async (req, res) => {
     if (maxTradesPerOpponentPair != null && maxTradesPerOpponentPair !== '') {
       const n = Number(maxTradesPerOpponentPair);
       if (Number.isFinite(n) && n >= RULE_MIN && n <= RULE_MAX) doc.maxTradesPerOpponentPair = Math.floor(n);
+    }
+    if (tradeApprovalMode === 'any_admin' || tradeApprovalMode === 'commissioner_only') {
+      doc.tradeApprovalMode = tradeApprovalMode;
+    }
+    if (typeof enableTradeBundles === 'boolean') {
+      doc.enableTradeBundles = enableTradeBundles;
     }
     if (Array.isArray(auctionAutoModeCategories)) {
       const valid = ['Gold', 'Silver', 'Sapphire', 'Emerald'];
@@ -109,6 +209,8 @@ router.post('/', async (req, res) => {
       requiredGames: doc.requiredGames ?? 13,
       tradeSeasonCap: tradeRules.tradeSeasonCap,
       maxTradesPerOpponentPair: tradeRules.maxTradesPerOpponentPair,
+      tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
+      enableTradeBundles: doc.enableTradeBundles !== false,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });

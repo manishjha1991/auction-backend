@@ -2,6 +2,7 @@ const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const { clampTradesUsed } = require('./tradeConstants');
 const { getTradeRules, assertPairAllowsCompletion } = require('./tradeRules');
+const { getEffectiveTradesUsed } = require('./tradeSlotReservation');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('./tradeApprovalShared');
 
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
@@ -159,14 +160,18 @@ async function computeTradeApproval(tradeDoc) {
     );
   }
 
-  if (clampTradesUsed(team1.tradesUsed) >= rules.tradeSeasonCap) {
+  const [team1Usage, team2Usage] = await Promise.all([
+    getEffectiveTradesUsed(team1._id),
+    getEffectiveTradesUsed(team2._id),
+  ]);
+  if (team1Usage.effectiveUsed >= rules.tradeSeasonCap) {
     blockers.push(
-      `${team1.teamName || 'One team'} has used all ${rules.tradeSeasonCap} season trade slots; admin cannot approve.`
+      `${team1.teamName || 'One team'} has used all ${rules.tradeSeasonCap} season trade slots (${team1Usage.reservedSlots} reserved by pending deals); cannot approve.`
     );
   }
-  if (clampTradesUsed(team2.tradesUsed) >= rules.tradeSeasonCap) {
+  if (team2Usage.effectiveUsed >= rules.tradeSeasonCap) {
     blockers.push(
-      `${team2.teamName || 'The other team'} has used all ${rules.tradeSeasonCap} season trade slots; admin cannot approve.`
+      `${team2.teamName || 'The other team'} has used all ${rules.tradeSeasonCap} season trade slots (${team2Usage.reservedSlots} reserved by pending deals); cannot approve.`
     );
   }
 

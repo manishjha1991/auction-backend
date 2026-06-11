@@ -92,10 +92,12 @@ router.post('/', async (req, res) => {
     if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
     // Guard: user cannot exceed season trade cap (trade + release combined)
     // 🚀 PERFORMANCE: Use .lean() for read-only query
-    const u = await User.findById(userId).select('tradesUsed').lean();
     const rules = await getTradeRules();
-    if (u && clampTradesUsed(u.tradesUsed) >= rules.tradeSeasonCap) {
-      return res.status(400).json({ message: `You have used all ${rules.tradeSeasonCap} trades.` });
+    try {
+      const { assertHasTradeSlotRemaining } = require('../utils/tradeSlotReservation');
+      await assertHasTradeSlotRemaining(userId, rules);
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ message: e.message });
     }
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true }).lean();
