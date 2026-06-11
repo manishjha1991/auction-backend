@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const TradeBundle = require('../models/TradeBundle');
 const TradeRequest = require('../models/TradeRequest');
 const TradeApprovalAudit = require('../models/TradeApprovalAudit');
@@ -18,6 +19,12 @@ async function uniqueShareCode() {
   return `${Date.now().toString(36).toUpperCase()}`;
 }
 
+function refUserId(ref) {
+  if (ref == null) return null;
+  if (ref._id != null) return ref._id;
+  return ref;
+}
+
 function uniquePartyIds(trades) {
   const ids = new Set();
   for (const t of trades) {
@@ -35,8 +42,21 @@ async function loadBundleTrades(bundle) {
     .populate('requestedPlayer', 'name type role profilePicture');
 }
 
+function sanitizeObjectIdList(ids) {
+  if (!Array.isArray(ids)) return [];
+  return ids.filter((id) => {
+    const s = String(id);
+    return mongoose.Types.ObjectId.isValid(s) && s.length === 24;
+  });
+}
+
 async function reconcileBundleTradeIds(bundle) {
   if (!bundle) return bundle;
+  const cleanParties = sanitizeObjectIdList(bundle.partyUserIds);
+  if (cleanParties.length !== (bundle.partyUserIds || []).length) {
+    bundle.partyUserIds = cleanParties;
+    await bundle.save();
+  }
   const linked = await TradeRequest.find({ bundleId: bundle._id }).select('_id').lean();
   const idSet = new Set((bundle.tradeIds || []).map(String));
   let changed = false;
@@ -236,12 +256,12 @@ async function attachTradeToBundle(bundleId, trade) {
   tradeIds.add(String(trade._id));
   bundle.tradeIds = [...tradeIds];
   const partySet = new Set(bundle.partyUserIds.map(String));
-  partySet.add(String(trade.fromUser));
-  partySet.add(String(trade.toUser));
+  partySet.add(String(refUserId(trade.fromUser)));
+  partySet.add(String(refUserId(trade.toUser)));
   bundle.partyUserIds = [...partySet];
   bundle.history.push({
     action: 'leg_added',
-    byUser: trade.fromUser,
+    byUser: refUserId(trade.fromUser),
     message: `Leg added: ${trade._id}`,
     timestamp: new Date(),
   });
@@ -254,11 +274,20 @@ async function buildBundlePayload(bundle) {
   await reconcileBundleTradeIds(bundle);
   const trades = await loadBundleTrades(bundle);
   const legs = await Promise.all(
-    trades.map(async (t, idx) => ({
-      legIndex: idx + 1,
-      trade: t.toObject({ virtuals: true }),
-      approvalWarnings: await getTradeApprovalBlockers(t),
-    }))
+    trades.map(async (t, idx) => {
+      let approvalWarnings = [];
+      try {
+        approvalWarnings = await getTradeApprovalBlockers(t);
+      } catch (e) {
+        console.error('Bundle leg approval warnings error', e);
+        approvalWarnings = ['Could not validate this leg right now.'];
+      }
+      return {
+        legIndex: idx + 1,
+        trade: t.toObject({ virtuals: true }),
+        approvalWarnings,
+      };
+    })
   );
 
   const acceptedCount = trades.filter((t) => t.status === 'admin_pending' || t.status === 'completed').length;
@@ -277,6 +306,7 @@ async function buildBundlePayload(bundle) {
 
 module.exports = {
   uniqueShareCode,
+  refUserId,
   syncBundleStatus,
   tryAutoApproveBundle,
   cancelBundle,
