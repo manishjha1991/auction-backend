@@ -1,5 +1,10 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
+
+function isValidObjectId(id) {
+  return id != null && mongoose.Types.ObjectId.isValid(String(id));
+}
 const TradeBundle = require('../models/TradeBundle');
 const TradeRequest = require('../models/TradeRequest');
 const User = require('../models/User');
@@ -14,6 +19,7 @@ const {
   cancelBundle,
   deleteDraftBundle,
   buildBundlePayload,
+  refUserId,
 } = require('../utils/tradeBundleService');
 const { createTradeProposal } = require('../utils/tradeProposalHelper');
 
@@ -145,6 +151,9 @@ router.post('/:bundleId/invite', async (req, res) => {
 router.post('/:bundleId/legs', async (req, res) => {
   try {
     const { fromUserId, offeredPlayerId, requestedPlayerId } = req.body;
+    if (!isValidObjectId(fromUserId) || !isValidObjectId(offeredPlayerId) || !isValidObjectId(requestedPlayerId)) {
+      return res.status(400).json({ message: 'Invalid user or player selection. Refresh and pick players again.' });
+    }
     const bundle = await TradeBundle.findById(req.params.bundleId);
     if (!bundle) return res.status(404).json({ message: 'Bundle not found' });
     if (['completed', 'cancelled', 'rejected'].includes(bundle.status)) {
@@ -173,8 +182,8 @@ router.post('/:bundleId/legs', async (req, res) => {
     bundle.tradeIds = [...tradeIds];
 
     const partySet = new Set(bundle.partyUserIds.map(String));
-    partySet.add(String(trade.fromUser));
-    partySet.add(String(trade.toUser));
+    partySet.add(String(refUserId(trade.fromUser)));
+    partySet.add(String(refUserId(trade.toUser)));
     bundle.partyUserIds = [...partySet];
 
     bundle.history.push({
@@ -189,7 +198,11 @@ router.post('/:bundleId/legs', async (req, res) => {
     res.status(201).json(await buildBundlePayload(bundle));
   } catch (err) {
     console.error('Add bundle leg error', err);
-    res.status(500).json({ message: 'Internal server error' });
+    const msg =
+      err.name === 'CastError'
+        ? 'Invalid player or user id — refresh the page and try again.'
+        : err.message || 'Internal server error';
+    res.status(500).json({ message: msg });
   }
 });
 
