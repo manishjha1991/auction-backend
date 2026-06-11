@@ -93,6 +93,38 @@ async function syncBundleStatus(bundleId) {
     return bundle;
   }
 
+  const hasRejectedLeg = trades.some((t) => t.status === 'rejected');
+  const hasWithdrawnLeg = trades.some((t) => t.status === 'withdrawn');
+  const hasActiveLeg = trades.some((t) =>
+    ['pending', 'counter', 'admin_pending'].includes(t.status)
+  );
+  if ((hasRejectedLeg || hasWithdrawnLeg) && hasActiveLeg) {
+    const legStatus = hasRejectedLeg ? 'rejected' : 'withdrawn';
+    const legAction = hasRejectedLeg ? 'reject' : 'withdraw';
+    const bundleStatus = hasRejectedLeg ? 'rejected' : 'cancelled';
+    for (const t of trades) {
+      if (['pending', 'counter', 'admin_pending'].includes(t.status)) {
+        t.status = legStatus;
+        t.history.push({
+          action: legAction,
+          message: hasRejectedLeg
+            ? 'Bundle rejected — another leg in this bundle was rejected'
+            : 'Bundle withdrawn — another leg in this bundle was withdrawn',
+        });
+        await t.save();
+      }
+    }
+    bundle.status = bundleStatus;
+    bundle.blockers = [];
+    bundle.history.push({
+      action: bundleStatus === 'rejected' ? 'rejected' : 'cancelled',
+      message: 'Bundle closed — one leg was rejected or withdrawn',
+      timestamp: new Date(),
+    });
+    await bundle.save();
+    return bundle;
+  }
+
   const allAdminPending = trades.every((t) => t.status === 'admin_pending');
   const anyActive = trades.some((t) => ['pending', 'counter', 'admin_pending'].includes(t.status));
 
