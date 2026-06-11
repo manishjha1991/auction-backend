@@ -104,8 +104,8 @@ router.post('/', async (req, res) => {
 
     const rules = await getTradeRules();
     try {
-      const { assertHasTradeSlotRemaining } = require('../utils/tradeSlotReservation');
-      await assertHasTradeSlotRemaining(userId, rules);
+      const { assertCanRequestPick } = require('../utils/tradeSlotReservation');
+      await assertCanRequestPick(userId, player.type, rules);
     } catch (e) {
       return res.status(e.statusCode || 400).json({ message: e.message });
     }

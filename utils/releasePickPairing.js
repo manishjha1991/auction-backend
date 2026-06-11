@@ -142,8 +142,28 @@ async function findOrphanPickToPairOnReleaseApprove(releaseMongooseDoc, released
   return null;
 }
 
+const TIERS_FOR_CREDIT = ['Sapphire', 'Gold', 'Emerald', 'Silver'];
+
+/** Tiers with a completed, unpaired release — same-tier unsold pick uses no extra trade slot. */
+async function getSameTierPickCredits(userId, pickCreatedAt = new Date()) {
+  const credits = [];
+  for (const tier of TIERS_FOR_CREDIT) {
+    const rel = await findUnpairedReleaseForSameTierPick(userId, tier, pickCreatedAt);
+    if (rel) credits.push(tier);
+  }
+  return credits;
+}
+
+async function hasSameTierPickCredit(userId, pickPlayerType, pickCreatedAt = new Date()) {
+  if (!TIERS.includes(pickPlayerType)) return false;
+  const rel = await findUnpairedReleaseForSameTierPick(userId, pickPlayerType, pickCreatedAt);
+  return !!rel;
+}
+
 module.exports = {
   findUnpairedReleaseForSameTierPick,
   findOrphanPickToPairOnReleaseApprove,
   pickIsAlreadyPairedToARelease,
+  getSameTierPickCredits,
+  hasSameTierPickCredit,
 };

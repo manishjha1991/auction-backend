@@ -5,6 +5,7 @@ const PickRequest = require('../models/PickRequest');
 const User = require('../models/User');
 const { clampTradesUsed } = require('./tradeConstants');
 const { getTradeRules } = require('./tradeRules');
+const { getSameTierPickCredits, hasSameTierPickCredit } = require('./releasePickPairing');
 
 function toObjectId(id) {
   if (id == null) return null;
@@ -69,16 +70,26 @@ async function assertHasTradeSlotRemaining(userId, rules = null) {
   }
 }
 
+/** Unsold pick: skip cap check when a same-tier release is waiting to pair (release + pick = 1 slot total). */
+async function assertCanRequestPick(userId, pickPlayerType, rules = null) {
+  if (await hasSameTierPickCredit(userId, pickPlayerType, new Date())) {
+    return;
+  }
+  await assertHasTradeSlotRemaining(userId, rules);
+}
+
 async function getTradeUsageSummary(userId) {
   const rules = await getTradeRules();
   const { tradesUsed, reservedSlots, effectiveUsed } = await getEffectiveTradesUsed(userId);
   const cap = rules.tradeSeasonCap;
+  const sameTierPickCredits = await getSameTierPickCredits(userId);
   return {
     tradesUsed,
     reservedSlots,
     effectiveUsed,
     cap,
     remaining: Math.max(0, cap - effectiveUsed),
+    sameTierPickCredits,
     maxActiveOutgoing: rules.maxActiveOutgoingTrades,
     maxTradesPerOpponentPair: rules.maxTradesPerOpponentPair,
   };
@@ -91,5 +102,6 @@ module.exports = {
   getReservedSlotCount,
   getEffectiveTradesUsed,
   assertHasTradeSlotRemaining,
+  assertCanRequestPick,
   getTradeUsageSummary,
 };
