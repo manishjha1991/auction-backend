@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const TradeBundle = require('../models/TradeBundle');
 const TradeRequest = require('../models/TradeRequest');
 const TradeApprovalAudit = require('../models/TradeApprovalAudit');
-const { getTradeApprovalBlockers } = require('./tradeApprovalBlockers');
+const { getTradeApprovalBlockers, computeBundleTradeApproval } = require('./tradeApprovalBlockers');
 const { executeApprovedTrade } = require('./tradeExecution');
 
 function generateShareCode() {
@@ -106,6 +106,12 @@ async function syncBundleStatus(bundleId) {
 }
 
 async function validateBundleLegs(trades) {
+  if (!trades.length) return [];
+  const bundleId = trades[0].bundleId;
+  if (bundleId) {
+    const { blockers } = await computeBundleTradeApproval(bundleId, trades[0]);
+    return blockers;
+  }
   const blockers = [];
   for (let i = 0; i < trades.length; i += 1) {
     const legBlockers = await getTradeApprovalBlockers(trades[i]);
@@ -145,7 +151,9 @@ async function tryAutoApproveBundle(bundleId, clientIp) {
   }
 
   for (const trade of trades) {
-    const result = await executeApprovedTrade(trade, null, 'Bundle auto-approved');
+    const result = await executeApprovedTrade(trade, null, 'Bundle auto-approved', {
+      bundleBatchApproved: true,
+    });
     if (!result.ok) {
       bundle.status = 'blocked';
       bundle.blockers = result.blockers || ['Execution failed'];
@@ -273,14 +281,27 @@ async function attachTradeToBundle(bundleId, trade) {
 async function buildBundlePayload(bundle) {
   await reconcileBundleTradeIds(bundle);
   const trades = await loadBundleTrades(bundle);
+  let bundleApprovalWarnings = [];
+  if (trades.length && trades[0].bundleId) {
+    try {
+      const { blockers } = await computeBundleTradeApproval(trades[0].bundleId, trades[0]);
+      bundleApprovalWarnings = blockers;
+    } catch (e) {
+      console.error('Bundle approval warnings error', e);
+      bundleApprovalWarnings = ['Could not validate this bundle right now.'];
+    }
+  }
+
   const legs = await Promise.all(
     trades.map(async (t, idx) => {
-      let approvalWarnings = [];
-      try {
-        approvalWarnings = await getTradeApprovalBlockers(t);
-      } catch (e) {
-        console.error('Bundle leg approval warnings error', e);
-        approvalWarnings = ['Could not validate this leg right now.'];
+      let approvalWarnings = bundleApprovalWarnings;
+      if (!approvalWarnings.length) {
+        try {
+          approvalWarnings = await getTradeApprovalBlockers(t);
+        } catch (e) {
+          console.error('Bundle leg approval warnings error', e);
+          approvalWarnings = ['Could not validate this leg right now.'];
+        }
       }
       return {
         legIndex: idx + 1,

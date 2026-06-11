@@ -36,6 +36,7 @@ async function getTradeRules() {
 function toObjectId(id) {
   if (id == null) return null;
   if (id instanceof mongoose.Types.ObjectId) return id;
+  if (typeof id === 'object' && id._id != null) return toObjectId(id._id);
   const s = String(id);
   if (!mongoose.Types.ObjectId.isValid(s)) return null;
   return new mongoose.Types.ObjectId(s);
@@ -48,26 +49,60 @@ function pairOrClause(userIdA, userIdB) {
   return [{ fromUser: a, toUser: b }, { fromUser: b, toUser: a }];
 }
 
-/** Completed + active (pending / counter / admin_pending) between two teams, either direction. */
+const ACTIVE_TRADE_STATUSES = ['pending', 'counter', 'admin_pending'];
+
+/** Active deals between two teams — bundle legs count as one deal, not one per leg. */
+async function countActiveDealsBetweenTeams(userIdA, userIdB) {
+  const or = pairOrClause(userIdA, userIdB);
+  if (!or) return 0;
+  const activeTrades = await TradeRequest.find({
+    $or: or,
+    status: { $in: ACTIVE_TRADE_STATUSES },
+  })
+    .select('bundleId')
+    .lean();
+  const bundleDeals = new Set();
+  let standalone = 0;
+  for (const t of activeTrades) {
+    if (t.bundleId) bundleDeals.add(String(t.bundleId));
+    else standalone += 1;
+  }
+  return standalone + bundleDeals.size;
+}
+
+/** Completed + active between two teams (active uses bundle-aware deal counting). */
 async function countTradesBetweenTeams(userIdA, userIdB) {
   const or = pairOrClause(userIdA, userIdB);
   if (!or) return { completed: 0, active: 0, total: 0 };
-  const [completed, active] = await Promise.all([
+  const [completed, activeDeals] = await Promise.all([
     TradeRequest.countDocuments({ $or: or, status: 'completed' }),
-    TradeRequest.countDocuments({
-      $or: or,
-      status: { $in: ['pending', 'counter', 'admin_pending'] },
-    }),
+    countActiveDealsBetweenTeams(userIdA, userIdB),
   ]);
-  return { completed, active, total: completed + active };
+  return { completed, active: activeDeals, total: completed + activeDeals };
 }
 
 /**
  * Before creating a new proposal: room for one more active doc between this pair.
  */
-async function assertPairAllowsNewProposal(fromUserId, toUserId, maxTradesPerOpponentPair) {
+async function assertPairAllowsNewProposal(fromUserId, toUserId, maxTradesPerOpponentPair, bundleId = null) {
   const { completed, active } = await countTradesBetweenTeams(fromUserId, toUserId);
-  if (completed + active >= maxTradesPerOpponentPair) {
+  let effectiveActive = active;
+
+  if (bundleId) {
+    const or = pairOrClause(fromUserId, toUserId);
+    const bundleHasLeg = or
+      ? await TradeRequest.exists({
+          bundleId,
+          $or: or,
+          status: { $in: ACTIVE_TRADE_STATUSES },
+        })
+      : null;
+    if (bundleHasLeg) {
+      effectiveActive = Math.max(0, active - 1);
+    }
+  }
+
+  if (completed + effectiveActive >= maxTradesPerOpponentPair) {
     const err = new Error(
       `These teams have reached the limit of ${maxTradesPerOpponentPair} trade deal(s) between them this season (including pending).`
     );
@@ -86,14 +121,11 @@ async function assertPairAllowsCompletion(tradeDoc, maxTradesPerOpponentPair) {
     err.statusCode = 400;
     throw err;
   }
-  const [completed, active] = await Promise.all([
+  const [completed, activeDeals] = await Promise.all([
     TradeRequest.countDocuments({ $or: or, status: 'completed' }),
-    TradeRequest.countDocuments({
-      $or: or,
-      status: { $in: ['pending', 'counter', 'admin_pending'] },
-    }),
+    countActiveDealsBetweenTeams(tradeDoc.fromUser, tradeDoc.toUser),
   ]);
-  if (completed + active > maxTradesPerOpponentPair) {
+  if (completed + activeDeals > maxTradesPerOpponentPair) {
     const err = new Error(
       `This trade would exceed the limit of ${maxTradesPerOpponentPair} deal(s) between these teams this season.`
     );
@@ -121,6 +153,7 @@ module.exports = {
   DEFAULT_MAX_TRADES_PER_OPPONENT_PAIR,
   getTradeRules,
   countTradesBetweenTeams,
+  countActiveDealsBetweenTeams,
   assertPairAllowsNewProposal,
   assertPairAllowsCompletion,
 };

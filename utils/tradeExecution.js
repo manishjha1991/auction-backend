@@ -3,8 +3,8 @@ const { validateTradeForAdminApproval } = require('./tradeApprovalBlockers');
 const { setTradeLockOnPlayers, autoRejectTradesInvolvingPlayers } = require('./tradeApprovalShared');
 const { invalidateCache } = require('./cache');
 
-async function executeApprovedTrade(trade, adminUserId, note) {
-  const validation = await validateTradeForAdminApproval(trade);
+async function executeApprovedTrade(trade, adminUserId, note, options = {}) {
+  const validation = await validateTradeForAdminApproval(trade, options);
   if (!validation.ok) {
     return { ok: false, blockers: validation.blockers };
   }

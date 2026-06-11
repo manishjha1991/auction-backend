@@ -104,7 +104,12 @@ async function createTradeProposal({ fromUserId, offeredPlayerId, requestedPlaye
   }
 
   try {
-    await assertPairAllowsNewProposal(fromUserId, requestedOwner._id, rules.maxTradesPerOpponentPair);
+    await assertPairAllowsNewProposal(
+      fromUserId,
+      requestedOwner._id,
+      rules.maxTradesPerOpponentPair,
+      bundleId || null
+    );
   } catch (e) {
     return { ok: false, statusCode: e.statusCode || 400, message: e.message };
   }

@@ -1,6 +1,6 @@
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
-const { clampTradesUsed } = require('./tradeConstants');
+const TradeRequest = require('../models/TradeRequest');
 const { getTradeRules, assertPairAllowsCompletion } = require('./tradeRules');
 const { getEffectiveTradesUsed } = require('./tradeSlotReservation');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('./tradeApprovalShared');
@@ -58,13 +58,178 @@ async function getTradeApprovalBlockers(tradeDoc) {
 /**
  * Same as getTradeApprovalBlockers but returns execution payload for admin approve path.
  */
-async function validateTradeForAdminApproval(tradeDoc) {
-  const { blockers, execution } = await computeTradeApproval(tradeDoc);
+async function validateTradeForAdminApproval(tradeDoc, options = {}) {
+  const { bundleBatchApproved = false } = options;
+  let result;
+  if (bundleBatchApproved) {
+    result = await computeSingleTradeApproval(tradeDoc);
+  } else if (tradeDoc.bundleId) {
+    result = await computeBundleTradeApproval(tradeDoc.bundleId, tradeDoc);
+  } else {
+    result = await computeSingleTradeApproval(tradeDoc);
+  }
+  const { blockers, execution } = result;
   if (blockers.length) return { ok: false, blockers };
   return { ok: true, ...execution };
 }
 
-async function computeTradeApproval(tradeDoc) {
+async function loadBundleTrades(bundleId) {
+  return TradeRequest.find({ bundleId })
+    .populate('fromUser', 'name teamName purse')
+    .populate('toUser', 'name teamName purse')
+    .populate('offeredPlayer', 'name type role')
+    .populate('requestedPlayer', 'name type role');
+}
+
+async function computeBundleTradeApproval(bundleId, focusTrade) {
+  const blockers = [];
+  const rules = await getTradeRules();
+  const trades = await loadBundleTrades(bundleId);
+  if (!trades.length) {
+    return { blockers: ['Bundle has no trade legs.'], execution: null };
+  }
+
+  try {
+    await assertPairAllowsCompletion(focusTrade || trades[0], rules.maxTradesPerOpponentPair);
+  } catch (e) {
+    if (e.message) blockers.push(e.message);
+  }
+
+  const teamState = new Map();
+  const legExecutions = [];
+
+  async function ensureTeamState(userDoc) {
+    const uid = String(userDoc._id);
+    if (!teamState.has(uid)) {
+      const [counts, usage] = await Promise.all([
+        getUserTypeCounts(userDoc._id),
+        getEffectiveTradesUsed(userDoc._id),
+      ]);
+      teamState.set(uid, {
+        user: userDoc,
+        typeCounts: { ...counts },
+        purse: purseNum(userDoc.purse),
+        legsInvolved: 0,
+        usage,
+      });
+    }
+    return teamState.get(uid);
+  }
+
+  for (const trade of trades) {
+    const offeredPid = playerIdOf(trade.offeredPlayer);
+    const requestedPid = playerIdOf(trade.requestedPlayer);
+
+    const [offeredUP, requestedUP, offeredPlayer, requestedPlayer] = await Promise.all([
+      UserPlayer.findOne({ playerId: offeredPid, isActive: true }).populate('userId'),
+      UserPlayer.findOne({ playerId: requestedPid, isActive: true }).populate('userId'),
+      Player.findById(offeredPid),
+      Player.findById(requestedPid),
+    ]);
+
+    if (!offeredUP || !requestedUP) {
+      blockers.push(
+        'One or more players are not available for trade (roster may have changed). Refresh and try again.'
+      );
+      continue;
+    }
+
+    const team1 = offeredUP.userId;
+    const team2 = requestedUP.userId;
+    if (!team1 || !team2) {
+      blockers.push('Could not load team data for one of the bundle legs.');
+      continue;
+    }
+
+    const lockRule = `Players cannot be traded again for ${TRADE_LOCK_HOURS} hours after a completed trade or after being picked from unsold`;
+    if (await isTradeLocked(offeredPlayer)) {
+      blockers.push(
+        `${offeredPlayer?.name || 'A player'} is trade-locked (${lockRule}).`
+      );
+    }
+    if (await isTradeLocked(requestedPlayer)) {
+      blockers.push(
+        `${requestedPlayer?.name || 'A player'} is trade-locked (${lockRule}).`
+      );
+    }
+
+    const offeredValue = Number(offeredUP.bidValue || 0);
+    const requestedValue = Number(requestedUP.bidValue || 0);
+
+    const t1 = await ensureTeamState(team1);
+    const t2 = await ensureTeamState(team2);
+    t1.purse += offeredValue - requestedValue;
+    t2.purse += requestedValue - offeredValue;
+    t1.legsInvolved += 1;
+    t2.legsInvolved += 1;
+
+    if (offeredPlayer?.type) {
+      t1.typeCounts[offeredPlayer.type] = Math.max(0, (t1.typeCounts[offeredPlayer.type] || 0) - 1);
+      t2.typeCounts[offeredPlayer.type] = (t2.typeCounts[offeredPlayer.type] || 0) + 1;
+    }
+    if (requestedPlayer?.type) {
+      t1.typeCounts[requestedPlayer.type] = (t1.typeCounts[requestedPlayer.type] || 0) + 1;
+      t2.typeCounts[requestedPlayer.type] = Math.max(0, (t2.typeCounts[requestedPlayer.type] || 0) - 1);
+    }
+
+    legExecutions.push({
+      trade,
+      team1,
+      team2,
+      offeredUP,
+      requestedUP,
+      offeredPlayer,
+      requestedPlayer,
+    });
+  }
+
+  for (const [, state] of teamState) {
+    const name = state.user.teamName || 'A team';
+    if (state.purse < 0) {
+      blockers.push(
+        `${name} would end with a negative purse after all bundle legs (shortfall about ₹${toCr(Math.abs(state.purse))} Cr).`
+      );
+    }
+    if (wouldExceedTypeLimits(state.typeCounts)) {
+      blockers.push(
+        `After all bundle legs, ${name} would break player-type limits (Sapphire/Emerald/Gold/Silver caps).`
+      );
+    }
+    const slotsNeeded = state.legsInvolved;
+    if (state.usage.effectiveUsed + slotsNeeded > rules.tradeSeasonCap) {
+      blockers.push(
+        `${name} does not have enough season trade slots for this bundle (${state.usage.effectiveUsed} used + ${slotsNeeded} legs > ${rules.tradeSeasonCap} cap).`
+      );
+    }
+  }
+
+  const uniqueBlockers = [...new Set(blockers)];
+  if (uniqueBlockers.length) {
+    return { blockers: uniqueBlockers, execution: null };
+  }
+
+  const focusId = focusTrade?._id ? String(focusTrade._id) : null;
+  const focusLeg =
+    legExecutions.find((l) => String(l.trade._id) === focusId) || legExecutions[0];
+
+  return {
+    blockers: [],
+    execution: {
+      rules,
+      team1: focusLeg.team1,
+      team2: focusLeg.team2,
+      offeredUP: focusLeg.offeredUP,
+      requestedUP: focusLeg.requestedUP,
+      offeredPlayer: focusLeg.offeredPlayer,
+      requestedPlayer: focusLeg.requestedPlayer,
+      newTeam1Purse: teamState.get(String(focusLeg.team1._id))?.purse,
+      newTeam2Purse: teamState.get(String(focusLeg.team2._id))?.purse,
+      bundleHolistic: true,
+    },
+  };
+}
+
+async function computeSingleTradeApproval(tradeDoc) {
   const blockers = [];
   const rules = await getTradeRules();
 
@@ -195,7 +360,15 @@ async function computeTradeApproval(tradeDoc) {
   };
 }
 
+async function computeTradeApproval(tradeDoc) {
+  if (tradeDoc.bundleId) {
+    return computeBundleTradeApproval(tradeDoc.bundleId, tradeDoc);
+  }
+  return computeSingleTradeApproval(tradeDoc);
+}
+
 module.exports = {
   getTradeApprovalBlockers,
   validateTradeForAdminApproval,
+  computeBundleTradeApproval,
 };
