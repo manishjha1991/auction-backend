@@ -20,6 +20,7 @@ const { getTradeRules, assertPairAllowsNewProposal } = require('../utils/tradeRu
 const { invalidateCache } = require('../utils/cache');
 const {
   getTradeApprovalBlockers,
+  getBundleLegAcceptBlockers,
   validateTradeForAdminApproval,
 } = require('../utils/tradeApprovalBlockers');
 const { createTradeProposal } = require('../utils/tradeProposalHelper');
@@ -132,10 +133,14 @@ router.post('/:tradeId/respond', async (req, res) => {
         return res.status(e.statusCode || 400).json({ message: e.message });
       }
 
-      const blockers = await getTradeApprovalBlockers(trade);
+      const blockers = trade.bundleId
+        ? await getBundleLegAcceptBlockers(trade)
+        : await getTradeApprovalBlockers(trade);
       if (blockers.length) {
         return res.status(400).json({
-          message: 'Cannot accept: trade would fail validation. Fix purse/roster issues first.',
+          message: trade.bundleId
+            ? 'Cannot accept this leg yet. See warnings on the bundle page.'
+            : 'Cannot accept: trade would fail validation. Fix purse/roster issues first.',
           approvalWarnings: blockers,
         });
       }
@@ -164,7 +169,9 @@ router.post('/:tradeId/respond', async (req, res) => {
       .populate('requestedPlayer', 'name type role profilePicture');
     const respondObj = populated.toObject({ virtuals: true });
     if (['pending', 'counter', 'admin_pending'].includes(populated.status)) {
-      respondObj.approvalWarnings = await getTradeApprovalBlockers(populated);
+      respondObj.approvalWarnings = populated.bundleId
+        ? await getBundleLegAcceptBlockers(populated)
+        : await getTradeApprovalBlockers(populated);
     } else {
       respondObj.approvalWarnings = [];
     }

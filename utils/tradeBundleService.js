@@ -3,7 +3,11 @@ const mongoose = require('mongoose');
 const TradeBundle = require('../models/TradeBundle');
 const TradeRequest = require('../models/TradeRequest');
 const TradeApprovalAudit = require('../models/TradeApprovalAudit');
-const { getTradeApprovalBlockers, computeBundleTradeApproval } = require('./tradeApprovalBlockers');
+const {
+  getTradeApprovalBlockers,
+  getBundleLegAcceptBlockers,
+  computeBundleTradeApproval,
+} = require('./tradeApprovalBlockers');
 const { executeApprovedTrade } = require('./tradeExecution');
 
 function generateShareCode() {
@@ -294,19 +298,18 @@ async function buildBundlePayload(bundle) {
 
   const legs = await Promise.all(
     trades.map(async (t, idx) => {
-      let approvalWarnings = bundleApprovalWarnings;
-      if (!approvalWarnings.length) {
-        try {
-          approvalWarnings = await getTradeApprovalBlockers(t);
-        } catch (e) {
-          console.error('Bundle leg approval warnings error', e);
-          approvalWarnings = ['Could not validate this leg right now.'];
-        }
+      let acceptBlockers = [];
+      try {
+        acceptBlockers = await getBundleLegAcceptBlockers(t);
+      } catch (e) {
+        console.error('Bundle leg accept blockers error', e);
+        acceptBlockers = ['Could not validate this leg right now.'];
       }
       return {
         legIndex: idx + 1,
         trade: t.toObject({ virtuals: true }),
-        approvalWarnings,
+        approvalWarnings: bundleApprovalWarnings,
+        acceptBlockers,
       };
     })
   );

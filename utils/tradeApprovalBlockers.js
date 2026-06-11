@@ -61,6 +61,43 @@ async function getTradeApprovalBlockers(tradeDoc) {
 }
 
 /**
+ * Bundle leg accept — only leg-specific blockers (locks, roster availability).
+ * Full purse/type/pair checks run when all legs are accepted (bundle auto-approve).
+ */
+async function getBundleLegAcceptBlockers(tradeDoc) {
+  const blockers = [];
+  const offeredPid = playerIdOf(tradeDoc.offeredPlayer);
+  const requestedPid = playerIdOf(tradeDoc.requestedPlayer);
+
+  const [offeredUP, requestedUP, offeredPlayer, requestedPlayer] = await Promise.all([
+    UserPlayer.findOne({ playerId: offeredPid, isActive: true }),
+    UserPlayer.findOne({ playerId: requestedPid, isActive: true }),
+    Player.findById(offeredPid),
+    Player.findById(requestedPid),
+  ]);
+
+  if (!offeredUP || !requestedUP) {
+    blockers.push(
+      'One or both players are not available for trade (roster may have changed).'
+    );
+  }
+
+  const lockRule = `Players cannot be traded again for ${TRADE_LOCK_HOURS} hours after a completed trade or after being picked from unsold`;
+  if (await isTradeLocked(offeredPlayer)) {
+    blockers.push(
+      `${offeredPlayer?.name || 'Offered player'} is trade-locked (${lockRule}).`
+    );
+  }
+  if (await isTradeLocked(requestedPlayer)) {
+    blockers.push(
+      `${requestedPlayer?.name || 'Requested player'} is trade-locked (${lockRule}).`
+    );
+  }
+
+  return blockers;
+}
+
+/**
  * Same as getTradeApprovalBlockers but returns execution payload for admin approve path.
  */
 async function validateTradeForAdminApproval(tradeDoc, options = {}) {
@@ -382,6 +419,7 @@ async function computeTradeApproval(tradeDoc) {
 
 module.exports = {
   getTradeApprovalBlockers,
+  getBundleLegAcceptBlockers,
   validateTradeForAdminApproval,
   computeBundleTradeApproval,
 };
