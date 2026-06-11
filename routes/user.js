@@ -175,9 +175,10 @@ router.post('/login', async (req, res) => {
       id: user._id,
       name: user.name,
       email: user.email,
-      teamName: user.teamName,
+      teamName: typeof user.teamName === 'string' ? user.teamName.trim() : user.teamName,
       playStationId: user.playStationId,
       isAdmin: user.isAdmin,
+      isParticipating: user.isParticipating !== false,
       timezone: user.timezone,
       streamLink: user.streamLink,
       purse: purseValue, // Include purse value

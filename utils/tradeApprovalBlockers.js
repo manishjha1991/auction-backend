@@ -104,7 +104,8 @@ async function validateTradeForAdminApproval(tradeDoc, options = {}) {
   const { bundleBatchApproved = false } = options;
   let result;
   if (bundleBatchApproved) {
-    result = await computeSingleTradeApproval(tradeDoc, { skipPairCheck: true });
+    // Holistic bundle validation already checked season slots; per-leg reserved slots must not block completion.
+    result = await computeSingleTradeApproval(tradeDoc, { skipPairCheck: true, skipSlotCheck: true });
   } else if (tradeDoc.bundleId) {
     result = await computeBundleTradeApproval(normalizeBundleId(tradeDoc.bundleId), tradeDoc);
   } else {
@@ -286,7 +287,7 @@ async function computeBundleTradeApproval(bundleId, focusTrade) {
 }
 
 async function computeSingleTradeApproval(tradeDoc, options = {}) {
-  const { skipPairCheck = false } = options;
+  const { skipPairCheck = false, skipSlotCheck = false } = options;
   const blockers = [];
   const rules = await getTradeRules();
 
@@ -384,19 +385,23 @@ async function computeSingleTradeApproval(tradeDoc, options = {}) {
     );
   }
 
-  const [team1Usage, team2Usage] = await Promise.all([
-    getEffectiveTradesUsed(team1._id),
-    getEffectiveTradesUsed(team2._id),
-  ]);
-  if (team1Usage.effectiveUsed >= rules.tradeSeasonCap) {
-    blockers.push(
-      `${team1.teamName || 'One team'} has used all ${rules.tradeSeasonCap} season trade slots (${team1Usage.reservedSlots} reserved by pending deals); cannot approve.`
-    );
-  }
-  if (team2Usage.effectiveUsed >= rules.tradeSeasonCap) {
-    blockers.push(
-      `${team2.teamName || 'The other team'} has used all ${rules.tradeSeasonCap} season trade slots (${team2Usage.reservedSlots} reserved by pending deals); cannot approve.`
-    );
+  if (!skipSlotCheck) {
+    // admin_pending legs are already counted in reservedSlots — completing them does not add a new slot.
+    const slotIncrement = tradeDoc.status === 'admin_pending' ? 0 : 1;
+    const [team1Usage, team2Usage] = await Promise.all([
+      getEffectiveTradesUsed(team1._id),
+      getEffectiveTradesUsed(team2._id),
+    ]);
+    if (team1Usage.effectiveUsed + slotIncrement > rules.tradeSeasonCap) {
+      blockers.push(
+        `${team1.teamName || 'One team'} has used all ${rules.tradeSeasonCap} season trade slots (${team1Usage.reservedSlots} reserved by pending deals); cannot approve.`
+      );
+    }
+    if (team2Usage.effectiveUsed + slotIncrement > rules.tradeSeasonCap) {
+      blockers.push(
+        `${team2.teamName || 'The other team'} has used all ${rules.tradeSeasonCap} season trade slots (${team2Usage.reservedSlots} reserved by pending deals); cannot approve.`
+      );
+    }
   }
 
   if (blockers.length) {
