@@ -27,7 +27,12 @@ const { createTradeProposal } = require('../utils/tradeProposalHelper');
 const { assertHasTradeSlotRemaining } = require('../utils/tradeSlotReservation');
 const { assertCanApproveTrades } = require('../utils/tradeAdminGuards');
 const { executeApprovedTrade } = require('../utils/tradeExecution');
-const { tryAutoApproveBundle, syncBundleStatus, attachTradeToBundle } = require('../utils/tradeBundleService');
+const {
+  tryAutoApproveBundle,
+  syncBundleStatus,
+  attachTradeToBundle,
+  collapseBundleOnLegAction,
+} = require('../utils/tradeBundleService');
 const TradeApprovalAudit = require('../models/TradeApprovalAudit');
 const { getClientIp } = require('../utils/network');
 const tradeBundleRoutes = require('./tradeBundles');
@@ -148,6 +153,26 @@ router.post('/:tradeId/respond', async (req, res) => {
       trade.status = 'admin_pending';
       trade.history.push({ byUser: byUserId, action: 'accept', message });
     } else if (decision === 'reject') {
+      if (trade.bundleId) {
+        const collapse = await collapseBundleOnLegAction(
+          trade.bundleId,
+          trade._id,
+          byUserId,
+          'reject'
+        );
+        const populated = await TradeRequest.findById(trade._id)
+          .populate('fromUser', 'name teamName')
+          .populate('toUser', 'name teamName')
+          .populate('offeredPlayer', 'name type role profilePicture')
+          .populate('requestedPlayer', 'name type role profilePicture')
+          .populate('bundleId', 'title shareCode status');
+        const respondObj = populated.toObject({ virtuals: true });
+        respondObj.approvalWarnings = [];
+        respondObj.bundleCollapsed = collapse.collapsed;
+        respondObj.bundleLegsUpdated = collapse.legsUpdated;
+        respondObj.bundleStatus = collapse.bundle?.status;
+        return res.json(respondObj);
+      }
       trade.status = 'rejected';
       trade.history.push({ byUser: byUserId, action: 'reject', message });
     } else {
@@ -204,15 +229,38 @@ router.post('/:tradeId/withdraw', async (req, res) => {
     if (['completed', 'rejected', 'withdrawn'].includes(trade.status)) {
       return res.status(400).json({ message: 'Trade cannot be withdrawn.' });
     }
-    trade.status = 'withdrawn';
-    trade.history.push({ byUser: byUserId, action: 'withdraw', message: 'Proposal withdrawn by proposer' });
-    await trade.save();
+
+    let bundleCollapsed = false;
+    let bundleLegsUpdated = 0;
+    let bundleStatus = null;
+
+    if (trade.bundleId) {
+      const collapse = await collapseBundleOnLegAction(
+        trade.bundleId,
+        trade._id,
+        byUserId,
+        'withdraw'
+      );
+      bundleCollapsed = collapse.collapsed;
+      bundleLegsUpdated = collapse.legsUpdated;
+      bundleStatus = collapse.bundle?.status;
+    } else {
+      trade.status = 'withdrawn';
+      trade.history.push({ byUser: byUserId, action: 'withdraw', message: 'Proposal withdrawn by proposer' });
+      await trade.save();
+    }
+
     const populated = await TradeRequest.findById(trade._id)
       .populate('fromUser', 'name teamName')
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role profilePicture')
-      .populate('requestedPlayer', 'name type role profilePicture');
-    res.json(populated);
+      .populate('requestedPlayer', 'name type role profilePicture')
+      .populate('bundleId', 'title shareCode status');
+    const out = populated.toObject({ virtuals: true });
+    out.bundleCollapsed = bundleCollapsed;
+    out.bundleLegsUpdated = bundleLegsUpdated;
+    out.bundleStatus = bundleStatus;
+    res.json(out);
   } catch (err) {
     console.error('Withdraw trade error', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -228,6 +276,7 @@ router.get('/user/:userId', async (req, res) => {
       .populate('toUser', 'name teamName')
       .populate('offeredPlayer', 'name type role profilePicture')
       .populate('requestedPlayer', 'name type role profilePicture')
+      .populate('bundleId', 'title shareCode status')
       .populate('history.byUser', 'name teamName')
       .populate('history.offeredPlayer', 'name type role profilePicture')
       .populate('history.requestedPlayer', 'name type role profilePicture')
@@ -236,10 +285,18 @@ router.get('/user/:userId', async (req, res) => {
     const payload = await Promise.all(
       trades.map(async (t) => {
         const o = t.toObject({ virtuals: true });
+        o.isBundleLeg = !!t.bundleId;
         if (['pending', 'counter', 'admin_pending'].includes(t.status)) {
-          o.approvalWarnings = await getTradeApprovalBlockers(t);
+          if (t.bundleId) {
+            o.acceptBlockers = await getBundleLegAcceptBlockers(t);
+            o.approvalWarnings = o.acceptBlockers;
+          } else {
+            o.approvalWarnings = await getTradeApprovalBlockers(t);
+            o.acceptBlockers = [];
+          }
         } else {
           o.approvalWarnings = [];
+          o.acceptBlockers = [];
         }
         return o;
       })

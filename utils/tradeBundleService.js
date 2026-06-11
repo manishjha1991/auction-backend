@@ -232,11 +232,93 @@ async function deleteDraftBundle(bundleId, byUserId) {
   return { ok: true };
 }
 
-async function cancelBundle(bundle, byUserId, message) {
-  const trades = await TradeRequest.find({
-    _id: { $in: bundle.tradeIds },
+async function loadActiveBundleTrades(bundle) {
+  await reconcileBundleTradeIds(bundle);
+  return TradeRequest.find({
+    $or: [{ _id: { $in: bundle.tradeIds || [] } }, { bundleId: bundle._id }],
     status: { $in: ['pending', 'counter', 'admin_pending'] },
   });
+}
+
+/**
+ * One leg withdrawn/rejected → entire bundle collapses (all active legs same outcome).
+ */
+async function collapseBundleOnLegAction(bundleId, triggerTradeId, byUserId, mode) {
+  const bundle = await TradeBundle.findById(bundleId);
+  if (!bundle || ['completed', 'cancelled', 'rejected'].includes(bundle.status)) {
+    return { bundle, collapsed: false, legsUpdated: 0 };
+  }
+
+  const isReject = mode === 'reject';
+  const legStatus = isReject ? 'rejected' : 'withdrawn';
+  const legAction = isReject ? 'reject' : 'withdraw';
+  const bundleStatus = isReject ? 'rejected' : 'cancelled';
+  const bundleHistoryAction = isReject ? 'rejected' : 'cancelled';
+  const defaultMsg = isReject
+    ? 'Bundle rejected — one leg was rejected by a team'
+    : 'Bundle withdrawn — one leg was withdrawn by the proposer';
+
+  const trades = await loadActiveBundleTrades(bundle);
+  for (const t of trades) {
+    const isTrigger = String(t._id) === String(triggerTradeId);
+    t.status = legStatus;
+    t.history.push({
+      byUser: byUserId,
+      action: legAction,
+      message: isTrigger
+        ? defaultMsg
+        : `Bundle ${isReject ? 'rejected' : 'withdrawn'} because another leg was ${isReject ? 'rejected' : 'withdrawn'}`,
+    });
+    await t.save();
+  }
+
+  bundle.status = bundleStatus;
+  bundle.blockers = [];
+  bundle.history.push({
+    action: bundleHistoryAction,
+    byUser: byUserId,
+    message: defaultMsg,
+    timestamp: new Date(),
+  });
+  await bundle.save();
+  return { bundle, collapsed: true, legsUpdated: trades.length };
+}
+
+async function rejectBundleByAdmin(bundle, adminUserId, note) {
+  if (!bundle || ['completed', 'cancelled', 'rejected'].includes(bundle.status)) {
+    return bundle;
+  }
+  const msg = note || 'Commissioner rejected bundle';
+  const trades = await loadActiveBundleTrades(bundle);
+  for (const trade of trades) {
+    trade.status = 'rejected';
+    trade.adminDecision = {
+      status: 'rejected',
+      decidedBy: adminUserId,
+      decidedAt: new Date(),
+      note: msg,
+    };
+    trade.history.push({
+      byUser: adminUserId,
+      action: 'reject',
+      message: msg,
+    });
+    await trade.save();
+  }
+  bundle.status = 'rejected';
+  bundle.blockers = [];
+  bundle.history.push({
+    action: 'rejected',
+    byUser: adminUserId,
+    message: msg,
+    timestamp: new Date(),
+  });
+  await bundle.save();
+  return bundle;
+}
+
+async function cancelBundle(bundle, byUserId, message) {
+  const trades = await loadActiveBundleTrades(bundle);
 
   for (const trade of trades) {
     trade.status = 'withdrawn';
@@ -334,6 +416,8 @@ module.exports = {
   syncBundleStatus,
   tryAutoApproveBundle,
   cancelBundle,
+  collapseBundleOnLegAction,
+  rejectBundleByAdmin,
   deleteDraftBundle,
   attachTradeToBundle,
   buildBundlePayload,

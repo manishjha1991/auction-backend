@@ -18,6 +18,7 @@ const {
   tryAutoApproveBundle,
   cancelBundle,
   deleteDraftBundle,
+  rejectBundleByAdmin,
   buildBundlePayload,
   refUserId,
 } = require('../utils/tradeBundleService');
@@ -247,9 +248,7 @@ router.post('/:bundleId/reject', async (req, res) => {
     const bundle = await TradeBundle.findById(req.params.bundleId);
     if (!bundle) return res.status(404).json({ message: 'Bundle not found' });
 
-    const updated = await cancelBundle(bundle, adminUserId, note || 'Commissioner rejected bundle');
-    updated.status = 'rejected';
-    await updated.save();
+    const updated = await rejectBundleByAdmin(bundle, adminUserId, note || 'Commissioner rejected bundle');
 
     await TradeApprovalAudit.create({
       type: 'bundle_reject',
