@@ -84,8 +84,9 @@ router.get('/admin/pending', async (req, res) => {
       status: { $in: ['ready_for_admin', 'blocked', 'pending_acceptance'] },
       tradeIds: { $exists: true, $not: { $size: 0 } },
     }).sort({ updatedAt: -1 });
+    const settings = await getTradeApprovalSettings();
     const payload = await Promise.all(bundles.map((b) => buildBundlePayload(b)));
-    res.json(payload);
+    res.json({ bundles: payload, bundleAutoApprove: settings.bundleAutoApprove });
   } catch (err) {
     if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     console.error('Admin pending bundles error', err);
@@ -269,11 +270,17 @@ router.post('/:bundleId/reject', async (req, res) => {
 
 router.post('/:bundleId/retry-auto', async (req, res) => {
   try {
-    const result = await tryAutoApproveBundle(req.params.bundleId, getClientIp(req));
+    const { adminUserId } = req.body;
+    await assertCanApproveTrades(adminUserId);
+    const result = await tryAutoApproveBundle(req.params.bundleId, getClientIp(req), {
+      approvedBy: adminUserId,
+      manual: true,
+    });
     const bundle = await TradeBundle.findById(req.params.bundleId);
     if (!bundle) return res.status(404).json({ message: 'Bundle not found' });
     res.json({ ...result, bundle: await buildBundlePayload(bundle) });
   } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     console.error('Retry auto-approve error', err);
     res.status(500).json({ message: 'Internal server error' });
   }

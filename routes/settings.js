@@ -35,6 +35,7 @@ router.get('/', async (_req, res) => {
       maxTradesPerOpponentPair: tradeRules.maxTradesPerOpponentPair,
       tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
       enableTradeBundles: doc.enableTradeBundles !== false,
+      bundleAutoApprove: doc.bundleAutoApprove !== false,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });
@@ -52,6 +53,7 @@ router.get('/trade-commissioners', async (req, res) => {
     res.json({
       tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
       enableTradeBundles: doc.enableTradeBundles !== false,
+      bundleAutoApprove: doc.bundleAutoApprove !== false,
       admins: candidates,
       candidates,
       commissionerUserId: candidates.find((a) => a.isCommissioner)?._id || null,
@@ -63,7 +65,7 @@ router.get('/trade-commissioners', async (req, res) => {
 
 router.post('/trade-commissioners', async (req, res) => {
   try {
-    const { adminUserId, commissionerUserId, tradeApprovalMode, enableTradeBundles } = req.body;
+    const { adminUserId, commissionerUserId, tradeApprovalMode, enableTradeBundles, bundleAutoApprove } = req.body;
     const admin = await User.findById(adminUserId);
     if (!admin || !admin.isAdmin) {
       return res.status(403).json({ message: 'Only admin can update trade commissioner settings' });
@@ -75,6 +77,9 @@ router.post('/trade-commissioners', async (req, res) => {
     }
     if (typeof enableTradeBundles === 'boolean') {
       doc.enableTradeBundles = enableTradeBundles;
+    }
+    if (typeof bundleAutoApprove === 'boolean') {
+      doc.bundleAutoApprove = bundleAutoApprove;
     }
     await doc.save();
 
@@ -96,6 +101,7 @@ router.post('/trade-commissioners', async (req, res) => {
       message: 'Trade commissioner settings saved',
       tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
       enableTradeBundles: doc.enableTradeBundles !== false,
+      bundleAutoApprove: doc.bundleAutoApprove !== false,
       admins,
       commissionerUserId: admins.find((a) => a.isCommissioner)?._id || null,
     });
@@ -133,7 +139,7 @@ router.post('/revoke-team-owner-admins', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories, requiredGames, tradeSeasonCap, maxTradesPerOpponentPair, tradeApprovalMode, enableTradeBundles } = req.body;
+    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories, requiredGames, tradeSeasonCap, maxTradesPerOpponentPair, tradeApprovalMode, enableTradeBundles, bundleAutoApprove } = req.body;
     const admin = await User.findById(adminUserId);
     if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update settings' });
     const doc = await getSettingsDoc();
@@ -173,6 +179,9 @@ router.post('/', async (req, res) => {
     if (typeof enableTradeBundles === 'boolean') {
       doc.enableTradeBundles = enableTradeBundles;
     }
+    if (typeof bundleAutoApprove === 'boolean') {
+      doc.bundleAutoApprove = bundleAutoApprove;
+    }
     if (Array.isArray(auctionAutoModeCategories)) {
       const valid = ['Gold', 'Silver', 'Sapphire', 'Emerald'];
       doc.auctionAutoModeCategories = auctionAutoModeCategories.filter((c) => valid.includes(String(c).trim()));
@@ -211,6 +220,7 @@ router.post('/', async (req, res) => {
       maxTradesPerOpponentPair: tradeRules.maxTradesPerOpponentPair,
       tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
       enableTradeBundles: doc.enableTradeBundles !== false,
+      bundleAutoApprove: doc.bundleAutoApprove !== false,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });

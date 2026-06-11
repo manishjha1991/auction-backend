@@ -158,7 +158,8 @@ async function validateBundleLegs(trades) {
   return blockers;
 }
 
-async function tryAutoApproveBundle(bundleId, clientIp) {
+async function tryAutoApproveBundle(bundleId, clientIp, options = {}) {
+  const { approvedBy = null, manual = false } = options;
   const bundle = await TradeBundle.findById(bundleId);
   if (!bundle || bundle.status === 'completed') return { ok: false, skipped: true };
 
@@ -186,8 +187,9 @@ async function tryAutoApproveBundle(bundleId, clientIp) {
     return { ok: false, blockers, bundle };
   }
 
+  const approvalNote = manual ? 'Bundle approved by commissioner' : 'Bundle auto-approved';
   for (const trade of trades) {
-    const result = await executeApprovedTrade(trade, null, 'Bundle auto-approved', {
+    const result = await executeApprovedTrade(trade, approvedBy, approvalNote, {
       bundleBatchApproved: true,
     });
     if (!result.ok) {
@@ -202,8 +204,11 @@ async function tryAutoApproveBundle(bundleId, clientIp) {
   bundle.blockers = [];
   bundle.completedAt = new Date();
   bundle.history.push({
-    action: 'auto_approved',
-    message: `All ${trades.length} legs executed`,
+    action: manual ? 'admin_approved' : 'auto_approved',
+    byUser: approvedBy || undefined,
+    message: manual
+      ? `Commissioner approved all ${trades.length} legs`
+      : `All ${trades.length} legs executed`,
     timestamp: new Date(),
   });
   await bundle.save();

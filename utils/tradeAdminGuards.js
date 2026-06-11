@@ -3,11 +3,12 @@ const AppSettings = require('../models/AppSettings');
 
 async function getTradeApprovalSettings() {
   const doc = await AppSettings.findOne()
-    .select('tradeApprovalMode enableTradeBundles')
+    .select('tradeApprovalMode enableTradeBundles bundleAutoApprove')
     .lean();
   return {
     tradeApprovalMode: doc?.tradeApprovalMode || 'any_admin',
     enableTradeBundles: doc?.enableTradeBundles !== false,
+    bundleAutoApprove: doc?.bundleAutoApprove !== false,
   };
 }
 
@@ -23,11 +24,12 @@ async function assertCanApproveTrades(adminUserId) {
     err.statusCode = 403;
     throw err;
   }
-  const { tradeApprovalMode } = await getTradeApprovalSettings();
+  const { tradeApprovalMode, bundleAutoApprove } = await getTradeApprovalSettings();
   if (tradeApprovalMode === 'commissioner_only' && !admin.isCommissioner) {
-    const err = new Error(
-      'Only the league commissioner can approve standalone trades. Multi-leg bundles auto-approve when all legs are valid.'
-    );
+    const bundleHint = bundleAutoApprove
+      ? 'Multi-leg bundles auto-approve when all legs are valid.'
+      : 'Multi-leg bundles require commissioner approval after all legs are accepted.';
+    const err = new Error(`Only the league commissioner can approve trades. ${bundleHint}`);
     err.statusCode = 403;
     throw err;
   }

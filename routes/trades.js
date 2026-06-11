@@ -25,7 +25,7 @@ const {
 } = require('../utils/tradeApprovalBlockers');
 const { createTradeProposal } = require('../utils/tradeProposalHelper');
 const { assertHasTradeSlotRemaining } = require('../utils/tradeSlotReservation');
-const { assertCanApproveTrades } = require('../utils/tradeAdminGuards');
+const { assertCanApproveTrades, getTradeApprovalSettings } = require('../utils/tradeAdminGuards');
 const { executeApprovedTrade } = require('../utils/tradeExecution');
 const {
   tryAutoApproveBundle,
@@ -184,7 +184,10 @@ router.post('/:tradeId/respond', async (req, res) => {
     let bundleAutoResult = null;
     if (decision === 'accept' && trade.bundleId) {
       await syncBundleStatus(trade.bundleId);
-      bundleAutoResult = await tryAutoApproveBundle(trade.bundleId, getClientIp(req));
+      const { bundleAutoApprove } = await getTradeApprovalSettings();
+      if (bundleAutoApprove) {
+        bundleAutoResult = await tryAutoApproveBundle(trade.bundleId, getClientIp(req));
+      }
     }
 
     const populated = await TradeRequest.findById(trade._id)
