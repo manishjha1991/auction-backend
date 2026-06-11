@@ -12,6 +12,7 @@ const {
   syncBundleStatus,
   tryAutoApproveBundle,
   cancelBundle,
+  deleteDraftBundle,
   buildBundlePayload,
 } = require('../utils/tradeBundleService');
 const { createTradeProposal } = require('../utils/tradeProposalHelper');
@@ -188,6 +189,23 @@ router.post('/:bundleId/legs', async (req, res) => {
     res.status(201).json(await buildBundlePayload(bundle));
   } catch (err) {
     console.error('Add bundle leg error', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+router.delete('/:bundleId', async (req, res) => {
+  try {
+    const byUserId = req.body?.byUserId || req.query?.byUserId;
+    if (!byUserId) {
+      return res.status(400).json({ message: 'byUserId is required' });
+    }
+    const result = await deleteDraftBundle(req.params.bundleId, byUserId);
+    if (!result.ok) {
+      return res.status(result.statusCode || 400).json({ message: result.message });
+    }
+    res.json({ ok: true, message: 'Bundle deleted' });
+  } catch (err) {
+    console.error('Delete bundle error', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

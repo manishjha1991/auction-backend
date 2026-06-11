@@ -35,12 +35,32 @@ async function loadBundleTrades(bundle) {
     .populate('requestedPlayer', 'name type role profilePicture');
 }
 
+async function reconcileBundleTradeIds(bundle) {
+  if (!bundle) return bundle;
+  const linked = await TradeRequest.find({ bundleId: bundle._id }).select('_id').lean();
+  const idSet = new Set((bundle.tradeIds || []).map(String));
+  let changed = false;
+  for (const t of linked) {
+    const sid = String(t._id);
+    if (!idSet.has(sid)) {
+      idSet.add(sid);
+      changed = true;
+    }
+  }
+  if (changed) {
+    bundle.tradeIds = [...idSet];
+    await bundle.save();
+  }
+  return bundle;
+}
+
 async function syncBundleStatus(bundleId) {
   const bundle = await TradeBundle.findById(bundleId);
   if (!bundle || ['completed', 'cancelled', 'rejected'].includes(bundle.status)) {
     return bundle;
   }
 
+  await reconcileBundleTradeIds(bundle);
   const trades = await loadBundleTrades(bundle);
   if (!trades.length) {
     bundle.status = 'draft';
@@ -135,6 +155,51 @@ async function tryAutoApproveBundle(bundleId, clientIp) {
   return { ok: true, bundle };
 }
 
+async function deleteDraftBundle(bundleId, byUserId) {
+  const bundle = await TradeBundle.findById(bundleId);
+  if (!bundle) {
+    return { ok: false, statusCode: 404, message: 'Bundle not found' };
+  }
+  if (String(bundle.createdBy) !== String(byUserId)) {
+    return { ok: false, statusCode: 403, message: 'Only the bundle creator can delete it' };
+  }
+  if (['completed', 'cancelled', 'rejected'].includes(bundle.status)) {
+    return { ok: false, statusCode: 400, message: 'This bundle is already closed' };
+  }
+
+  const trades = await TradeRequest.find({
+    $or: [{ _id: { $in: bundle.tradeIds || [] } }, { bundleId: bundle._id }],
+  });
+
+  const hasAcceptedLeg = trades.some((t) => ['admin_pending', 'completed'].includes(t.status));
+  if (hasAcceptedLeg) {
+    return {
+      ok: false,
+      statusCode: 400,
+      message: 'Cannot delete — at least one leg was already accepted. Cancel the bundle instead.',
+    };
+  }
+
+  for (const trade of trades) {
+    if (['pending', 'counter', 'admin_pending'].includes(trade.status)) {
+      trade.status = 'withdrawn';
+      trade.bundleId = null;
+      trade.history.push({
+        byUser: byUserId,
+        action: 'withdraw',
+        message: 'Bundle deleted by creator',
+      });
+      await trade.save();
+    } else {
+      trade.bundleId = null;
+      await trade.save();
+    }
+  }
+
+  await TradeBundle.findByIdAndDelete(bundle._id);
+  return { ok: true };
+}
+
 async function cancelBundle(bundle, byUserId, message) {
   const trades = await TradeRequest.find({
     _id: { $in: bundle.tradeIds },
@@ -186,6 +251,7 @@ async function attachTradeToBundle(bundleId, trade) {
 }
 
 async function buildBundlePayload(bundle) {
+  await reconcileBundleTradeIds(bundle);
   const trades = await loadBundleTrades(bundle);
   const legs = await Promise.all(
     trades.map(async (t, idx) => ({
@@ -214,6 +280,7 @@ module.exports = {
   syncBundleStatus,
   tryAutoApproveBundle,
   cancelBundle,
+  deleteDraftBundle,
   attachTradeToBundle,
   buildBundlePayload,
   loadBundleTrades,

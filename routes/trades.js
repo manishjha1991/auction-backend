@@ -96,7 +96,13 @@ router.post('/', async (req, res) => {
       return res.status(result.statusCode || 400).json({ message: result.message, ...result.extra });
     }
     if (bundleId && result.trade) {
-      await attachTradeToBundle(bundleId, result.trade);
+      const attached = await attachTradeToBundle(bundleId, result.trade);
+      if (!attached) {
+        return res.status(400).json({
+          message: 'Trade created but could not attach to bundle (bundle missing or closed).',
+          trade: result.trade,
+        });
+      }
     }
     res.status(201).json(result.payload);
   } catch (err) {
