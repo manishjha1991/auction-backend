@@ -78,7 +78,10 @@ router.get('/admin/pending', async (req, res) => {
   try {
     const { adminUserId } = req.query;
     if (adminUserId) {
-      await assertCanApproveTrades(adminUserId);
+      const admin = await User.findById(adminUserId).select('isAdmin').lean();
+      if (!admin?.isAdmin) {
+        return res.status(403).json({ message: 'Only admin can view pending bundles' });
+      }
     }
     const bundles = await TradeBundle.find({
       status: { $in: ['ready_for_admin', 'blocked', 'pending_acceptance'] },
