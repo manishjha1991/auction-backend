@@ -37,14 +37,28 @@ function toObjectId(id) {
   if (id == null) return null;
   if (id instanceof mongoose.Types.ObjectId) return id;
   if (typeof id === 'object' && id._id != null) return toObjectId(id._id);
-  const s = String(id);
-  if (!mongoose.Types.ObjectId.isValid(s)) return null;
+  if (typeof id === 'object' && id.id != null) return toObjectId(id.id);
+  if (typeof id === 'object' && id.$oid != null) return toObjectId(id.$oid);
+  const s = String(id).trim();
+  if (!mongoose.Types.ObjectId.isValid(s) || s.length !== 24) return null;
   return new mongoose.Types.ObjectId(s);
 }
 
+/** Resolve user id from ObjectId, populated user doc, or string. */
+function refUserId(ref) {
+  if (ref == null) return null;
+  if (ref instanceof mongoose.Types.ObjectId) return ref;
+  if (typeof ref === 'object') {
+    if (ref._id != null) return refUserId(ref._id);
+    if (ref.id != null) return refUserId(ref.id);
+    if (ref.$oid != null) return refUserId(ref.$oid);
+  }
+  return toObjectId(ref);
+}
+
 function pairOrClause(userIdA, userIdB) {
-  const a = toObjectId(userIdA);
-  const b = toObjectId(userIdB);
+  const a = refUserId(userIdA);
+  const b = refUserId(userIdB);
   if (!a || !b) return null;
   return [{ fromUser: a, toUser: b }, { fromUser: b, toUser: a }];
 }
@@ -89,10 +103,11 @@ async function assertPairAllowsNewProposal(fromUserId, toUserId, maxTradesPerOpp
   let effectiveActive = active;
 
   if (bundleId) {
+    const bid = refUserId(bundleId) || bundleId;
     const or = pairOrClause(fromUserId, toUserId);
     const bundleHasLeg = or
       ? await TradeRequest.exists({
-          bundleId,
+          bundleId: bid,
           $or: or,
           status: { $in: ACTIVE_TRADE_STATUSES },
         })
@@ -115,7 +130,9 @@ async function assertPairAllowsNewProposal(fromUserId, toUserId, maxTradesPerOpp
  * Before admin approves: invariant completed + active (incl. this trade) <= pair cap.
  */
 async function assertPairAllowsCompletion(tradeDoc, maxTradesPerOpponentPair) {
-  const or = pairOrClause(tradeDoc.fromUser, tradeDoc.toUser);
+  const fromId = refUserId(tradeDoc?.fromUser);
+  const toId = refUserId(tradeDoc?.toUser);
+  const or = pairOrClause(fromId, toId);
   if (!or) {
     const err = new Error('Invalid trade parties for pair limit check.');
     err.statusCode = 400;
@@ -123,7 +140,7 @@ async function assertPairAllowsCompletion(tradeDoc, maxTradesPerOpponentPair) {
   }
   const [completed, activeDeals] = await Promise.all([
     TradeRequest.countDocuments({ $or: or, status: 'completed' }),
-    countActiveDealsBetweenTeams(tradeDoc.fromUser, tradeDoc.toUser),
+    countActiveDealsBetweenTeams(fromId, toId),
   ]);
   if (completed + activeDeals > maxTradesPerOpponentPair) {
     const err = new Error(
@@ -146,14 +163,51 @@ async function assertPairAllowsCompletion(tradeDoc, maxTradesPerOpponentPair) {
  * bidRoutes.js); release/pick should be used so teams can satisfy those mins — slot counting follows the rules above.
  */
 
+/**
+ * Bundle legs between the same two teams count as one opponent-pair deal.
+ */
+async function assertBundlePairAllowsCompletion(trades, maxTradesPerOpponentPair) {
+  if (!trades?.length) return;
+  const fromId = refUserId(trades[0].fromUser);
+  const toId = refUserId(trades[0].toUser);
+  if (!fromId || !toId) {
+    const err = new Error('Invalid trade parties for pair limit check.');
+    err.statusCode = 400;
+    throw err;
+  }
+  for (const t of trades) {
+    const f = refUserId(t.fromUser);
+    const u = refUserId(t.toUser);
+    if (!f || !u) {
+      const err = new Error('Invalid trade parties for pair limit check.');
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+  const or = pairOrClause(fromId, toId);
+  const [completed, activeDeals] = await Promise.all([
+    TradeRequest.countDocuments({ $or: or, status: 'completed' }),
+    countActiveDealsBetweenTeams(fromId, toId),
+  ]);
+  if (completed + activeDeals > maxTradesPerOpponentPair) {
+    const err = new Error(
+      `This bundle would exceed the limit of ${maxTradesPerOpponentPair} deal(s) between these teams this season.`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
 module.exports = {
   RULE_MIN,
   RULE_MAX,
   DEFAULT_TRADE_SEASON_CAP,
   DEFAULT_MAX_TRADES_PER_OPPONENT_PAIR,
   getTradeRules,
+  refUserId,
   countTradesBetweenTeams,
   countActiveDealsBetweenTeams,
   assertPairAllowsNewProposal,
   assertPairAllowsCompletion,
+  assertBundlePairAllowsCompletion,
 };

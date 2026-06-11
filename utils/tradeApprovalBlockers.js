@@ -1,7 +1,12 @@
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const TradeRequest = require('../models/TradeRequest');
-const { getTradeRules, assertPairAllowsCompletion } = require('./tradeRules');
+const {
+  getTradeRules,
+  assertPairAllowsCompletion,
+  assertBundlePairAllowsCompletion,
+  refUserId,
+} = require('./tradeRules');
 const { getEffectiveTradesUsed } = require('./tradeSlotReservation');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('./tradeApprovalShared');
 
@@ -62,9 +67,9 @@ async function validateTradeForAdminApproval(tradeDoc, options = {}) {
   const { bundleBatchApproved = false } = options;
   let result;
   if (bundleBatchApproved) {
-    result = await computeSingleTradeApproval(tradeDoc);
+    result = await computeSingleTradeApproval(tradeDoc, { skipPairCheck: true });
   } else if (tradeDoc.bundleId) {
-    result = await computeBundleTradeApproval(tradeDoc.bundleId, tradeDoc);
+    result = await computeBundleTradeApproval(normalizeBundleId(tradeDoc.bundleId), tradeDoc);
   } else {
     result = await computeSingleTradeApproval(tradeDoc);
   }
@@ -73,8 +78,13 @@ async function validateTradeForAdminApproval(tradeDoc, options = {}) {
   return { ok: true, ...execution };
 }
 
+function normalizeBundleId(ref) {
+  return refUserId(ref);
+}
+
 async function loadBundleTrades(bundleId) {
-  return TradeRequest.find({ bundleId })
+  const bid = normalizeBundleId(bundleId);
+  return TradeRequest.find({ bundleId: bid })
     .populate('fromUser', 'name teamName purse')
     .populate('toUser', 'name teamName purse')
     .populate('offeredPlayer', 'name type role')
@@ -90,7 +100,7 @@ async function computeBundleTradeApproval(bundleId, focusTrade) {
   }
 
   try {
-    await assertPairAllowsCompletion(focusTrade || trades[0], rules.maxTradesPerOpponentPair);
+    await assertBundlePairAllowsCompletion(trades, rules.maxTradesPerOpponentPair);
   } catch (e) {
     if (e.message) blockers.push(e.message);
   }
@@ -229,14 +239,17 @@ async function computeBundleTradeApproval(bundleId, focusTrade) {
   };
 }
 
-async function computeSingleTradeApproval(tradeDoc) {
+async function computeSingleTradeApproval(tradeDoc, options = {}) {
+  const { skipPairCheck = false } = options;
   const blockers = [];
   const rules = await getTradeRules();
 
-  try {
-    await assertPairAllowsCompletion(tradeDoc, rules.maxTradesPerOpponentPair);
-  } catch (e) {
-    if (e.message) blockers.push(e.message);
+  if (!skipPairCheck) {
+    try {
+      await assertPairAllowsCompletion(tradeDoc, rules.maxTradesPerOpponentPair);
+    } catch (e) {
+      if (e.message) blockers.push(e.message);
+    }
   }
 
   const offeredPid = playerIdOf(tradeDoc.offeredPlayer);
@@ -362,7 +375,7 @@ async function computeSingleTradeApproval(tradeDoc) {
 
 async function computeTradeApproval(tradeDoc) {
   if (tradeDoc.bundleId) {
-    return computeBundleTradeApproval(tradeDoc.bundleId, tradeDoc);
+    return computeBundleTradeApproval(normalizeBundleId(tradeDoc.bundleId), tradeDoc);
   }
   return computeSingleTradeApproval(tradeDoc);
 }
