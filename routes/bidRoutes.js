@@ -567,6 +567,8 @@ router.post("/bid/sold", async (req, res) => {
           }
         }
 
+        await bidQueueService.clearQueueAfterPlayerSold(pid, req.app.get('io'));
+
         results.push({
           playerID: pid,
           status: "success",
@@ -748,10 +750,15 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
         player.lastExitBy = 'system';
         await player.save();
 
+        await bidQueueService.tryPromoteNextQueued(playerId, io);
+        const updatedPlayer = await Player.findById(playerId)
+          .select('currentBid currentBidder')
+          .lean();
+
         return {
           message: "The second-highest bidder has exited successfully. Locked amount refunded.",
-          currentBid: player.currentBid,
-          currentBidder: player.currentBidder,
+          currentBid: updatedPlayer?.currentBid ?? player.currentBid,
+          currentBidder: updatedPlayer?.currentBidder ?? player.currentBidder,
         };
       }
     }
@@ -1071,6 +1078,8 @@ async function sellPlayer(playerId, io = null) {
       throw new Error(`Player status verification failed for ${playerId}`);
     }
 
+    await bidQueueService.clearQueueAfterPlayerSold(playerId, io);
+
     return {
       playerID: playerId,
       status: 'success',
@@ -1282,13 +1291,18 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
   if (player.currentBids !== undefined) delete player.currentBids;
   await player.save();
 
+  await bidQueueService.tryPromoteNextQueued(playerId, io);
+  const updatedPlayer = await Player.findById(playerId)
+    .select('currentBid currentBidder')
+    .lean();
+
   // Create and save notification
   const notificationData = {
     message:      `Bid exit: ${user.name} exited on ${player.name}.`,
     playername:   player.name,
     playerId:     player._id,
-    currentBid:   player.currentBid,
-    currentBidder:player.currentBidder,
+    currentBid:   updatedPlayer?.currentBid ?? player.currentBid,
+    currentBidder:updatedPlayer?.currentBidder ?? player.currentBidder,
     exitedUser:   user.name,
     exitBy
   };
@@ -1323,8 +1337,8 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
     playerId,
     userId,
     message:    "User bid exited",
-    currentBid: player.currentBid,
-    currentBidder: player.currentBidder
+    currentBid: updatedPlayer?.currentBid ?? player.currentBid,
+    currentBidder: updatedPlayer?.currentBidder ?? player.currentBidder
   };
 }
 
