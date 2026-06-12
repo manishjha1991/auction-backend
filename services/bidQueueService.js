@@ -143,6 +143,45 @@ async function pruneQueuedOverMax(playerId, io) {
   });
 }
 
+async function clearQueueAfterPlayerSold(playerId, io) {
+  return withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc?.entries?.length) {
+      await emitBidQueueUpdated(io, playerId, 0);
+      return { refundedCount: 0, refundedAmount: 0, removedCount: 0 };
+    }
+
+    const player = await Player.findById(playerId).select("name").lean();
+    let refundedCount = 0;
+    let refundedAmount = 0;
+
+    for (const entry of doc.entries) {
+      if (entry.status !== "queued") continue;
+
+      const refund = Number(entry.lockedAmount) || 0;
+      if (refund > 0) {
+        await refundPurse(entry.userId, refund);
+        refundedCount += 1;
+        refundedAmount += refund;
+      }
+
+      emitQueuePersonal(io, entry.userId, {
+        type: "removed",
+        reason: "sold",
+        playerId: playerId.toString(),
+        playerName: player?.name || "",
+        refund,
+      });
+    }
+
+    const removedCount = doc.entries.length;
+    await BidPlayerQueue.deleteOne({ _id: doc._id });
+    await emitBidQueueUpdated(io, playerId, 0);
+
+    return { refundedCount, refundedAmount, removedCount };
+  });
+}
+
 async function preparePromotedUser(userId, playerId, queueEntry, nextBidAmount) {
   const user = await User.findById(userId);
   const M = queueEntry.lockedAmount;
@@ -734,6 +773,7 @@ module.exports = {
   getAllQueuedCountsByPlayer,
   getActiveBidderIds,
   pruneQueuedOverMax,
+  clearQueueAfterPlayerSold,
   tryPromoteNextQueued,
   triggerProxyAfterOpponentBid,
   enqueueUser,
