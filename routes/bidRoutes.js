@@ -206,6 +206,11 @@ router.post("/:playerId/exit", async (req, res) => {
           await player.save();
 
           const ioAdmin = req.app.get("io");
+          await bidQueueService.removeActiveProxyEntry({
+            playerId,
+            userId: secondHighestBid.bidder,
+            io: ioAdmin,
+          });
           await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin);
 
           return res.json({
@@ -305,6 +310,7 @@ router.post("/:playerId/exit", async (req, res) => {
       playerName: player.name
     });
 
+    await bidQueueService.removeActiveProxyEntry({ playerId, userId, io });
     await bidQueueService.tryPromoteNextQueued(playerId, io);
     
     res.json({
@@ -566,6 +572,8 @@ router.post("/bid/sold", async (req, res) => {
             throw new Error(`Player status verification failed for ${pid}`);
           }
         }
+
+        await bidQueueService.settleQueueForSoldPlayer(pid, req.app.get("io"));
 
         results.push({
           playerID: pid,
@@ -1070,6 +1078,8 @@ async function sellPlayer(playerId, io = null) {
       });
       throw new Error(`Player status verification failed for ${playerId}`);
     }
+
+    await bidQueueService.settleQueueForSoldPlayer(playerId, io);
 
     return {
       playerID: playerId,

@@ -699,6 +699,99 @@ async function resignActiveProxyToManual({ playerId, userId, io }) {
   });
 }
 
+async function removeActiveProxyEntry({ playerId, userId, io }) {
+  let removed = false;
+
+  await withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) return;
+
+    const idsToRemove = doc.entries
+      .filter(
+        (e) =>
+          e.userId.toString() === userId.toString() && e.status === "active_proxy"
+      )
+      .map((e) => e._id);
+
+    if (!idsToRemove.length) return;
+
+    for (const id of idsToRemove) {
+      doc.entries.pull(id);
+    }
+
+    if (!doc.entries.length) {
+      await BidPlayerQueue.deleteOne({ _id: doc._id });
+    } else {
+      await doc.save();
+    }
+
+    removed = true;
+  });
+
+  if (removed) {
+    emitQueuePersonal(io, userId, {
+      type: "proxy_exited",
+      playerId: playerId.toString(),
+    });
+    await emitBidQueueUpdated(io, playerId);
+  }
+
+  return removed;
+}
+
+async function settleQueueForSoldPlayer(playerId, io) {
+  const summary = {
+    removedEntries: 0,
+    refundedQueuedEntries: 0,
+    refundedAmount: 0,
+  };
+  const personalEvents = [];
+
+  await withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) return;
+
+    const player = await Player.findById(playerId).select("name").lean();
+    const playerName = player?.name || "";
+
+    for (const entry of doc.entries) {
+      summary.removedEntries += 1;
+
+      if (entry.status !== "queued") continue;
+
+      const refund = Number(entry.lockedAmount) || 0;
+      if (refund > 0) {
+        await refundPurse(entry.userId, refund);
+        summary.refundedQueuedEntries += 1;
+        summary.refundedAmount += refund;
+      }
+
+      personalEvents.push({
+        userId: entry.userId,
+        payload: {
+          type: "removed",
+          reason: "player_sold",
+          playerId: playerId.toString(),
+          playerName,
+          refund,
+        },
+      });
+    }
+
+    await BidPlayerQueue.deleteOne({ _id: doc._id });
+  });
+
+  for (const event of personalEvents) {
+    emitQueuePersonal(io, event.userId, event.payload);
+  }
+
+  if (summary.removedEntries > 0) {
+    await emitBidQueueUpdated(io, playerId, 0);
+  }
+
+  return summary;
+}
+
 async function afterBidPlaced(playerId, io) {
   if (!isEnabled()) return;
   await pruneQueuedOverMax(playerId, io);
@@ -743,6 +836,8 @@ module.exports = {
   listMyQueueMemberships,
   isPromotedProxyBidder,
   resignActiveProxyToManual,
+  removeActiveProxyEntry,
+  settleQueueForSoldPlayer,
   afterBidPlaced,
   runProxyContinuation,
 };
