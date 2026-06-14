@@ -18,11 +18,31 @@ const {
   upsertLiveCareerSummaryForPlayer,
 } = require('./playerCareerSummary');
 
+/**
+ * Historical playerstats are read from every CPL DB *before* the active season.
+ * e.g. on cpl_22 → cpl_15 … cpl_21 (prior seasons folded into historical; cpl_22 rows stay live).
+ * Override with CPL_HISTORY_SEED_DBS=cpl_15,cpl_16,… when needed.
+ */
 function getSourceDbs() {
-  return (process.env.CPL_HISTORY_SEED_DBS || 'cpl_15,cpl_16,cpl_17,cpl_18,cpl_19,cpl_20')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  if (process.env.CPL_HISTORY_SEED_DBS) {
+    return process.env.CPL_HISTORY_SEED_DBS.split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  const start = Math.max(
+    1,
+    parseInt(process.env.CPL_HISTORY_SEED_FROM || '15', 10) || 15,
+  );
+  const currentDb = process.env.MONGO_DB_NAME || mongoose.connection?.name || '';
+  const match = String(currentDb).match(/^cpl_(\d+)$/i);
+  const currentNum = match ? parseInt(match[1], 10) : start;
+
+  const dbs = [];
+  for (let i = start; i < currentNum; i += 1) {
+    dbs.push(`cpl_${i}`);
+  }
+  return dbs.length ? dbs : [`cpl_${Math.max(start, currentNum - 1)}`];
 }
 
 function addInnings(block, row) {

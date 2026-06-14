@@ -19,6 +19,11 @@ const {
   registerStatsOverviewInvalidator,
 } = require('../utils/cache');
 const { upsertLiveCareerSummaryForPlayer } = require('../utils/playerCareerSummary');
+const {
+  buildCurrentOwnerTeamByPlayerId,
+  findCurrentOwnerUser,
+  resolveTeamNameFromOwnerMap,
+} = require('../utils/currentPlayerOwner');
 const { invalidateCareerSummaryCache } = require('../utils/cplReadCaches');
 const venueInsights = require('../utils/venueInsights');
 
@@ -240,9 +245,7 @@ const generatePlayerInsight = async (playerId) => {
     return { error: 'player-not-found' };
   }
 
-  const ownerUser = await User.findOne({ boughtPlayers: playerId })
-    .select('teamName')
-    .lean();
+  const ownerUser = await findCurrentOwnerUser(playerId);
 
   const stats = await PlayerStats.find({ playerId })
     .populate({
@@ -3083,6 +3086,17 @@ router.get('/stats-overview', async (req, res) => {
       return userReady && opponentReady;
     });
 
+    const overviewPlayerIds = [
+      ...new Set(filteredStats.map((s) => s.playerId?._id).filter(Boolean)),
+    ];
+    const currentOwnerTeamByPlayerId = await buildCurrentOwnerTeamByPlayerId(overviewPlayerIds);
+    const displayTeamName = (statDoc) =>
+      resolveTeamNameFromOwnerMap(
+        currentOwnerTeamByPlayerId,
+        statDoc.playerId?._id,
+        statDoc.userId?.teamName
+      );
+
     const parseScore = (scoreValue) => {
       if (scoreValue === null || scoreValue === undefined) {
         return { runs: 0, wickets: 0, valid: false };
@@ -3188,7 +3202,7 @@ router.get('/stats-overview', async (req, res) => {
       const playerName = playerId?.name ?? 'Unknown Player';
       const playerType = playerId?.type ?? null;
       const profilePicture = playerId?.profilePicture ?? null;
-      const teamName = userId?.teamName ?? 'Unknown Team';
+      const teamName = displayTeamName(statDoc);
       const opponentName = opponentUserId?.teamName ?? 'Unknown Opponent';
 
       // A) Single-match computations
@@ -3412,7 +3426,7 @@ router.get('/stats-overview', async (req, res) => {
         playerInfoMap[pid] = {
           playerName: statDoc.playerId?.name || 'Unknown Player',
           playerType: statDoc.playerId?.type || null,
-          teamName: statDoc.userId?.teamName || 'Unknown Team',
+          teamName: displayTeamName(statDoc),
           profilePicture: statDoc.playerId?.profilePicture ?? null,
         };
       }
@@ -3731,8 +3745,8 @@ router.get('/player-details/:playerId', async (req, res) => {
       return res.status(404).json({ message: 'Player not found' });
     }
 
-    // Find the user who owns this player
-    const ownerUser = await User.findOne({ boughtPlayers: playerId });
+    // Find the user who owns this player (active roster, not stale boughtPlayers)
+    const ownerUser = await findCurrentOwnerUser(playerId);
     if (!ownerUser) {
       return res.status(404).json({ message: 'Player owner not found' });
     }
