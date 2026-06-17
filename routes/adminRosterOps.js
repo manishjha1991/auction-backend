@@ -458,10 +458,13 @@ router.post('/release/execute', async (req, res) => {
       await User.findByIdAndUpdate(teamUserId, { $inc: { purse: bidValue } });
     }
 
+    const releaseBasePrice = bidValue > 0 ? bidValue : Number(playerDoc.basePrice || 0);
+
     await Player.findByIdAndUpdate(playerId, {
       $set: {
         isSold: false,
         isActive: false,
+        basePrice: releaseBasePrice,
         currentBid: null,
         currentBidder: null,
         tradeLocked: false,

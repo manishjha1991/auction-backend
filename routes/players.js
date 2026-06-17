@@ -581,6 +581,19 @@ router.post('/release-player', async (req, res) => {
     up.updatedAt = new Date();
     await up.save();
 
+    // Keep unsold base price equal to the released amount.
+    const releaseBasePrice = bidValue > 0 ? bidValue : null;
+    await Player.findByIdAndUpdate(playerId, {
+      $set: {
+        isSold: false,
+        isActive: false,
+        ...(releaseBasePrice ? { basePrice: releaseBasePrice } : {}),
+        currentBid: null,
+        currentBidder: null,
+        releasedAt: new Date(),
+      },
+    });
+
     // CRITICAL FIX: Remove player from user's boughtPlayers array
     try {
       await User.findByIdAndUpdate(userId, {

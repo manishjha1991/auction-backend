@@ -224,12 +224,16 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
           } catch {}
         }
         
+        // Keep unsold base price equal to the release value (what this player was sold for).
+        const releaseBasePrice = bidValue > 0 ? bidValue : Number(player.basePrice || 0);
+
         // CRITICAL FIX: Update the Player model to mark as unsold
         try {
           await Player.findByIdAndUpdate(item.player, {
             $set: {
               isSold: false,
               isActive: false,
+              basePrice: releaseBasePrice,
               currentBid: null,
               currentBidder: null,
               tradeLocked: false,
