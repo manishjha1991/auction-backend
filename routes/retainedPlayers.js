@@ -872,12 +872,12 @@ router.post('/release-team-players', async (req, res) => {
         userPlayer.isActive = false;
         await userPlayer.save();
 
-        // Update player status and keep base price equal to release value.
-        const releaseBasePrice = bidValue > 0 ? bidValue : Number(player.basePrice || 0);
+        // Season-end bulk release: reset to category default base price (not last sold price).
+        const originalBasePrice = getOriginalBasePrice(player.type);
         player.isSold = false;
         player.isActive = false;
-        player.basePrice = releaseBasePrice;
-        player.currentBid = null;
+        player.basePrice = originalBasePrice;
+        player.currentBid = originalBasePrice;
         player.currentBidder = null;
         player.releasedAt = new Date(); // Pick-from-unsold blocked for 48h
         await player.save();
