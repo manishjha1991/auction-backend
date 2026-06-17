@@ -1,0 +1,7 @@
+Below Both Api is if there is diffrece between boughplayer and userpLayerr data that will fix shoudl run once auction or trade is comepleted 
+
+curl http://localhost:3000/api/users/check-bought-players-status
+curl -X POST http://localhost:3000/api/users/cleanup-bought-players
+
+
+
