@@ -378,19 +378,18 @@ const updatePlayerCumulativeStats = async (playerId) => {
 const resolvePlayerOwner = async (playerId) => {
   if (!playerId) return null;
 
-  let ownerUser = await User.findOne({ boughtPlayers: playerId })
-    .select('_id teamName isAdmin')
+  const rosterEntry = await UserPlayer.findOne({ playerId, isActive: true })
+    .select('userId')
     .lean();
 
+  let ownerUser = rosterEntry?.userId
+    ? await User.findById(rosterEntry.userId).select('_id teamName isAdmin').lean()
+    : null;
+
   if (!ownerUser) {
-    const rosterEntry = await UserPlayer.findOne({ playerId, isActive: true })
-      .select('userId')
+    ownerUser = await User.findOne({ boughtPlayers: playerId })
+      .select('_id teamName isAdmin')
       .lean();
-    if (rosterEntry?.userId) {
-      ownerUser = await User.findById(rosterEntry.userId)
-        .select('_id teamName isAdmin')
-        .lean();
-    }
   }
 
   return ownerUser;
@@ -849,14 +848,10 @@ router.get('/list', async (req, res) => {
 
   try {
 
-    // Check if the user exists and populate the boughtPlayers field
     // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const user = await User.findById(userId).populate({
-      path: 'boughtPlayers',
-      match: { isSold: true, isActive: true },
-      select:
-        '_id name type role basePrice style overallScore profilePicture isSold isActive'
-    }).lean();
+    const user = await User.findById(userId)
+      .select('_id teamName isAdmin isTournamentReady')
+      .lean();
 
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
@@ -879,14 +874,21 @@ router.get('/list', async (req, res) => {
     };
 
     // 🚀 PERFORMANCE: Run queries in parallel for faster execution
+    const playerSelect =
+      '_id name type role basePrice style overallScore profilePicture isSold isActive';
+
     const [playersResult, playoffTeamsResult] = await Promise.all([
-      // Fetch players (admin or user's bought players)
-      isAdmin 
-        ? Player.find(
-            { isSold: true, isActive: true },
-            '_id name type role basePrice style overallScore profilePicture isSold isActive'
-          ).lean()
-        : Promise.resolve(user.boughtPlayers || []),
+      // Admin: all sold players. Team owners: active roster only (UserPlayer, not stale boughtPlayers).
+      isAdmin
+        ? Player.find({ isSold: true, isActive: true }, playerSelect).lean()
+        : UserPlayer.find({ userId, isActive: true })
+            .populate('playerId', playerSelect)
+            .lean()
+            .then((rows) =>
+              rows
+                .map((row) => row.playerId)
+                .filter((player) => player && player.isSold && player.isActive)
+            ),
       // Fetch playoff teams in parallel (not dependent on players)
       User.find({
         isActive: true,
