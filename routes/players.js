@@ -160,7 +160,6 @@ router.get("/:playerId/bids", async (req, res) => {
       // Fallback for older/inconsistent sold rows where currentBidder was not persisted correctly.
       return !!(fallbackWinnerBidId && String(bid?._id) === fallbackWinnerBidId);
     };
-
     // 4. Respond with player's info + top bids + all bids
     res.status(200).json({
       viewerOwnsPlayer,

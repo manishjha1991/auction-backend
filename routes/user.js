@@ -1567,7 +1567,7 @@ const calculateNRR = (fixtures, teamName, userId) => {
   const runsScoredPerOver = totalOversFaced > 0 ? totalRunsScored / totalOversFaced : 0;
   const runsConcededPerOver = totalOversBowled > 0 ? totalRunsConceded / totalOversBowled : 0;
   const nrr = runsScoredPerOver - runsConcededPerOver;
-
+  
   return parseFloat(nrr.toFixed(3)); // Round to 3 decimal places
 };
 
@@ -1598,7 +1598,29 @@ router.get('/points-table', async (req, res) => {
     })
     .select('team1 team2 team1UserId team2UserId team1Score team2Score team1Overs team2Overs winner')
     .lean();
-    
+    const rrId = "67baa43903696bc160574d3b";
+
+const rrFixtures = fixtures.filter(f =>
+  f.team1UserId?.toString() === rrId ||
+  f.team2UserId?.toString() === rrId
+);
+
+console.log("ROYALS MATCHES:", rrFixtures.length);
+
+rrFixtures.forEach((f, i) => {
+  console.log(`\nMatch ${i + 1}`);
+  console.log({
+    team1: f.team1,
+    team2: f.team2,
+    team1UserId: f.team1UserId?.toString(),
+    team2UserId: f.team2UserId?.toString(),
+    team1Score: f.team1Score,
+    team2Score: f.team2Score,
+    team1Overs: f.team1Overs,
+    team2Overs: f.team2Overs,
+    winner: f.winner
+  });
+});
     console.log(`📊 Found ${fixtures.length} fixtures with winners for NRR calculation`);
     if (fixtures.length > 0) {
       console.log(`📊 Sample fixture:`, {
@@ -1725,7 +1747,7 @@ router.get('/points-table-grouped', async (_req, res) => {
       isActive: true,
       winner: { $ne: null, $exists: true }
     })
-    .select('team1 team2 team1UserId team2UserId team1Score team2Score winner')
+    .select('team1 team2 team1UserId team2UserId team1Score team2Score team1Overs team2Overs winner')
       .lean();
 
     const toRow = (u) => {

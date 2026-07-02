@@ -26,6 +26,11 @@ const {
 } = require('../utils/currentPlayerOwner');
 const { invalidateCareerSummaryCache } = require('../utils/cplReadCaches');
 const venueInsights = require('../utils/venueInsights');
+const {
+  getGroupedPlayerTeamTournamentHistory,
+  rebuildPlayerTeamTournamentStat,
+  syncPlayerTeamTournamentStatFromPlayerStats,
+} = require('../utils/playerTeamTournamentStats');
 
 // 🚀 PERFORMANCE: Create cache instance (5 minute TTL for stats) - keeping for backward compatibility
 const cache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
@@ -484,6 +489,13 @@ const normalizeWcStage = (stage) => {
 
 const normalizeMatchWinnerSide = (v) => (v === 'home' || v === 'away' ? v : null);
 
+const resolveStatsTeamUserId = async (rawUserId, fallbackUserId) => {
+  const candidate = rawUserId || fallbackUserId;
+  if (!candidate) return fallbackUserId;
+  const user = await User.findById(candidate).select('_id').lean();
+  return user?._id || fallbackUserId;
+};
+
 /**
  * Mirror a saved PlayerStats row into the persistent VenueMatchEntry
  * ledger. Keyed on `sourcePlayerStatsId` so re-saves of the same row
@@ -587,10 +599,10 @@ const savePlayerStatsEntry = async (payload = {}) => {
   }
 
   const ownerUser = await assertCanEditPlayerStats(
-    rawRequestedByUserId || payload.userId,
+    rawRequestedByUserId,
     playerId
   );
-  const userId = ownerUser._id;
+  const userId = await resolveStatsTeamUserId(payload.userId, ownerUser._id);
   const opponentUserId = await normalizeOpponentUserId(
     rawOpponentUserId,
     opponentTeamName
@@ -652,6 +664,16 @@ const savePlayerStatsEntry = async (payload = {}) => {
           { $or: [{ 'metadata.isPlayoffScore': { $ne: true } }, { 'metadata.isPlayoffScore': { $exists: false } }] },
         ],
       });
+      if (!existingStats && payload.userId && (matchId || matchKey || matchName)) {
+        existingStats = await PlayerStats.findOne({
+          playerId,
+          opponentUserId,
+          $and: [
+            { $or: [{ 'metadata.isWcScore': { $ne: true } }, { 'metadata.isWcScore': { $exists: false } }] },
+            { $or: [{ 'metadata.isPlayoffScore': { $ne: true } }, { 'metadata.isPlayoffScore': { $exists: false } }] },
+          ],
+        }).sort({ createdAt: -1 });
+      }
     }
   }
 
@@ -678,6 +700,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
   };
 
   if (existingStats) {
+    const previousTeamId = existingStats.userId || null;
+    const previousTournamentId = existingStats.tournamentId || null;
     const previousTotals = {
       runs: existingStats.battingStats?.runs || 0,
       balls: existingStats.battingStats?.balls || 0,
@@ -705,6 +729,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     };
 
     existingStats.isMom = !!isMom;
+    existingStats.userId = userId;
     if (opponentUserId) {
       existingStats.opponentUserId = opponentUserId;
     }
@@ -761,6 +786,14 @@ const savePlayerStatsEntry = async (payload = {}) => {
 
     // Mirror to persistent venue ledger (survives PlayerStats wipes).
     await upsertVenueMatchEntry(existingStats, { matchId });
+    await syncPlayerTeamTournamentStatFromPlayerStats(existingStats);
+    if (previousTeamId && String(previousTeamId) !== String(userId)) {
+      await rebuildPlayerTeamTournamentStat({
+        teamId: previousTeamId,
+        playerId,
+        tournamentId: previousTournamentId || null,
+      });
+    }
 
     return {
       action: 'updated',
@@ -827,6 +860,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
 
     // Mirror to persistent venue ledger (survives PlayerStats wipes).
     await upsertVenueMatchEntry(newStats, { matchId });
+    await syncPlayerTeamTournamentStatFromPlayerStats(newStats);
 
     return { action: 'created', doc: newStats };
 };
@@ -1135,6 +1169,18 @@ router.post('/store', async (req, res) => {
     invalidateCache('player-stats-list');
     invalidateCache('players:data'); // Invalidate top rankings cache
     venueAnalyticsCache.flushAll();
+  }
+});
+
+router.get('/team-tournament-history', async (req, res) => {
+  try {
+    const history = await getGroupedPlayerTeamTournamentHistory({
+      playerId: req.query.playerId || null,
+    });
+    res.json({ players: history });
+  } catch (error) {
+    console.error('Error fetching player team tournament history:', error);
+    res.status(500).json({ message: error.message || 'Failed to fetch history' });
   }
 });
 
@@ -2760,6 +2806,7 @@ router.post('/bulk-store', async (req, res) => {
         warnings.push(`No owner found for player ${entry.playerId}`);
         continue;
       }
+      const statsTeamUserId = await resolveStatsTeamUserId(entry.userId, ownerUser._id);
 
       const batStats = sanitizeBattingStats(entry.battingStats);
       const bowlStats = sanitizeBowlingStats(entry.bowlingStats, entry.wicketsTaken);
@@ -2802,7 +2849,7 @@ router.post('/bulk-store', async (req, res) => {
       if (entryIsWcScore) {
         statDoc = await PlayerStats.findOne({
           playerId: entry.playerId,
-          userId: ownerUser._id,
+          userId: statsTeamUserId,
           opponentUserId: resolvedOpponentUserId || null,
           tournamentId: entryTournamentId,
           'metadata.isWcScore': true,
@@ -2811,7 +2858,7 @@ router.post('/bulk-store', async (req, res) => {
       } else if (!entryIsPlayoffScore) {
         const baseQuery = {
           playerId: entry.playerId,
-          userId: ownerUser._id,
+          userId: statsTeamUserId,
           $and: [
             { $or: [{ 'metadata.isWcScore': { $ne: true } }, { 'metadata.isWcScore': { $exists: false } }] },
             { $or: [{ 'metadata.isPlayoffScore': { $ne: true } }, { 'metadata.isPlayoffScore': { $exists: false } }] },
@@ -2924,7 +2971,7 @@ router.post('/bulk-store', async (req, res) => {
 
         statDoc = new PlayerStats({
           playerId: entry.playerId,
-          userId: ownerUser._id,
+          userId: statsTeamUserId,
           opponentUserId: resolvedOpponentUserId || null,
           tournamentId: entryIsWcScore ? entryTournamentId : null,
           venue: entryVenue || null,
@@ -2964,6 +3011,7 @@ router.post('/bulk-store', async (req, res) => {
 
       // Mirror to persistent venue ledger (survives PlayerStats wipes).
       await upsertVenueMatchEntry(statDoc, { matchId: normalizedMatchId });
+      await syncPlayerTeamTournamentStatFromPlayerStats(statDoc);
 
       successCount += 1;
     }
@@ -3949,6 +3997,3 @@ router.post('/compare', async (req, res) => {
 });
 
 module.exports = router;
-
-
-
