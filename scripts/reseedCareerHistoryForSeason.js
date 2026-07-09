@@ -19,7 +19,7 @@ const {
 } = require('../utils/runCareerHistorySeed');
 
 async function main() {
-  const dbName = process.env.MONGO_DB_NAME || 'cpl_22';
+  const dbName = process.env.MONGO_DB_NAME || 'cpl_23';
   await mongoose.connect(process.env.MONGO_URI, { dbName });
   console.log('Reseeding career history');
   console.log('Active DB:', mongoose.connection.name);

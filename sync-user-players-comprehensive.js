@@ -10,7 +10,7 @@ const UserPlayer = require('./models/UserPlayer');
 const connectDB = async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI, {
-      dbName: 'cpl_22',
+      dbName: 'cpl_23',
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });

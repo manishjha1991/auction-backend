@@ -16,7 +16,7 @@ const {
 } = require('../utils/playerTeamTournamentStats');
 
 async function main() {
-  const dbName = process.env.MONGO_DB_NAME || 'cpl_22';
+  const dbName = process.env.MONGO_DB_NAME || 'cpl_23';
   if (!process.env.MONGO_URI) {
     throw new Error('MONGO_URI is required');
   }
