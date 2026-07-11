@@ -447,7 +447,10 @@ router.get("/players/data", async (req, res) => {
             }
           },
           totalRuns: { $ifNull: ['$totalRuns', 0] },
+          totalBalls: { $ifNull: ['$totalBalls', 0] },
           totalWickets: { $ifNull: ['$totalWickets', 0] },
+          totalRunsGiven: { $ifNull: ['$totalRunsGiven', 0] },
+          totalBallsBowled: { $ifNull: ['$totalBallsBowled', 0] },
           momCount: { $ifNull: ['$momCount', 0] },
           matchesPlayed: { $ifNull: ['$matchesPlayed', 0] },
           overallScore: { $ifNull: ['$overallScore', 0] },
