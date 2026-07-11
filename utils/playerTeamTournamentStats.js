@@ -128,14 +128,113 @@ async function rebuildPlayerTeamTournamentStat({
   );
 }
 
+function pickPrimaryTeamRow(rows = []) {
+  if (!rows.length) return null;
+  return [...rows].sort((a, b) => {
+    const ad = new Date(a.updatedAt || 0).getTime();
+    const bd = new Date(b.updatedAt || 0).getTime();
+    if (bd !== ad) return bd - ad;
+    if ((b.matches || 0) !== (a.matches || 0)) return (b.matches || 0) - (a.matches || 0);
+    if ((b.totalRuns || 0) !== (a.totalRuns || 0)) return (b.totalRuns || 0) - (a.totalRuns || 0);
+    if ((b.totalWickets || 0) !== (a.totalWickets || 0)) return (b.totalWickets || 0) - (a.totalWickets || 0);
+    return 0;
+  })[0];
+}
+
+async function enforceSingleTeamForPlayerTournament({ playerId, tournamentKey }) {
+  if (!playerId || !tournamentKey) return { merged: false, removedRows: 0 };
+
+  const rows = await PlayerTeamTournamentStat.find({ playerId, tournamentKey }).lean();
+  if (rows.length <= 1) return { merged: false, removedRows: 0 };
+
+  const primary = pickPrimaryTeamRow(rows);
+  if (!primary) return { merged: false, removedRows: 0 };
+
+  const mergedTotals = rows.reduce(
+    (acc, row) => {
+      acc.totalRuns += Number(row.totalRuns) || 0;
+      acc.totalWickets += Number(row.totalWickets) || 0;
+      acc.totalMom += Number(row.totalMom) || 0;
+      acc.matches += Number(row.matches) || 0;
+      return acc;
+    },
+    { totalRuns: 0, totalWickets: 0, totalMom: 0, matches: 0 }
+  );
+
+  await PlayerTeamTournamentStat.findOneAndUpdate(
+    { _id: primary._id },
+    {
+      $set: {
+        totalRuns: mergedTotals.totalRuns,
+        totalWickets: mergedTotals.totalWickets,
+        totalMom: mergedTotals.totalMom,
+        matches: mergedTotals.matches,
+      },
+    },
+    { new: true }
+  );
+
+  const removeIds = rows
+    .filter((row) => String(row._id) !== String(primary._id))
+    .map((row) => row._id);
+
+  const deleteResult = await PlayerTeamTournamentStat.deleteMany({ _id: { $in: removeIds } });
+  return {
+    merged: true,
+    primaryTeamId: primary.teamId,
+    removedRows: deleteResult.deletedCount || 0,
+  };
+}
+
+async function enforceSingleTeamHistoryForAllPlayers(options = {}) {
+  const tournamentKeys = options.tournamentKeys || null;
+  const groupMatch = tournamentKeys?.length ? { tournamentKey: { $in: tournamentKeys } } : {};
+  const groups = await PlayerTeamTournamentStat.aggregate([
+    { $match: groupMatch },
+    {
+      $group: {
+        _id: { playerId: '$playerId', tournamentKey: '$tournamentKey' },
+        teamCount: { $addToSet: '$teamId' },
+      },
+    },
+    { $addFields: { teamCountNum: { $size: '$teamCount' } } },
+    { $match: { teamCountNum: { $gt: 1 } } },
+  ]);
+
+  const repaired = [];
+  for (const g of groups) {
+    const result = await enforceSingleTeamForPlayerTournament({
+      playerId: g._id.playerId,
+      tournamentKey: g._id.tournamentKey,
+    });
+    repaired.push({
+      playerId: g._id.playerId,
+      tournamentKey: g._id.tournamentKey,
+      ...result,
+    });
+  }
+
+  return {
+    duplicateGroupsFound: groups.length,
+    repairedCount: repaired.filter((r) => r.merged).length,
+    repaired,
+  };
+}
+
 async function syncPlayerTeamTournamentStatFromPlayerStats(playerStatsDoc, options = {}) {
   if (!playerStatsDoc?.playerId || !playerStatsDoc?.userId) return null;
-  return rebuildPlayerTeamTournamentStat({
+  const tournamentKey = options.tournamentKey || getCurrentTournamentKey();
+  const doc = await rebuildPlayerTeamTournamentStat({
     teamId: playerStatsDoc.userId,
     playerId: playerStatsDoc.playerId,
     tournamentId: playerStatsDoc.tournamentId || null,
-    tournamentKey: options.tournamentKey || getCurrentTournamentKey(),
+    tournamentKey,
   });
+  await enforceSingleTeamForPlayerTournament({
+    playerId: playerStatsDoc.playerId,
+    tournamentKey,
+  });
+  return doc;
 }
 
 async function loadCurrentLookupMaps() {
@@ -233,6 +332,7 @@ async function buildHistoricalAggregatesForDb(dbName, lookupMaps) {
         totalWickets: 0,
         totalMom: 0,
         matches: 0,
+        latestSeenAt: stat.createdAt || null,
       });
     }
 
@@ -242,6 +342,9 @@ async function buildHistoricalAggregatesForDb(dbName, lookupMaps) {
     aggregate.totalWickets += row.wickets;
     aggregate.totalMom += row.mom;
     aggregate.matches += row.matches;
+    const statTime = stat.createdAt ? new Date(stat.createdAt).getTime() : 0;
+    const aggTime = aggregate.latestSeenAt ? new Date(aggregate.latestSeenAt).getTime() : 0;
+    if (statTime > aggTime) aggregate.latestSeenAt = stat.createdAt;
     if (!aggregate.tournamentId && stat.tournamentId) {
       aggregate.tournamentId = toObjectId(stat.tournamentId);
     }
@@ -271,16 +374,22 @@ async function backfillPlayerTeamTournamentStats(options = {}) {
 
   for (const dbName of sourceDbs) {
     const result = await buildHistoricalAggregatesForDb(dbName, lookupMaps);
+    const orderedAggregates = [...result.aggregates].sort((a, b) => {
+      const ad = new Date(a.latestSeenAt || 0).getTime();
+      const bd = new Date(b.latestSeenAt || 0).getTime();
+      return ad - bd;
+    });
 
-    for (const aggregate of result.aggregates) {
+    for (const aggregate of orderedAggregates) {
+      const { latestSeenAt, ...row } = aggregate;
       await PlayerTeamTournamentStat.findOneAndUpdate(
         {
-          teamId: aggregate.teamId,
-          playerId: aggregate.playerId,
-          tournamentKey: aggregate.tournamentKey,
+          teamId: row.teamId,
+          playerId: row.playerId,
+          tournamentKey: row.tournamentKey,
         },
         {
-          $set: aggregate,
+          $set: row,
           $unset: { sourcePlayerStatsId: 1 },
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -296,10 +405,13 @@ async function backfillPlayerTeamTournamentStats(options = {}) {
     });
   }
 
+  const normalization = await enforceSingleTeamHistoryForAllPlayers({ tournamentKeys: sourceDbs });
+
   return {
     sourceDatabases: sourceDbs,
     deletedExisting,
     upserts,
+    normalization,
     perDb,
   };
 }
@@ -444,4 +556,6 @@ module.exports = {
   getPlayerTeamTournamentHistory,
   rebuildPlayerTeamTournamentStat,
   syncPlayerTeamTournamentStatFromPlayerStats,
+  enforceSingleTeamForPlayerTournament,
+  enforceSingleTeamHistoryForAllPlayers,
 };
