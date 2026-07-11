@@ -13,9 +13,9 @@ const authenticateJWT = async (req, res, next) => {
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.substring(7);
-    } else if (req.body.token) {
+    } else if (req.body?.token) {
       token = req.body.token;
-    } else if (req.query.token) {
+    } else if (req.query?.token) {
       token = req.query.token;
     }
 

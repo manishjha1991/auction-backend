@@ -1800,9 +1800,15 @@ router.get('/users-dashboard', async (req, res) => {
 });
 
 // Personalized auction command center: running bids, purses, queues, notifications
-router.get('/my-auction-hub/:userId', async (req, res) => {
+router.get('/my-auction-hub/:userId', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
+    const authenticatedUserId = req.authenticatedUser._id.toString();
+    const isAdminViewer = Boolean(req.authenticatedUser.isAdmin);
+    if (!isAdminViewer && userId.toString() !== authenticatedUserId) {
+      return res.status(403).json({ message: 'Unauthorized: You can only view your own auction hub.' });
+    }
+
     const me = await User.findById(userId)
       .select('name teamName purse _id abbreviation isAdmin')
       .lean();
