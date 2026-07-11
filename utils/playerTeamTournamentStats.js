@@ -3,13 +3,8 @@ const Player = require('../models/Player');
 const User = require('../models/User');
 const PlayerStats = require('../models/PlayerStats');
 const PlayerTeamTournamentStat = require('../models/PlayerTeamTournamentStat');
-
-function normName(value = '') {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ');
-}
+const { resolveCplSourceDbs } = require('./cplSourceDbs');
+const { normalizePlayerName } = require('./playerIdentity');
 
 function getCurrentTournamentKey() {
   return (
@@ -21,17 +16,13 @@ function getCurrentTournamentKey() {
 }
 
 function getBackfillSourceDbs() {
-  if (process.env.CPL_TEAM_PLAYER_STATS_DBS) {
-    return process.env.CPL_TEAM_PLAYER_STATS_DBS.split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-
-  const from = parseInt(process.env.CPL_TEAM_PLAYER_STATS_FROM || '12', 10);
-  const to = parseInt(process.env.CPL_TEAM_PLAYER_STATS_TO || '22', 10);
-  const dbs = [];
-  for (let i = from; i <= to; i += 1) dbs.push(`cpl_${i}`);
-  return dbs;
+  return resolveCplSourceDbs({
+    explicitEnvKeys: ['CPL_HISTORY_SOURCE_DBS', 'CPL_TEAM_PLAYER_STATS_DBS'],
+    fromEnvKeys: ['CPL_HISTORY_SOURCE_FROM', 'CPL_TEAM_PLAYER_STATS_FROM'],
+    toEnvKeys: ['CPL_HISTORY_SOURCE_TO', 'CPL_TEAM_PLAYER_STATS_TO'],
+    defaultFrom: 15,
+    includeCurrent: false,
+  });
 }
 
 function toObjectId(value) {
@@ -66,10 +57,10 @@ function resolveHistoricalTeamForStat(stat, historicalUserById, historicalUsersB
 
   if (matchTeams.length === 2 && opponent) {
     const opponentKeys = [opponent.teamName, opponent.abbreviation, opponent.name]
-      .map(normName)
+      .map(normalizePlayerName)
       .filter(Boolean);
-    const actualTeamName = matchTeams.find((teamName) => !opponentKeys.includes(normName(teamName)));
-    const inferred = historicalUsersByName.get(normName(actualTeamName));
+    const actualTeamName = matchTeams.find((teamName) => !opponentKeys.includes(normalizePlayerName(teamName)));
+    const inferred = historicalUsersByName.get(normalizePlayerName(actualTeamName));
     if (inferred) return inferred;
   }
 
@@ -157,14 +148,14 @@ async function loadCurrentLookupMaps() {
 
   const playersByName = new Map();
   players.forEach((p) => {
-    const key = normName(p.name);
+    const key = normalizePlayerName(p.name);
     if (key && !playersByName.has(key)) playersByName.set(key, p);
   });
 
   const usersByTeam = new Map();
   users.forEach((u) => {
     [u.teamName, u.abbreviation, u.name].forEach((value) => {
-      const key = normName(value);
+      const key = normalizePlayerName(value);
       if (key && !usersByTeam.has(key)) usersByTeam.set(key, u);
     });
   });
@@ -186,7 +177,7 @@ async function buildHistoricalAggregatesForDb(dbName, lookupMaps) {
   const historicalUsersByName = new Map();
   userDocs.forEach((u) => {
     [u.teamName, u.abbreviation, u.name].forEach((value) => {
-      const key = normName(value);
+      const key = normalizePlayerName(value);
       if (key && !historicalUsersByName.has(key)) historicalUsersByName.set(key, u);
     });
   });
@@ -214,16 +205,16 @@ async function buildHistoricalAggregatesForDb(dbName, lookupMaps) {
       return;
     }
 
-    const targetPlayer = lookupMaps.playersByName.get(normName(historicalPlayer.name));
+    const targetPlayer = lookupMaps.playersByName.get(normalizePlayerName(historicalPlayer.name));
     if (!targetPlayer) {
       skipped.unmatchedPlayer += 1;
       return;
     }
 
     const targetTeam =
-      lookupMaps.usersByTeam.get(normName(historicalTeam.teamName)) ||
-      lookupMaps.usersByTeam.get(normName(historicalTeam.abbreviation)) ||
-      lookupMaps.usersByTeam.get(normName(historicalTeam.name));
+      lookupMaps.usersByTeam.get(normalizePlayerName(historicalTeam.teamName)) ||
+      lookupMaps.usersByTeam.get(normalizePlayerName(historicalTeam.abbreviation)) ||
+      lookupMaps.usersByTeam.get(normalizePlayerName(historicalTeam.name));
 
     if (!targetTeam) {
       skipped.unmatchedTeam += 1;

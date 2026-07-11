@@ -2,6 +2,8 @@ const PlayerStats = require('../models/PlayerStats');
 const Player = require('../models/Player');
 const User = require('../models/User');
 const PlayerCareerSummary = require('../models/PlayerCareerSummary');
+const PlayerTeamTournamentStat = require('../models/PlayerTeamTournamentStat');
+const { normalizePlayerName } = require('./playerIdentity');
 
 /** Max rows stored per milestone list (50s/100s/spells). Totals use full dedupe count; lists were capped at 20 and no longer matched Total 50s/100s in UI when count > cap. */
 const MAX_DETAILS = Math.max(
@@ -10,10 +12,7 @@ const MAX_DETAILS = Math.max(
 );
 
 function normName(name) {
-  return String(name || '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
+  return normalizePlayerName(name);
 }
 
 function safeDiv(a, b) {
@@ -329,6 +328,164 @@ async function syncAllPlayerRankingsFromCareerSummaries() {
   return { rankingsPlayersSynced: summaries.length };
 }
 
+async function aggregateTotalsFromPlayerTeamHistory() {
+  const rows = await PlayerTeamTournamentStat.aggregate([
+    {
+      $group: {
+        _id: '$playerId',
+        totalRuns: { $sum: '$totalRuns' },
+        totalWickets: { $sum: '$totalWickets' },
+        totalMom: { $sum: '$totalMom' },
+        matches: { $sum: '$matches' },
+      },
+    },
+  ]);
+  return new Map(
+    rows.map((row) => [
+      String(row._id),
+      {
+        totalRuns: Number(row.totalRuns) || 0,
+        totalWickets: Number(row.totalWickets) || 0,
+        totalMom: Number(row.totalMom) || 0,
+        matches: Number(row.matches) || 0,
+      },
+    ]),
+  );
+}
+
+function buildReconciledCareerTotal(existingTotal, canonicalTotals) {
+  const base = existingTotal || emptyBlock();
+  return finalizeBlock({
+    ...base,
+    totalRuns: Number(canonicalTotals.totalRuns) || 0,
+    totalWickets: Number(canonicalTotals.totalWickets) || 0,
+    innings: Number(canonicalTotals.matches) || 0,
+  });
+}
+
+async function reconcileCareerAndRankingTotalsFromTeamHistory(options = {}) {
+  const includeInactive = options.includeInactive !== false;
+  const playerMatch = includeInactive ? {} : { isActive: true };
+  const players = await Player.find(playerMatch).select('_id name role isActive').lean();
+  const playerIds = players.map((p) => p._id);
+  const [totalsByPlayerId, summaries] = await Promise.all([
+    aggregateTotalsFromPlayerTeamHistory(),
+    PlayerCareerSummary.find({ playerId: { $in: playerIds } }).lean(),
+  ]);
+  const summaryByPlayerId = new Map(summaries.map((s) => [String(s.playerId), s]));
+
+  let playerUpdates = 0;
+  let summaryUpserts = 0;
+  for (const player of players) {
+    const idStr = String(player._id);
+    const canonical = totalsByPlayerId.get(idStr) || {
+      totalRuns: 0,
+      totalWickets: 0,
+      totalMom: 0,
+      matches: 0,
+    };
+    await Player.findByIdAndUpdate(player._id, {
+      $set: {
+        totalRuns: canonical.totalRuns,
+        totalWickets: canonical.totalWickets,
+        matchesPlayed: canonical.matches,
+        momCount: canonical.totalMom,
+      },
+    });
+    playerUpdates += 1;
+
+    const existingSummary = summaryByPlayerId.get(idStr);
+    const playerKey = normName(player.name);
+    const historical = existingSummary?.historical || emptyBlock();
+    const live = existingSummary?.live || emptyBlock();
+    const total = buildReconciledCareerTotal(existingSummary?.total, canonical);
+
+    await PlayerCareerSummary.findOneAndUpdate(
+      { playerKey },
+      {
+        $set: {
+          playerKey,
+          playerId: player._id,
+          playerName: player.name,
+          role: player.role || existingSummary?.role || '',
+          teams: existingSummary?.teams || [],
+          historical,
+          live,
+          total,
+        },
+      },
+      { upsert: true, new: true },
+    );
+    summaryUpserts += 1;
+  }
+
+  return {
+    playersScanned: players.length,
+    playerUpdates,
+    summaryUpserts,
+    sourceRows: totalsByPlayerId.size,
+  };
+}
+
+async function verifyCareerRankingTeamHistoryConsistency(options = {}) {
+  const includeInactive = options.includeInactive !== false;
+  const playerMatch = includeInactive ? {} : { isActive: true };
+  const players = await Player.find(playerMatch)
+    .select('_id name totalRuns totalWickets matchesPlayed momCount')
+    .lean();
+  const playerIds = players.map((p) => p._id);
+  const [totalsByPlayerId, summaries] = await Promise.all([
+    aggregateTotalsFromPlayerTeamHistory(),
+    PlayerCareerSummary.find({ playerId: { $in: playerIds } }).select('playerId total').lean(),
+  ]);
+  const summaryByPlayerId = new Map(summaries.map((s) => [String(s.playerId), s]));
+  const mismatches = [];
+
+  for (const player of players) {
+    const idStr = String(player._id);
+    const team = totalsByPlayerId.get(idStr) || { totalRuns: 0, totalWickets: 0, totalMom: 0, matches: 0 };
+    const career = summaryByPlayerId.get(idStr)?.total || emptyBlock();
+
+    const ranking = {
+      totalRuns: Number(player.totalRuns) || 0,
+      totalWickets: Number(player.totalWickets) || 0,
+      matches: Number(player.matchesPlayed) || 0,
+      totalMom: Number(player.momCount) || 0,
+    };
+    const careerShared = {
+      totalRuns: Number(career.totalRuns) || 0,
+      totalWickets: Number(career.totalWickets) || 0,
+      matches: Number(career.innings) || 0,
+      totalMom: ranking.totalMom,
+    };
+
+    const differs =
+      ranking.totalRuns !== team.totalRuns ||
+      ranking.totalWickets !== team.totalWickets ||
+      ranking.matches !== team.matches ||
+      ranking.totalMom !== team.totalMom ||
+      careerShared.totalRuns !== team.totalRuns ||
+      careerShared.totalWickets !== team.totalWickets ||
+      careerShared.matches !== team.matches;
+
+    if (differs) {
+      mismatches.push({
+        playerId: player._id,
+        playerName: player.name,
+        rankings: ranking,
+        career: careerShared,
+        teamHistory: team,
+      });
+    }
+  }
+
+  return {
+    checkedPlayers: players.length,
+    mismatchCount: mismatches.length,
+    mismatches,
+  };
+}
+
 /** API row shape for /api/cpl-report/player-career-summary */
 function mapCareerSummaryLeanToApiPlayer(r) {
   const t = reconcileCareerTotalsForApi(r.total);
@@ -386,6 +543,8 @@ module.exports = {
   rebuildAllLiveCareerSummaries,
   syncPlayerRankingsFromCareerTotal,
   syncAllPlayerRankingsFromCareerSummaries,
+  reconcileCareerAndRankingTotalsFromTeamHistory,
+  verifyCareerRankingTeamHistoryConsistency,
   mapCareerSummaryLeanToApiPlayer,
   emptyCareerApiPlayerFromPlayer,
 };

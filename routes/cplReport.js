@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const { buildCplReportSnapshot } = require('../utils/cplReportHelpers');
 const { generateCplReportPdfBuffer } = require('../utils/cplReportPdfFromSnapshot');
 const Player = require('../models/Player');
@@ -48,11 +49,24 @@ const DEFAULT_CAREER_SOURCE_LABEL =
   process.env.CPL_CAREER_SOURCE_LABEL ||
   'Data from cpl_15 to the current CPL (historical + live).';
 
-function overlayTopRankingTotals(careerRow, player) {
+function buildFallbackCplDatabases() {
+  const currentDbName = mongoose.connection?.name || process.env.MONGO_DB_NAME || '';
+  const match = String(currentDbName).match(/^cpl_(\d+)$/i);
+  if (!match) return currentDbName ? [{ name: currentDbName }] : [];
+  const currentNum = parseInt(match[1], 10);
+  const start = Math.max(1, currentNum - 10);
+  const dbs = [];
+  for (let i = start; i <= currentNum; i += 1) {
+    dbs.push({ name: `cpl_${i}` });
+  }
+  return dbs;
+}
+
+function applyPlayerTotalsFallback(careerRow, player) {
   if (!careerRow || !player) return careerRow;
-  const totalRuns = Number(player.totalRuns) || 0;
-  const totalWickets = Number(player.totalWickets) || 0;
-  const innings = Number(player.matchesPlayed) || 0;
+  const totalRuns = Number(player.totalRuns) || Number(careerRow.totalRuns) || 0;
+  const totalWickets = Number(player.totalWickets) || Number(careerRow.totalWickets) || 0;
+  const innings = Number(player.matchesPlayed) || Number(careerRow.innings) || 0;
   const totalBalls = Number(player.totalBalls) || 0;
   const totalRunsGiven = Number(player.totalRunsGiven) || 0;
   return {
@@ -107,8 +121,11 @@ async function getCareerSummaryOrCached({ refresh = false, includeInactive = tru
     const key = normName(p.name);
     const s = byPlayerId.get(idStr) || byKey.get(key);
     if (s) usedSummaryIds.add(String(s._id));
-    const row = s ? mapCareerSummaryLeanToApiPlayer(s) : emptyCareerApiPlayerFromPlayer(p);
-    players.push(overlayTopRankingTotals(row, p));
+    if (s) {
+      players.push(mapCareerSummaryLeanToApiPlayer(s));
+    } else {
+      players.push(applyPlayerTotalsFallback(emptyCareerApiPlayerFromPlayer(p), p));
+    }
   }
 
   for (const s of summaries) {
@@ -213,6 +230,34 @@ router.get('/config', async (_req, res) => {
   } catch (err) {
     console.error('cpl-report config error', err);
     res.status(500).json({ ok: false, message: err.message || 'Failed to load config' });
+  }
+});
+
+/**
+ * GET /api/cpl-report/databases
+ * List available CPL databases for admin config dropdowns.
+ */
+router.get('/databases', async (_req, res) => {
+  try {
+    const adminDb = mongoose.connection.db.admin();
+    const { databases } = await adminDb.listDatabases();
+    const cplDbs = (databases || [])
+      .map((db) => db.name)
+      .filter((name) => /^cpl_\d+$/i.test(name))
+      .sort((a, b) =>
+        String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+      );
+    res.json({
+      databases: cplDbs.map((name) => ({ name })),
+      currentDatabase: mongoose.connection.name || null,
+    });
+  } catch (err) {
+    console.error('cpl-report databases error', err);
+    res.json({
+      databases: buildFallbackCplDatabases(),
+      currentDatabase: mongoose.connection.name || process.env.MONGO_DB_NAME || null,
+      warning: 'Database listing failed, using fallback CPL database list',
+    });
   }
 });
 

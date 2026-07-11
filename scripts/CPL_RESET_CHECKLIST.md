@@ -97,3 +97,15 @@ db.users.updateMany(
     }
   }
 );
+
+## Consistency guardrail after reseed/backfill
+
+Run these commands from `auction-backend` after season reset scripts complete:
+
+```bash
+node scripts/reseedCareerHistoryForSeason.js
+node scripts/backfillPlayerTeamTournamentStats.js
+```
+
+Recommended shared env so all pipelines read the same seasons:
+- `CPL_HISTORY_SOURCE_DBS` or `CPL_HISTORY_SOURCE_FROM`/`CPL_HISTORY_SOURCE_TO`

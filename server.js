@@ -43,7 +43,6 @@ const monitoringRoutes = require('./routes/monitoring');
 const cplHistoryRoutes = require('./routes/cplHistory');
 const cplReportRoutes = require('./routes/cplReport');
 const adminRosterOpsRoutes = require('./routes/adminRosterOps');
-const dbMigrationRoutes = require('./routes/dbMigration');
 const participatingTeamsRoutes = require('./routes/participatingTeams');
 const cacheRoutes = require('./routes/cache');
 // require('./scheduler');
@@ -211,7 +210,6 @@ app.use('/api/monitoring', monitoringRoutes);
 app.use('/api/cpl-history', cplHistoryRoutes);
 app.use('/api/cpl-report', cplReportRoutes);
 app.use('/api/admin/roster', adminRosterOpsRoutes);
-app.use('/api/db-migration', dbMigrationRoutes);
 app.use('/api/participating-teams', participatingTeamsRoutes);
 app.use('/api/cache', cacheRoutes);
 

@@ -8,8 +8,9 @@
 const mongoose = require('mongoose');
 const Player = require('../models/Player');
 const PlayerCareerSummary = require('../models/PlayerCareerSummary');
+const { resolveCplSourceDbs } = require('./cplSourceDbs');
+const { normalizePlayerName } = require('./playerIdentity');
 const {
-  normName,
   emptyBlock,
   finalizeBlock,
   mergeBlocks,
@@ -24,25 +25,13 @@ const {
  * Override with CPL_HISTORY_SEED_DBS=cpl_15,cpl_16,… when needed.
  */
 function getSourceDbs() {
-  if (process.env.CPL_HISTORY_SEED_DBS) {
-    return process.env.CPL_HISTORY_SEED_DBS.split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-
-  const start = Math.max(
-    1,
-    parseInt(process.env.CPL_HISTORY_SEED_FROM || '15', 10) || 15,
-  );
-  const currentDb = process.env.MONGO_DB_NAME || mongoose.connection?.name || '';
-  const match = String(currentDb).match(/^cpl_(\d+)$/i);
-  const currentNum = match ? parseInt(match[1], 10) : start;
-
-  const dbs = [];
-  for (let i = start; i < currentNum; i += 1) {
-    dbs.push(`cpl_${i}`);
-  }
-  return dbs.length ? dbs : [`cpl_${Math.max(start, currentNum - 1)}`];
+  return resolveCplSourceDbs({
+    explicitEnvKeys: ['CPL_HISTORY_SOURCE_DBS', 'CPL_HISTORY_SEED_DBS'],
+    fromEnvKeys: ['CPL_HISTORY_SOURCE_FROM', 'CPL_HISTORY_SEED_FROM'],
+    toEnvKeys: ['CPL_HISTORY_SOURCE_TO', 'CPL_HISTORY_SEED_TO'],
+    defaultFrom: 15,
+    includeCurrent: false,
+  });
 }
 
 function addInnings(block, row) {
@@ -94,7 +83,7 @@ async function rebuildAllPlayerTotalsFromCurrentStats() {
 async function runCareerHistorySeed() {
   const SOURCE_DBS = getSourceDbs();
   const currentPlayers = await Player.find({}).select('_id name role').lean();
-  const currentByKey = new Map(currentPlayers.map((p) => [normName(p.name), p]));
+  const currentByKey = new Map(currentPlayers.map((p) => [normalizePlayerName(p.name), p]));
   const aggregateByKey = new Map();
   const perDb = [];
 
@@ -112,7 +101,7 @@ async function runCareerHistorySeed() {
     for (const row of statsDocs) {
       const p = playerById.get(String(row.playerId));
       if (!p?.name) continue;
-      const key = normName(p.name);
+      const key = normalizePlayerName(p.name);
       if (!aggregateByKey.has(key)) {
         aggregateByKey.set(key, {
           playerName: p.name,

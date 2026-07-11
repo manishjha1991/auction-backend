@@ -1223,7 +1223,7 @@ router.get('/teams', async (req, res) => {
     }
     const teams = await query.lean();
 
-    // Career totals: backfill from scripts/syncTeamCareerFromAllDbs.js (historical DBs); thereafter only
+    // Career totals: seeded from historical data during ops; thereafter only
     // league fixture save, playoff update, and tournament (WC) fixture update bump User via utils/careerUserCounters.js.
     const teamsOut = teams.map((t) => ({
       ...t,

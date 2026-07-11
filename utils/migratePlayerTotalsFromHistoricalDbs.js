@@ -7,15 +7,28 @@
  */
 const mongoose = require('mongoose');
 const Player = require('../models/Player');
+const { resolveCplSourceDbs } = require('./cplSourceDbs');
 
 function getMigrateSourceDbs() {
-  return (
-    process.env.CPL_PLAYER_TOTALS_MIGRATE_DBS ||
-    'cpl_15,cpl_16,cpl_17,cpl_18,cpl_19,cpl_20'
-  )
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return resolveCplSourceDbs({
+    explicitEnvKeys: [
+      'CPL_HISTORY_SOURCE_DBS',
+      'CPL_PLAYER_TOTALS_MIGRATE_DBS',
+      'CPL_HISTORY_SEED_DBS',
+    ],
+    fromEnvKeys: [
+      'CPL_HISTORY_SOURCE_FROM',
+      'CPL_PLAYER_TOTALS_MIGRATE_FROM',
+      'CPL_HISTORY_SEED_FROM',
+    ],
+    toEnvKeys: [
+      'CPL_HISTORY_SOURCE_TO',
+      'CPL_PLAYER_TOTALS_MIGRATE_TO',
+      'CPL_HISTORY_SEED_TO',
+    ],
+    defaultFrom: 15,
+    includeCurrent: false,
+  });
 }
 
 function escapeRegex(s) {

@@ -1,7 +1,7 @@
 /**
  * Live updates to User.careerMatchesPlayed / careerWins when a match completes:
  * league fixture save, playoff update, tournament (World Cup) fixture update.
- * Historical totals from old DBs are loaded only via scripts/syncTeamCareerFromAllDbs.js (not the HTTP API).
+ * Historical totals from old DBs are seeded during ops (not the HTTP API).
  */
 
 const User = require('../models/User');

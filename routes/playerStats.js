@@ -373,11 +373,7 @@ const buildComparisonRecommendation = (insightA, insightB) => {
 
 // Helper: rebuild live career block from PlayerStats, merge with historical, sync Player for Top Rankings
 const updatePlayerCumulativeStats = async (playerId) => {
-  try {
-    await upsertLiveCareerSummaryForPlayer(playerId);
-  } catch (error) {
-    console.error('Error updating cumulative stats:', error);
-  }
+  await upsertLiveCareerSummaryForPlayer(playerId);
 };
 
 const resolvePlayerOwner = async (playerId) => {
@@ -478,6 +474,13 @@ const applyPlayerStatDelta = async (playerId, delta = {}) => {
     console.error('Failed to apply stat delta', { playerId, delta, error: error.message, stack: error.stack });
     throw error; // Re-throw to ensure caller knows about the failure
   }
+};
+
+const syncCareerAndRankingAfterStatChange = async (playerId, deltaTotals, contextLabel = 'stats-save') => {
+  await applyPlayerStatDelta(playerId, deltaTotals);
+  await upsertLiveCareerSummaryForPlayer(playerId);
+  invalidateCareerSummaryCache();
+  console.log(`✅ Career + rankings synced after ${contextLabel} for player ${playerId}`);
 };
 
 const VALID_WC_STAGES = ['super8', 'semi', 'final'];
@@ -768,16 +771,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
     
     const hasStatChanges = Object.values(deltaTotals).some((v) => v !== 0);
 
-    // Apply delta to player totals (non-blocking - don't fail OCR upload if this fails)
-    try {
-      console.log(`📊 Updating player ${playerId} totals with delta:`, deltaTotals);
-      await applyPlayerStatDelta(playerId, deltaTotals);
-      await upsertLiveCareerSummaryForPlayer(playerId);
-      invalidateCareerSummaryCache();
-    } catch (deltaError) {
-      console.error(`⚠️ Failed to update player totals for ${playerId}, but stats saved successfully:`, deltaError);
-      // Don't throw - stats are already saved, this is just a bonus update
-    }
+    console.log(`📊 Updating player ${playerId} totals with delta:`, deltaTotals);
+    await syncCareerAndRankingAfterStatChange(playerId, deltaTotals, 'single-update');
 
     // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when stats are updated
     cache.del('stats-overview');
@@ -842,16 +837,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
 
     await newStats.save();
     
-    // Apply delta to player totals (non-blocking - don't fail OCR upload if this fails)
-    try {
-      console.log(`📊 Adding new stats for player ${playerId} with delta:`, deltaTotals);
-      await applyPlayerStatDelta(playerId, deltaTotals);
-      await upsertLiveCareerSummaryForPlayer(playerId);
-      invalidateCareerSummaryCache();
-    } catch (deltaError) {
-      console.error(`⚠️ Failed to update player totals for ${playerId}, but stats saved successfully:`, deltaError);
-      // Don't throw - stats are already saved, this is just a bonus update
-    }
+    console.log(`📊 Adding new stats for player ${playerId} with delta:`, deltaTotals);
+    await syncCareerAndRankingAfterStatChange(playerId, deltaTotals, 'single-create');
 
     // 🚀 PERFORMANCE: Invalidate stats-overview and players data cache when new stats are added
     cache.del('stats-overview');
@@ -2954,10 +2941,7 @@ router.post('/bulk-store', async (req, res) => {
 
         await statDoc.save();
         
-        // Apply delta to player totals
-        await applyPlayerStatDelta(entry.playerId, deltaTotals);
-        await upsertLiveCareerSummaryForPlayer(entry.playerId);
-        invalidateCareerSummaryCache();
+        await syncCareerAndRankingAfterStatChange(entry.playerId, deltaTotals, 'bulk-update');
       } else {
         // Create new entry (either no existing stats OR it's a playoff score)
         // For new entries, delta equals the new totals
@@ -2998,15 +2982,7 @@ router.post('/bulk-store', async (req, res) => {
 
         await statDoc.save();
         
-        // Apply delta to player totals (non-blocking - don't fail OCR upload if this fails)
-        try {
-          await applyPlayerStatDelta(entry.playerId, deltaTotals);
-          await upsertLiveCareerSummaryForPlayer(entry.playerId);
-          invalidateCareerSummaryCache();
-        } catch (deltaError) {
-          console.error(`⚠️ Failed to update player totals for ${entry.playerId}, but stats saved successfully:`, deltaError);
-          // Don't throw - stats are already saved, this is just a bonus update
-        }
+        await syncCareerAndRankingAfterStatChange(entry.playerId, deltaTotals, 'bulk-create');
       }
 
       // Mirror to persistent venue ledger (survives PlayerStats wipes).
