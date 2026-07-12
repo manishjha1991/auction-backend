@@ -206,6 +206,12 @@ router.post("/:playerId/exit", async (req, res) => {
           await player.save();
 
           const ioAdmin = req.app.get("io");
+          await bidQueueService.removeUserFromQueueForPlayer({
+            playerId,
+            userId: secondHighestBid.bidder,
+            reason: "exit",
+            io: ioAdmin,
+          });
           await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin);
 
           return res.json({
@@ -305,6 +311,12 @@ router.post("/:playerId/exit", async (req, res) => {
       playerName: player.name
     });
 
+    await bidQueueService.removeUserFromQueueForPlayer({
+      playerId,
+      userId,
+      reason: "exit",
+      io,
+    });
     await bidQueueService.tryPromoteNextQueued(playerId, io);
     
     res.json({
@@ -567,6 +579,8 @@ router.post("/bid/sold", async (req, res) => {
           }
         }
 
+        await bidQueueService.clearQueueForSoldPlayer({ playerId: pid, io: req.app.get('io') });
+
         results.push({
           playerID: pid,
           status: "success",
@@ -747,6 +761,14 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
         player.lastExitAt = new Date();
         player.lastExitBy = 'system';
         await player.save();
+
+        await bidQueueService.removeUserFromQueueForPlayer({
+          playerId,
+          userId: secondHighestBid.bidder,
+          reason: "exit",
+          io,
+        });
+        await bidQueueService.tryPromoteNextQueued(playerId, io);
 
         return {
           message: "The second-highest bidder has exited successfully. Locked amount refunded.",
@@ -1071,6 +1093,8 @@ async function sellPlayer(playerId, io = null) {
       throw new Error(`Player status verification failed for ${playerId}`);
     }
 
+    await bidQueueService.clearQueueForSoldPlayer({ playerId, io });
+
     return {
       playerID: playerId,
       status: 'success',
@@ -1318,6 +1342,14 @@ async function exitBidForUserOnPlayer(userId, playerId, io = null, exitBy = 'use
       io.emit('bid_exit_notification', notificationData);
     }
   }
+
+  await bidQueueService.removeUserFromQueueForPlayer({
+    playerId,
+    userId,
+    reason: "exit",
+    io,
+  });
+  await bidQueueService.tryPromoteNextQueued(playerId, io);
 
   return {
     playerId,
