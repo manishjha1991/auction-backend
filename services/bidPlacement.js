@@ -350,25 +350,27 @@ async function placeBidCore({
     const otherActiveBidders = currentActiveBidders.filter((b) => b !== bidderId.toString());
     const activeBidderSocketIds = getSocketIdsForUsers(otherActiveBidders);
 
-    if (activeBidderSocketIds.length > 0) {
+    if (io && activeBidderSocketIds.length > 0) {
       activeBidderSocketIds.forEach((socketId) => {
         io.to(socketId).emit("bid_notification", notificationData);
       });
-    } else {
+    } else if (io) {
       io.emit("bid_notification", notificationData);
     }
 
     invalidateCache("user-purses");
     invalidateCache("players:data");
 
-    io.emit("player_bid_update", {
-      playerId: playerId.toString(),
-      currentBid: player.currentBid,
-      currentBidder: player.currentBidder,
-      bidderName: user.name,
-      bidAmount,
-      playerName: player.name,
-    });
+    if (io) {
+      io.emit("player_bid_update", {
+        playerId: playerId.toString(),
+        currentBid: player.currentBid,
+        currentBidder: player.currentBidder,
+        bidderName: user.name,
+        bidAmount,
+        playerName: player.name,
+      });
+    }
 
     return { ok: true, newBid, bidAmount, player, user };
   } catch (err) {

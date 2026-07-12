@@ -114,6 +114,70 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
   await emitBidQueueUpdated(io, playerId);
 }
 
+async function removeUserFromQueueForPlayer({ playerId, userId, reason = "exit", io }) {
+  await withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) return;
+
+    const uid = userId.toString();
+    const entries = doc.entries.filter((e) => e.userId.toString() === uid);
+    if (!entries.length) return;
+
+    const player = await Player.findById(playerId).select("name").lean();
+    for (const entry of entries) {
+      if (entry.status === "queued") {
+        await refundPurse(entry.userId, entry.lockedAmount);
+        emitQueuePersonal(io, entry.userId, {
+          type: "removed",
+          reason,
+          playerId: playerId.toString(),
+          playerName: player?.name || "",
+          refund: entry.lockedAmount,
+        });
+      } else if (entry.status === "active_proxy") {
+        emitQueuePersonal(io, entry.userId, {
+          type: "proxy_removed",
+          reason,
+          playerId: playerId.toString(),
+          playerName: player?.name || "",
+        });
+      }
+      doc.entries.pull(entry._id);
+    }
+
+    if (!doc.entries.length) {
+      await BidPlayerQueue.deleteOne({ _id: doc._id });
+      await emitBidQueueUpdated(io, playerId, 0);
+    } else {
+      await doc.save();
+      await emitBidQueueUpdated(io, playerId);
+    }
+  });
+}
+
+async function clearQueueForSoldPlayer({ playerId, io }) {
+  await withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) return;
+
+    const player = await Player.findById(playerId).select("name").lean();
+    for (const entry of doc.entries) {
+      if (entry.status !== "queued") continue;
+      await refundPurse(entry.userId, entry.lockedAmount);
+      emitQueuePersonal(io, entry.userId, {
+        type: "removed",
+        reason: "sold",
+        playerId: playerId.toString(),
+        playerName: player?.name || "",
+        refund: entry.lockedAmount,
+      });
+    }
+
+    await BidPlayerQueue.deleteOne({ _id: doc._id });
+    await emitBidQueueUpdated(io, playerId, 0);
+  });
+}
+
 async function pruneQueuedOverMax(playerId, io) {
   if (!isEnabled()) return;
   await withPlayerBidLock(playerId, async () => {
@@ -743,6 +807,8 @@ module.exports = {
   listMyQueueMemberships,
   isPromotedProxyBidder,
   resignActiveProxyToManual,
+  removeUserFromQueueForPlayer,
+  clearQueueForSoldPlayer,
   afterBidPlaced,
   runProxyContinuation,
 };
