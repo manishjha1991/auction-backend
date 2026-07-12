@@ -67,6 +67,8 @@ function applyPlayerTotalsFallback(careerRow, player) {
   const totalRuns = Number(player.totalRuns) || Number(careerRow.totalRuns) || 0;
   const totalWickets = Number(player.totalWickets) || Number(careerRow.totalWickets) || 0;
   const innings = Number(player.matchesPlayed) || Number(careerRow.innings) || 0;
+  const notOutInnings = Number(player.totalNotOutInnings) || Number(careerRow.notOutInnings) || 0;
+  const dismissals = Math.max(0, innings - notOutInnings);
   const totalBalls = Number(player.totalBalls) || 0;
   const totalRunsGiven = Number(player.totalRunsGiven) || 0;
   return {
@@ -74,8 +76,10 @@ function applyPlayerTotalsFallback(careerRow, player) {
     totalRuns,
     totalWickets,
     innings,
+    notOutInnings,
+    dismissals,
     battingStrikeRate: totalBalls ? Number(((totalRuns * 100) / totalBalls).toFixed(2)) : careerRow.battingStrikeRate,
-    battingAverage: innings ? Number((totalRuns / innings).toFixed(2)) : careerRow.battingAverage,
+    battingAverage: dismissals ? Number((totalRuns / dismissals).toFixed(2)) : careerRow.battingAverage,
     bowlingAverage: totalWickets ? Number((totalRunsGiven / totalWickets).toFixed(2)) : 0,
   };
 }
@@ -89,7 +93,7 @@ async function getCareerSummaryOrCached({ refresh = false, includeInactive = tru
   let [summaries, allPlayers] = await Promise.all([
     PlayerCareerSummary.find({}).select(CAREER_SUMMARY_LIST_PROJECTION).lean(),
     Player.find(match)
-      .select('_id name role totalRuns totalWickets matchesPlayed totalBalls totalRunsGiven totalBallsBowled')
+      .select('_id name role totalRuns totalWickets matchesPlayed totalNotOutInnings totalBalls totalRunsGiven totalBallsBowled')
       .lean(),
   ]);
 

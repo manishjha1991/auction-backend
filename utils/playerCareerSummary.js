@@ -20,11 +20,17 @@ function safeDiv(a, b) {
   return a / b;
 }
 
+function deriveDismissals(innings = 0, notOutInnings = 0) {
+  return Math.max(0, (Number(innings) || 0) - (Number(notOutInnings) || 0));
+}
+
 function emptyBlock() {
   return {
     totalRuns: 0,
     totalBalls: 0,
     innings: 0,
+    notOutInnings: 0,
+    dismissals: 0,
     totalFifties: 0,
     totalHundreds: 0,
     highestScore: 0,
@@ -124,8 +130,10 @@ function finalizeBlock(block) {
   out.totalHundreds = centuries.length;
   out.totalFifties = fifties.length;
 
+  out.notOutInnings = Number(out.notOutInnings) || 0;
+  out.dismissals = deriveDismissals(out.innings, out.notOutInnings);
   out.battingStrikeRate = Number(safeDiv(out.totalRuns * 100, out.totalBalls).toFixed(2));
-  out.battingAverage = Number(safeDiv(out.totalRuns, out.innings).toFixed(2));
+  out.battingAverage = Number(safeDiv(out.totalRuns, out.dismissals).toFixed(2));
   out.bowlingAverage = out.totalWickets > 0 ? Number(safeDiv(out.totalRunsGiven, out.totalWickets).toFixed(2)) : 0;
   out.centuries = [...centuries].sort(sortCenturies).slice(0, MAX_DETAILS);
   out.fifties = [...fifties].sort(sortCenturies).slice(0, MAX_DETAILS);
@@ -138,6 +146,7 @@ function finalizeBlock(block) {
 function computeLiveBlockFromStats(statsDocs, opponentById) {
   const block = emptyBlock();
   for (const stat of statsDocs) {
+    const isNotOut = !!stat?.battingStats?.notOut;
     const runs = Number(stat?.battingStats?.runs) || 0;
     const balls = Number(stat?.battingStats?.balls) || 0;
     const wickets = Number(stat?.bowlingStats?.wickets) || 0;
@@ -149,6 +158,7 @@ function computeLiveBlockFromStats(statsDocs, opponentById) {
     block.totalRuns += runs;
     block.totalBalls += balls;
     block.innings += 1;
+    if (isNotOut) block.notOutInnings += 1;
     block.totalWickets += wickets;
     block.totalRunsGiven += runsGiven;
     block.totalBallsBowled += ballsBowled;
@@ -176,6 +186,7 @@ function mergeBlocks(historical, live) {
     totalRuns: (h.totalRuns || 0) + (l.totalRuns || 0),
     totalBalls: (h.totalBalls || 0) + (l.totalBalls || 0),
     innings: (h.innings || 0) + (l.innings || 0),
+    notOutInnings: (h.notOutInnings || 0) + (l.notOutInnings || 0),
     // totalFifties / totalHundreds recalculated in finalizeBlock after deduping merged milestone lists
     totalFifties: 0,
     totalHundreds: 0,
@@ -307,6 +318,7 @@ async function syncPlayerRankingsFromCareerTotal(playerId, totalBlock) {
       totalBallsBowled: Number(t.totalBallsBowled) || 0,
       totalWickets: Number(t.totalWickets) || 0,
       matchesPlayed: Number(t.innings) || 0,
+      totalNotOutInnings: Number(t.notOutInnings) || 0,
       momCount,
     },
   });
@@ -355,11 +367,13 @@ async function aggregateTotalsFromPlayerTeamHistory() {
 
 function buildReconciledCareerTotal(existingTotal, canonicalTotals) {
   const base = existingTotal || emptyBlock();
+  const notOutInnings = Number(base.notOutInnings) || 0;
   return finalizeBlock({
     ...base,
     totalRuns: Number(canonicalTotals.totalRuns) || 0,
     totalWickets: Number(canonicalTotals.totalWickets) || 0,
     innings: Number(canonicalTotals.matches) || 0,
+    notOutInnings,
   });
 }
 
@@ -504,6 +518,8 @@ function mapCareerSummaryLeanToApiPlayer(r) {
     battingAverage: t.battingAverage || 0,
     bowlingAverage: t.bowlingAverage || 0,
     innings: t.innings || 0,
+    notOutInnings: t.notOutInnings || 0,
+    dismissals: t.dismissals || 0,
     bowlingInnings: t.bowlingInnings || 0,
     centuries: t.centuries || [],
     fifties: t.fifties || [],
@@ -527,6 +543,8 @@ function emptyCareerApiPlayerFromPlayer(playerLean) {
     battingAverage: 0,
     bowlingAverage: 0,
     innings: 0,
+    notOutInnings: 0,
+    dismissals: 0,
     bowlingInnings: 0,
     centuries: [],
     fifties: [],

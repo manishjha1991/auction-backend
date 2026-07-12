@@ -26,6 +26,8 @@ const metricsBlockSchema = new mongoose.Schema(
     totalRuns: { type: Number, default: 0 },
     totalBalls: { type: Number, default: 0 },
     innings: { type: Number, default: 0 },
+    notOutInnings: { type: Number, default: 0 },
+    dismissals: { type: Number, default: 0 },
     totalFifties: { type: Number, default: 0 },
     totalHundreds: { type: Number, default: 0 },
     highestScore: { type: Number, default: 0 },

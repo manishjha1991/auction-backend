@@ -37,6 +37,7 @@ function getSourceDbs() {
 function addInnings(block, row) {
   const runs = Number(row?.battingStats?.runs) || 0;
   const balls = Number(row?.battingStats?.balls) || 0;
+  const isNotOut = !!row?.battingStats?.notOut;
   const wickets = Number(row?.bowlingStats?.wickets) || 0;
   const runsGiven = Number(row?.bowlingStats?.runsGiven) || 0;
   const ballsBowled = Number(row?.bowlingStats?.ballsBowled) || 0;
@@ -46,6 +47,7 @@ function addInnings(block, row) {
   block.totalRuns += runs;
   block.totalBalls += balls;
   block.innings += 1;
+  if (isNotOut) block.notOutInnings += 1;
   block.totalWickets += wickets;
   block.totalRunsGiven += runsGiven;
   block.totalBallsBowled += ballsBowled;

@@ -19,6 +19,7 @@ const battingBlock = new mongoose.Schema(
   {
     runs: { type: Number, default: 0 },
     balls: { type: Number, default: 0 },
+    notOut: { type: Boolean, default: false },
   },
   { _id: false }
 );

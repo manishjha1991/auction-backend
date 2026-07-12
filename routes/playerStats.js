@@ -52,6 +52,13 @@ const stableVenueCacheKeyFromQuery = (req) => {
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const roundNumber = (value = 0, digits = 2) => Number.parseFloat((value || 0).toFixed(digits));
+const countDismissals = (innings = 0, notOutInnings = 0) =>
+  Math.max(0, (Number(innings) || 0) - (Number(notOutInnings) || 0));
+const battingAverageFromTotals = (runs = 0, innings = 0, notOutInnings = 0) => {
+  const dismissals = countDismissals(innings, notOutInnings);
+  if (dismissals > 0) return runs / dismissals;
+  return runs > 0 ? runs : 0;
+};
 
 const summarizeRoleFocus = (player) => {
   if (!player) return 'Utility Player';
@@ -96,47 +103,55 @@ const computeInsightPayload = (player, ownerTeam, stats) => {
     (acc, stat) => {
       const runs = stat.battingStats?.runs || 0;
       const balls = stat.battingStats?.balls || 0;
+      const notOut = stat.battingStats?.notOut ? 1 : 0;
       const wickets = stat.bowlingStats?.wickets || 0;
       const runsGiven = stat.bowlingStats?.runsGiven || 0;
       const ballsBowled = stat.bowlingStats?.ballsBowled || 0;
 
       acc.battingRuns += runs;
       acc.battingBalls += balls;
+      acc.notOutInnings += notOut;
       acc.wickets += wickets;
       acc.runsGiven += runsGiven;
       acc.ballsBowled += ballsBowled;
 
       return acc;
     },
-    { battingRuns: 0, battingBalls: 0, wickets: 0, runsGiven: 0, ballsBowled: 0 }
+    { battingRuns: 0, battingBalls: 0, notOutInnings: 0, wickets: 0, runsGiven: 0, ballsBowled: 0 }
   );
 
   const lastFiveTotals = lastFive.reduce(
     (acc, stat) => {
       const runs = stat.battingStats?.runs || 0;
       const balls = stat.battingStats?.balls || 0;
+      const notOut = stat.battingStats?.notOut ? 1 : 0;
       const wickets = stat.bowlingStats?.wickets || 0;
       const runsGiven = stat.bowlingStats?.runsGiven || 0;
       const ballsBowled = stat.bowlingStats?.ballsBowled || 0;
 
       acc.battingRuns += runs;
       acc.battingBalls += balls;
+      acc.notOutInnings += notOut;
       acc.wickets += wickets;
       acc.runsGiven += runsGiven;
       acc.ballsBowled += ballsBowled;
 
       return acc;
     },
-    { battingRuns: 0, battingBalls: 0, wickets: 0, runsGiven: 0, ballsBowled: 0 }
+    { battingRuns: 0, battingBalls: 0, notOutInnings: 0, wickets: 0, runsGiven: 0, ballsBowled: 0 }
   );
 
-  const recentAvg = lastFive.length ? lastFiveTotals.battingRuns / lastFive.length : 0;
+  const recentAvg = lastFive.length
+    ? battingAverageFromTotals(lastFiveTotals.battingRuns, lastFive.length, lastFiveTotals.notOutInnings)
+    : 0;
   const recentStrikeRate =
     lastFiveTotals.battingBalls >= 10
       ? (lastFiveTotals.battingRuns / lastFiveTotals.battingBalls) * 100
       : 0;
 
-  const overallAvg = matchCount > 0 ? totals.battingRuns / matchCount : 0;
+  const overallAvg = matchCount > 0
+    ? battingAverageFromTotals(totals.battingRuns, matchCount, totals.notOutInnings)
+    : 0;
   const overallStrikeRate =
     totals.battingBalls >= 10 ? (totals.battingRuns / totals.battingBalls) * 100 : 0;
 
@@ -444,6 +459,7 @@ const applyPlayerStatDelta = async (playerId, delta = {}) => {
     wickets = 0,
     mom = 0,
     matches = 0,
+    notOut = 0,
   } = delta;
 
   const inc = {};
@@ -457,6 +473,7 @@ const applyPlayerStatDelta = async (playerId, delta = {}) => {
   if (wickets !== undefined && wickets !== null && wickets !== 0) inc.totalWickets = wickets;
   if (mom !== undefined && mom !== null && mom !== 0) inc.momCount = mom;
   if (matches !== undefined && matches !== null && matches !== 0) inc.matchesPlayed = matches;
+  if (notOut !== undefined && notOut !== null && notOut !== 0) inc.totalNotOutInnings = notOut;
 
   if (!Object.keys(inc).length) {
     console.log('No stat deltas to apply for player:', playerId);
@@ -544,6 +561,7 @@ const upsertVenueMatchEntry = async (
           battingStats: {
             runs: playerStatsDoc.battingStats?.runs || 0,
             balls: playerStatsDoc.battingStats?.balls || 0,
+            notOut: !!playerStatsDoc.battingStats?.notOut,
           },
           bowlingStats: {
             runsGiven: playerStatsDoc.bowlingStats?.runsGiven || 0,
@@ -683,6 +701,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
   const newTotals = {
     runs: battingStats?.runs || 0,
     balls: battingStats?.balls || 0,
+    notOut: battingStats?.notOut ? 1 : 0,
     runsGiven: bowlingStats?.runsGiven || 0,
     ballsBowled: bowlingStats?.ballsBowled || 0,
     wickets:
@@ -700,6 +719,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     wickets: 0,
     mom: 0,
     matches: 0,
+    notOut: 0,
   };
 
   if (existingStats) {
@@ -708,6 +728,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     const previousTotals = {
       runs: existingStats.battingStats?.runs || 0,
       balls: existingStats.battingStats?.balls || 0,
+      notOut: existingStats.battingStats?.notOut ? 1 : 0,
       runsGiven: existingStats.bowlingStats?.runsGiven || 0,
       ballsBowled: existingStats.bowlingStats?.ballsBowled || 0,
       wickets: existingStats.bowlingStats?.wickets || 0,
@@ -719,10 +740,12 @@ const savePlayerStatsEntry = async (payload = {}) => {
     deltaTotals.ballsBowled = newTotals.ballsBowled - previousTotals.ballsBowled;
     deltaTotals.wickets = newTotals.wickets - previousTotals.wickets;
     deltaTotals.mom = newTotals.mom - previousTotals.mom;
+    deltaTotals.notOut = newTotals.notOut - previousTotals.notOut;
 
     existingStats.battingStats = {
       runs: battingStats?.runs || 0,
       balls: battingStats?.balls || 0,
+      notOut: !!battingStats?.notOut,
     };
 
     existingStats.bowlingStats = {
@@ -807,6 +830,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
   deltaTotals.wickets = newTotals.wickets;
   deltaTotals.mom = newTotals.mom;
   deltaTotals.matches = 1;
+  deltaTotals.notOut = newTotals.notOut;
 
   const newStats = new PlayerStats({
     playerId,
@@ -818,6 +842,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     battingStats: {
       runs: battingStats?.runs || 0,
       balls: battingStats?.balls || 0,
+      notOut: !!battingStats?.notOut,
     },
     bowlingStats: {
       runsGiven: bowlingStats?.runsGiven || 0,
@@ -1013,6 +1038,7 @@ router.get('/list', async (req, res) => {
         match: stat.matchName,
         runs: stat.battingStats?.runs || 0,
         balls: stat.battingStats?.balls || 0,
+        notOut: !!stat.battingStats?.notOut,
         mom: stat.isMom || false,
         // Use pre-fetched opponent map (no database query)
         against: stat.opponentUserId 
@@ -2693,7 +2719,18 @@ router.post('/clear-cache', async (req, res) => {
     if (resetTotals) {
       const r = await Player.updateMany(
         {},
-        { $set: { totalRuns: 0, totalWickets: 0, matchesPlayed: 0, totalRunsGiven: 0, totalBalls: 0, totalBallsBowled: 0, momCount: 0 } }
+        {
+          $set: {
+            totalRuns: 0,
+            totalWickets: 0,
+            matchesPlayed: 0,
+            totalNotOutInnings: 0,
+            totalRunsGiven: 0,
+            totalBalls: 0,
+            totalBallsBowled: 0,
+            momCount: 0,
+          },
+        }
       );
       return res.json({
         message: 'Stats cache cleared and Player totals reset. Hard refresh the UI (Ctrl+Shift+R).',
@@ -2863,6 +2900,7 @@ router.post('/bulk-store', async (req, res) => {
       const newTotals = {
         runs: batStats?.runs || 0,
         balls: batStats?.balls || 0,
+        notOut: batStats?.notOut ? 1 : 0,
         runsGiven: bowlStats?.runsGiven || 0,
         ballsBowled: bowlStats?.ballsBowled || 0,
         wickets: bowlStats?.wickets || 0,
@@ -2878,6 +2916,7 @@ router.post('/bulk-store', async (req, res) => {
         wickets: 0,
         mom: 0,
         matches: 0,
+        notOut: 0,
       };
 
       // Decision rules (in this priority):
@@ -2889,6 +2928,7 @@ router.post('/bulk-store', async (req, res) => {
         const previousTotals = {
           runs: statDoc.battingStats?.runs || 0,
           balls: statDoc.battingStats?.balls || 0,
+          notOut: statDoc.battingStats?.notOut ? 1 : 0,
           runsGiven: statDoc.bowlingStats?.runsGiven || 0,
           ballsBowled: statDoc.bowlingStats?.ballsBowled || 0,
           wickets: statDoc.bowlingStats?.wickets || 0,
@@ -2901,6 +2941,7 @@ router.post('/bulk-store', async (req, res) => {
         deltaTotals.ballsBowled = newTotals.ballsBowled - previousTotals.ballsBowled;
         deltaTotals.wickets = newTotals.wickets - previousTotals.wickets;
         deltaTotals.mom = newTotals.mom - previousTotals.mom;
+        deltaTotals.notOut = newTotals.notOut - previousTotals.notOut;
 
         // Update existing entry (regular match)
         statDoc.opponentUserId = resolvedOpponentUserId || statDoc.opponentUserId || null;
@@ -2908,7 +2949,11 @@ router.post('/bulk-store', async (req, res) => {
         statDoc.matchKey = normalizedMatchKey || statDoc.matchKey || null;
         statDoc.fixtureId = entry.fixtureId || fixtureId || statDoc.fixtureId || null;
         statDoc.isPlayoffScore = entryIsPlayoffScore;
-        statDoc.battingStats = batStats;
+        statDoc.battingStats = {
+          runs: batStats?.runs || 0,
+          balls: batStats?.balls || 0,
+          notOut: !!batStats?.notOut,
+        };
         statDoc.bowlingStats = bowlStats;
         statDoc.isMom = !!entry.isMom;
         
@@ -2952,6 +2997,7 @@ router.post('/bulk-store', async (req, res) => {
         deltaTotals.wickets = newTotals.wickets;
         deltaTotals.mom = newTotals.mom;
         deltaTotals.matches = 1;
+        deltaTotals.notOut = newTotals.notOut;
 
         statDoc = new PlayerStats({
           playerId: entry.playerId,
@@ -2967,7 +3013,11 @@ router.post('/bulk-store', async (req, res) => {
             entry.teamInningsOrder === 1 || entry.teamInningsOrder === 2
               ? entry.teamInningsOrder
               : null,
-          battingStats: batStats,
+          battingStats: {
+            runs: batStats?.runs || 0,
+            balls: batStats?.balls || 0,
+            notOut: !!batStats?.notOut,
+          },
           bowlingStats: bowlStats,
           isMom: !!entry.isMom,
           metadata: {
@@ -3204,6 +3254,7 @@ router.get('/stats-overview', async (req, res) => {
     const totalWicketsMap = {};
     const totalRunsGivenMap = {};
     const matchCountMap = {};
+    const notOutCountMap = {};
     const totalBallsBowledMap = {};
     const momCountMap = {};
 
@@ -3234,6 +3285,7 @@ router.get('/stats-overview', async (req, res) => {
       // A) Single-match computations
       const runs = battingStats?.runs || 0;
       const balls = battingStats?.balls || 0;
+      const isNotOut = !!battingStats?.notOut;
       const sr = calcStrikeRate(runs, balls);
 
       const runsGiven = bowlingStats?.runsGiven || 0;
@@ -3341,6 +3393,8 @@ router.get('/stats-overview', async (req, res) => {
       // B1) Count matches per player
       if (!matchCountMap[pId]) matchCountMap[pId] = 0;
       matchCountMap[pId] += 1;
+      if (!notOutCountMap[pId]) notOutCountMap[pId] = 0;
+      if (isNotOut) notOutCountMap[pId] += 1;
 
       // B2) Track total balls bowled per player
       if (!totalBallsBowledMap[pId]) totalBallsBowledMap[pId] = 0;
@@ -3625,8 +3679,9 @@ router.get('/stats-overview', async (req, res) => {
     // Top 5 Best Batting Average
     const averageArray = Object.entries(matchCountMap).map(([pid, matchCount]) => {
       const runs = totalRunsMap[pid] || 0;
-      // Calculate average as runs per match (since we don't track dismissals)
-      const avg = matchCount > 0 ? (runs / matchCount) : 0;
+      const notOutInnings = notOutCountMap[pid] || 0;
+      const dismissals = countDismissals(matchCount, notOutInnings);
+      const avg = matchCount > 0 ? battingAverageFromTotals(runs, matchCount, notOutInnings) : 0;
       return {
         playerId: pid,
         playerName: playerInfoMap[pid]?.playerName || 'Unknown Player',
@@ -3634,6 +3689,8 @@ router.get('/stats-overview', async (req, res) => {
         profilePicture: playerInfoMap[pid]?.profilePicture ?? null,
         teamName: playerInfoMap[pid]?.teamName || 'Unknown Team',
         matches: matchCount,
+        notOutInnings,
+        dismissals,
         totalRuns: runs,
         average: avg,
       };
@@ -3796,6 +3853,7 @@ router.get('/player-details/:playerId', async (req, res) => {
     let totalBallsBowled = 0;
     let momCount = 0;
     let matchCount = stats.length;
+    let notOutInnings = 0;
     let halfCenturyCount = 0;
     let centuryCount = 0;
     let fourWicketHaulCount = 0;
@@ -3823,6 +3881,7 @@ router.get('/player-details/:playerId', async (req, res) => {
     const matchHistory = stats.map((stat, index) => {
       const runs = stat.battingStats?.runs || 0;
       const balls = stat.battingStats?.balls || 0;
+      const isNotOut = !!stat.battingStats?.notOut;
       const wickets = stat.bowlingStats?.wickets || 0;
       const runsGiven = stat.bowlingStats?.runsGiven || 0;
       const ballsBowled = stat.bowlingStats?.ballsBowled || 0;
@@ -3830,6 +3889,7 @@ router.get('/player-details/:playerId', async (req, res) => {
       // Add to totals
       totalRuns += runs;
       totalBalls += balls;
+      if (isNotOut) notOutInnings += 1;
       totalWickets += wickets;
       totalRunsGiven += runsGiven;
       totalBallsBowled += ballsBowled;
@@ -3858,6 +3918,7 @@ router.get('/player-details/:playerId', async (req, res) => {
         opponentTeam: stat.opponentUserId?.teamName || 'Unknown Team',
         runs: runs,
         balls: balls,
+        notOut: isNotOut,
         wickets: wickets,
         runsGiven: runsGiven,
         ballsBowled: ballsBowled,
@@ -3867,7 +3928,8 @@ router.get('/player-details/:playerId', async (req, res) => {
     });
 
     // Calculate averages
-    const average = matchCount > 0 ? totalRuns / matchCount : 0;
+    const dismissals = countDismissals(matchCount, notOutInnings);
+    const average = matchCount > 0 ? battingAverageFromTotals(totalRuns, matchCount, notOutInnings) : 0;
     const strikeRate = calcStrikeRate(totalRuns, totalBalls);
     const economy = calcEconomy(totalRunsGiven, totalBallsBowled, totalWickets);
     const bowlingStrikeRate = calcBowlingStrikeRate(totalBallsBowled, totalWickets);
@@ -3888,6 +3950,8 @@ router.get('/player-details/:playerId', async (req, res) => {
       bowlingStrikeRate: parseFloat(bowlingStrikeRate.toFixed(1)),
       momCount: momCount,
       matchesPlayed: matchCount,
+      notOutInnings,
+      dismissals,
       matchHistory: matchHistory,
       halfCenturies: halfCenturyCount,
       centuries: centuryCount,

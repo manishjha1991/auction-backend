@@ -339,6 +339,7 @@ async function buildCplCareerPlayerSummary() {
             totalRuns: 0,
             totalBalls: 0,
             innings: 0,
+            notOutInnings: 0,
             totalFifties: 0,
             totalHundreds: 0,
             highestScore: 0,
@@ -360,6 +361,7 @@ async function buildCplCareerPlayerSummary() {
         agg.totalBallsBowled += ballsBowled;
         agg.totalWickets += wickets;
         agg.innings += 1;
+        if (row?.battingStats?.notOut) agg.notOutInnings += 1;
         if (ballsBowled > 0 || runsGiven > 0 || wickets > 0) agg.bowlingInnings += 1;
 
         if (runs >= 100) agg.totalHundreds += 1;
@@ -382,7 +384,8 @@ async function buildCplCareerPlayerSummary() {
 
   const rows = Array.from(players.values()).map((p) => {
     const strikeRate = safeDiv(p.totalRuns * 100, p.totalBalls);
-    const battingAverage = safeDiv(p.totalRuns, p.innings);
+    const dismissals = Math.max(0, (p.innings || 0) - (p.notOutInnings || 0));
+    const battingAverage = safeDiv(p.totalRuns, dismissals);
     const bowlingAverage = p.totalWickets > 0 ? safeDiv(p.totalRunsGiven, p.totalWickets) : 0;
     const bestBowling =
       p.bestBowlingWkts > 0 || Number.isFinite(p.bestBowlingRuns)
@@ -403,6 +406,8 @@ async function buildCplCareerPlayerSummary() {
       battingAverage: Number(battingAverage.toFixed(2)),
       bowlingAverage: Number(bowlingAverage.toFixed(2)),
       innings: p.innings,
+      notOutInnings: p.notOutInnings || 0,
+      dismissals,
       bowlingInnings: p.bowlingInnings,
     };
   });

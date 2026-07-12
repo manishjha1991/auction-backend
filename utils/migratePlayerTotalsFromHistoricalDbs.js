@@ -78,12 +78,14 @@ async function calculatePlayerTotalsFromDatabase(dbName) {
         totalRuns: 0,
         totalWickets: 0,
         matchesPlayed: 0,
+        totalNotOutInnings: 0,
         playerName: null,
       };
     }
     playerTotalsMap[playerId].totalRuns += stat.battingStats?.runs || 0;
     playerTotalsMap[playerId].totalWickets += stat.bowlingStats?.wickets || 0;
     playerTotalsMap[playerId].matchesPlayed += 1;
+    if (stat.battingStats?.notOut) playerTotalsMap[playerId].totalNotOutInnings += 1;
   }
 
   const ids = Object.keys(playerTotalsMap)
@@ -115,12 +117,14 @@ function mergeIntoAggregated(aggregatedTotals, playerTotalsMap) {
         totalRuns: 0,
         totalWickets: 0,
         matchesPlayed: 0,
+        totalNotOutInnings: 0,
         sourcePlayerIds: [],
       };
     }
     aggregatedTotals[playerName].totalRuns += totals.totalRuns;
     aggregatedTotals[playerName].totalWickets += totals.totalWickets;
     aggregatedTotals[playerName].matchesPlayed += totals.matchesPlayed;
+    aggregatedTotals[playerName].totalNotOutInnings += totals.totalNotOutInnings || 0;
     aggregatedTotals[playerName].sourcePlayerIds.push(playerId);
   });
 }
@@ -160,6 +164,7 @@ async function countMatchPreview(aggregatedTotals) {
           totalRuns: totals.totalRuns,
           totalWickets: totals.totalWickets,
           matchesPlayed: totals.matchesPlayed,
+          totalNotOutInnings: totals.totalNotOutInnings || 0,
         });
       }
     } else {
@@ -206,7 +211,7 @@ async function executeMigratePlayerTotals() {
 
   await Player.updateMany(
     { isActive: true },
-    { $set: { totalRuns: 0, totalWickets: 0, matchesPlayed: 0 } },
+    { $set: { totalRuns: 0, totalWickets: 0, matchesPlayed: 0, totalNotOutInnings: 0 } },
   );
 
   let updated = 0;
@@ -223,6 +228,7 @@ async function executeMigratePlayerTotals() {
           totalRuns: totals.totalRuns,
           totalWickets: totals.totalWickets,
           matchesPlayed: totals.matchesPlayed,
+          totalNotOutInnings: totals.totalNotOutInnings || 0,
         });
       }
       continue;
@@ -233,6 +239,7 @@ async function executeMigratePlayerTotals() {
         totalRuns: totals.totalRuns,
         totalWickets: totals.totalWickets,
         matchesPlayed: totals.matchesPlayed,
+        totalNotOutInnings: totals.totalNotOutInnings || 0,
       },
     });
     updated += 1;

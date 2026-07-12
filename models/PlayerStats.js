@@ -47,6 +47,10 @@ const playerStatsSchema = new mongoose.Schema({
       type: Number,
       required: false,
     },
+    notOut: {
+      type: Boolean,
+      default: false,
+    },
   },
   bowlingStats: {
     runsGiven: {
