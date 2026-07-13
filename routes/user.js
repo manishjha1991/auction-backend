@@ -25,8 +25,30 @@ const MatchResult = require('../models/MatchResult');
 const Tournament = require('../models/Tournament');
 const multer = require('multer');
 const path = require('path');
+const authenticateJWT = require('../middleware/authJWT');
 // Configure Multer for file uploads
 const upload = multer({ dest: 'uploads/' });
+
+function sameId(a, b) {
+  return Boolean(a && b && a.toString() === b.toString());
+}
+
+function requireAdmin(req, res, next) {
+  if (req.authenticatedUser?.isAdmin) return next();
+  return res.status(403).json({ message: 'Admin privileges required.' });
+}
+
+function requireSelfOrAdmin(paramName) {
+  return (req, res, next) => {
+    if (
+      req.authenticatedUser?.isAdmin ||
+      sameId(req.authenticatedUser?._id, req.params[paramName])
+    ) {
+      return next();
+    }
+    return res.status(403).json({ message: 'You can only update your own team.' });
+  };
+}
 
 // Signup Route
 router.post('/signup', async (req, res) => {
@@ -784,7 +806,7 @@ router.get("/purses", async (req, res) => {
 
 //Edit Profile Api 
 
-router.put('/:id', upload.single('teamImage'), async (req, res) => {
+router.put('/:id', authenticateJWT, requireSelfOrAdmin('id'), upload.single('teamImage'), async (req, res) => {
   try {
     const userId = req.params.id;
     const { name, teamName, timezone, streamLink, abbreviation } = req.body;
@@ -884,7 +906,7 @@ router.put('/:id', upload.single('teamImage'), async (req, res) => {
 });
 
 // Admin route to update user timezone and streamLink
-router.put('/:userId/admin-update', async (req, res) => {
+router.put('/:userId/admin-update', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { timezone, streamLink, abbreviation } = req.body;
     const userId = req.params.userId;
@@ -925,7 +947,7 @@ router.put('/:userId/admin-update', async (req, res) => {
 });
 
 // Get all users for admin
-router.get('/all', async (req, res) => {
+router.get('/all', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const includeInactive = req.query.includeInactive === 'true';
     let query = User.find(
@@ -980,7 +1002,7 @@ router.get('/teams', async (req, res) => {
   }
 });
 
-router.put('/update-points/:userId', async (req, res) => {
+router.put('/update-points/:userId', authenticateJWT, requireAdmin, async (req, res) => {
   const { userId } = req.params;
   const { points, fairness } = req.body;
 
@@ -1014,7 +1036,7 @@ router.put('/update-points/:userId', async (req, res) => {
 });
 
 // PUT: Update fairness points, matches played, and points directly (Admin only)
-router.put('/update-fairness/:userId', async (req, res) => {
+router.put('/update-fairness/:userId', authenticateJWT, requireAdmin, async (req, res) => {
   const { userId } = req.params;
   const { points, matchesPlayed, fairnessPoint } = req.body;
 
@@ -1627,21 +1649,18 @@ router.get('/:userId/roster', async (req, res) => {
 });
 
 // PUT: set squad captain (team owner or admin; player must be on active roster)
-router.put('/:userId/captain', async (req, res) => {
+router.put('/:userId/captain', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { playerId, requesterUserId } = req.body || {};
-    if (!requesterUserId) {
-      return res.status(400).json({ message: 'requesterUserId is required' });
-    }
+    const { playerId } = req.body || {};
+    const requester = req.authenticatedUser;
 
-    const requester = await User.findById(requesterUserId).select('isAdmin').lean();
     const teamUser = await User.findById(userId);
     if (!teamUser) {
       return res.status(404).json({ message: 'Team not found' });
     }
 
-    const isOwner = String(requesterUserId) === String(userId);
+    const isOwner = sameId(requester._id, userId);
     if (!requester?.isAdmin && !isOwner) {
       return res.status(403).json({ message: 'Only the team owner or an admin can set captain' });
     }
@@ -1696,21 +1715,18 @@ function normalizeThemeHex(input) {
 }
 
 // PUT: squad card colours for Team Squads page (owner for self, or admin for any team)
-router.put('/:userId/squad-theme', async (req, res) => {
+router.put('/:userId/squad-theme', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { requesterUserId, themePrimary, themeSecondary } = req.body || {};
-    if (!requesterUserId) {
-      return res.status(400).json({ message: 'requesterUserId is required' });
-    }
+    const { themePrimary, themeSecondary } = req.body || {};
+    const requester = req.authenticatedUser;
 
-    const requester = await User.findById(requesterUserId).select('isAdmin').lean();
     const teamUser = await User.findById(userId);
     if (!teamUser) {
       return res.status(404).json({ message: 'Team not found' });
     }
 
-    const isOwner = String(requesterUserId) === String(userId);
+    const isOwner = sameId(requester._id, userId);
     if (!requester?.isAdmin && !isOwner) {
       return res.status(403).json({
         message: 'Only the team owner or an admin can change squad colours',
@@ -1747,7 +1763,7 @@ router.put('/:userId/squad-theme', async (req, res) => {
 });
 
 // Cleanup boughtPlayers arrays endpoint
-router.post('/cleanup-bought-players', async (req, res) => {
+router.post('/cleanup-bought-players', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     console.log('🔍 Starting boughtPlayers cleanup via API...\n');
 
