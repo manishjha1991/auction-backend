@@ -93,6 +93,14 @@ function emitQueuePersonal(io, userId, payload) {
   ids.forEach((sid) => io.to(sid).emit("bid_queue_personal", payload));
 }
 
+async function saveOrDeleteQueueDoc(doc) {
+  if (!doc.entries.length) {
+    await BidPlayerQueue.deleteOne({ _id: doc._id });
+    return;
+  }
+  await doc.save();
+}
+
 async function removeQueuedEntryById(playerId, subdocId, reason, io) {
   const doc = await BidPlayerQueue.findOne({ playerId });
   if (!doc) return;
@@ -102,7 +110,7 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
   const userId = entry.userId;
   const player = await Player.findById(playerId).select("name").lean();
   doc.entries.pull(subdocId);
-  await doc.save();
+  await saveOrDeleteQueueDoc(doc);
   await refundPurse(userId, refund);
   emitQueuePersonal(io, userId, {
     type: "removed",
@@ -112,6 +120,97 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
     refund,
   });
   await emitBidQueueUpdated(io, playerId);
+}
+
+/**
+ * Clear every queue row for a finished player.
+ *
+ * Queued rows still have their full max bid deducted from User.purse and must be
+ * refunded. Promoted active_proxy rows are represented by User.currentBids, so
+ * sale/exit code handles those amounts and this function only removes the row.
+ */
+async function clearPlayerQueue({ playerId, reason, io }) {
+  return withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) return { removed: 0, refunded: 0 };
+
+    const player = await Player.findById(playerId).select("name").lean();
+    const refundsByUser = new Map();
+    let removed = 0;
+
+    for (const entry of doc.entries) {
+      removed += 1;
+      if (entry.status !== "queued") continue;
+
+      const refund = Number(entry.lockedAmount) || 0;
+      if (refund <= 0) continue;
+
+      const key = entry.userId.toString();
+      refundsByUser.set(key, {
+        userId: entry.userId,
+        amount: (refundsByUser.get(key)?.amount || 0) + refund,
+      });
+    }
+
+    await BidPlayerQueue.deleteOne({ _id: doc._id });
+
+    let refunded = 0;
+    for (const { userId, amount } of refundsByUser.values()) {
+      await refundPurse(userId, amount);
+      refunded += amount;
+      emitQueuePersonal(io, userId, {
+        type: "removed",
+        reason,
+        playerId: playerId.toString(),
+        playerName: player?.name || "",
+        refund: amount,
+      });
+    }
+
+    await emitBidQueueUpdated(io, playerId, 0);
+    return { removed, refunded };
+  });
+}
+
+/**
+ * Clear rows for one user after they leave the active auction. Queued duplicates
+ * are refunded; active_proxy rows are only removed because currentBids was
+ * refunded by the caller.
+ */
+async function clearUserEntriesForPlayer({ playerId, userId, reason, io }) {
+  return withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) return { removed: 0, refunded: 0 };
+
+    const uid = userId.toString();
+    const entries = doc.entries.filter((entry) => entry.userId.toString() === uid);
+    if (!entries.length) return { removed: 0, refunded: 0 };
+
+    const player = await Player.findById(playerId).select("name").lean();
+    let refund = 0;
+    for (const entry of entries) {
+      if (entry.status === "queued") {
+        refund += Number(entry.lockedAmount) || 0;
+      }
+      doc.entries.pull(entry._id);
+    }
+
+    await saveOrDeleteQueueDoc(doc);
+    if (refund > 0) {
+      await refundPurse(userId, refund);
+    }
+
+    emitQueuePersonal(io, userId, {
+      type: "removed",
+      reason,
+      playerId: playerId.toString(),
+      playerName: player?.name || "",
+      refund,
+    });
+    await emitBidQueueUpdated(io, playerId);
+
+    return { removed: entries.length, refunded: refund };
+  });
 }
 
 async function pruneQueuedOverMax(playerId, io) {
@@ -321,7 +420,8 @@ async function tryPromoteNextQueued(playerId, io) {
         await revertPreparePromotedUser(head.userId, playerId, nextBid, lockedSnapshot);
         headEntry.status = "queued";
         await doc.save();
-        return;
+        await removeQueuedEntryById(playerId, head._id, "promotion_failed", io);
+        continue;
       }
 
       await emitBidQueueUpdated(io, playerId);
@@ -743,6 +843,8 @@ module.exports = {
   listMyQueueMemberships,
   isPromotedProxyBidder,
   resignActiveProxyToManual,
+  clearPlayerQueue,
+  clearUserEntriesForPlayer,
   afterBidPlaced,
   runProxyContinuation,
 };
