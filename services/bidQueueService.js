@@ -114,6 +114,34 @@ async function removeQueuedEntryById(playerId, subdocId, reason, io) {
   await emitBidQueueUpdated(io, playerId);
 }
 
+/**
+ * Refund reservations that never became active bids and remove all queue state
+ * once a player has been sold.
+ *
+ * The sold handler calls this only after Player.isSold is persisted. Taking the
+ * same lock as enqueueUser means an enqueue already in progress finishes before
+ * cleanup, while later enqueue attempts observe the sold player and are rejected.
+ */
+async function clearQueueAfterPlayerSold(playerId, io) {
+  return withPlayerBidLock(playerId, async () => {
+    const doc = await BidPlayerQueue.findOne({ playerId });
+    if (!doc) return;
+
+    const queuedEntryIds = doc.entries
+      .filter((entry) => entry.status === "queued")
+      .map((entry) => entry._id);
+
+    for (const entryId of queuedEntryIds) {
+      await removeQueuedEntryById(playerId, entryId, "player_sold", io);
+    }
+
+    // active_proxy reservations are represented by User.currentBids and are
+    // settled by the normal sold flow. Only their stale queue metadata remains.
+    await BidPlayerQueue.deleteOne({ playerId });
+    await emitBidQueueUpdated(io, playerId, 0);
+  });
+}
+
 async function pruneQueuedOverMax(playerId, io) {
   if (!isEnabled()) return;
   await withPlayerBidLock(playerId, async () => {
@@ -733,6 +761,7 @@ module.exports = {
   countQueued,
   getAllQueuedCountsByPlayer,
   getActiveBidderIds,
+  clearQueueAfterPlayerSold,
   pruneQueuedOverMax,
   tryPromoteNextQueued,
   triggerProxyAfterOpponentBid,

@@ -567,6 +567,10 @@ router.post("/bid/sold", async (req, res) => {
           }
         }
 
+        // Queued users had their full max bid deducted from purse but do not
+        // have a currentBids entry, so the normal loser-refund loop misses them.
+        await bidQueueService.clearQueueAfterPlayerSold(pid, req.app.get('io'));
+
         results.push({
           playerID: pid,
           status: "success",
