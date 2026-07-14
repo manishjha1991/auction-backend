@@ -15,6 +15,7 @@ const RetainedPlayer = require('../models/RetainedPlayer');
 const { invalidateCache } = require('../utils/cache');
 const { placeBidCore } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
+const { withPlayerBidLock } = require('../utils/bidQueueMutex');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
 
 // Place a bid
@@ -344,7 +345,8 @@ router.post("/bid/sold", async (req, res) => {
 
     // Process each player ID with the EXACT same logic as your single "sold" code
     for (const pid of idsToSell) {
-      try {
+      await withPlayerBidLock(pid, async () => {
+        try {
         // 1. Find the player
         const player = await Player.findById(pid);
         if (!player) {
@@ -353,7 +355,7 @@ router.post("/bid/sold", async (req, res) => {
             status: "error",
             message: "Player not found",
           });
-          continue;
+          return;
         }
 
         // 2. Check if the player is already sold
@@ -363,7 +365,7 @@ router.post("/bid/sold", async (req, res) => {
             status: "error",
             message: "Player is already sold.",
           });
-          continue;
+          return;
         }
 
         // 3. Fetch only active/in-progress bids to find the highest bid
@@ -378,7 +380,7 @@ router.post("/bid/sold", async (req, res) => {
             status: "error",
             message: "No active bids found for this player.",
           });
-          continue;
+          return;
         }
 
         // 4. Highest bid (regardless of active status)
@@ -405,7 +407,7 @@ router.post("/bid/sold", async (req, res) => {
             message:
               "User already has this player active sold on last click. Stop clicking sold, it's already sold.",
           });
-          continue;
+          return;
         }
 
         // 7. Otherwise, create a new UserPlayer doc
@@ -448,7 +450,7 @@ router.post("/bid/sold", async (req, res) => {
             status: "error",
             message: "Winning bidder not found.",
           });
-          continue;
+          return;
         }
 
         // 10. Ensure user has enough balance
@@ -464,7 +466,7 @@ router.post("/bid/sold", async (req, res) => {
             status: "error",
             message: "Insufficient purse balance for the winning bidder.",
           });
-          continue;
+          return;
         }
 
         // 11. Deduct the bid amount and update user's current bids
@@ -579,14 +581,15 @@ router.post("/bid/sold", async (req, res) => {
           highestBid,
           soldTo: highestBid.bidder,
         });
-      } catch (err) {
-        console.error(`Error selling player ${pid}:`, err);
-        results.push({
-          playerID: pid,
-          status: "error",
-          message: err.message || "Internal server error for this player.",
-        });
-      }
+        } catch (err) {
+          console.error(`Error selling player ${pid}:`, err);
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: err.message || "Internal server error for this player.",
+          });
+        }
+      });
     }
 
     // Emit socket event for player sold (affects purse values)
@@ -860,7 +863,8 @@ router.get('/players/:playerId/bidders', async (req, res) => {
 
 // Function: Sell a single player (used by cron)
 async function sellPlayer(playerId, io = null) {
-  try {
+  return withPlayerBidLock(playerId, async () => {
+    try {
     // Filter out invalid IDs & already‐sold players
     if (!mongoose.isValidObjectId(playerId)) {
       return {
@@ -1075,6 +1079,8 @@ async function sellPlayer(playerId, io = null) {
       throw new Error(`Player status verification failed for ${playerId}`);
     }
 
+    await bidQueueService.clearQueueAfterPlayerSold(playerId, io);
+
     return {
       playerID: playerId,
       status: 'success',
@@ -1090,7 +1096,8 @@ async function sellPlayer(playerId, io = null) {
       message: err.message || 'Internal error for this player.',
       errorType: err.name || 'Unknown'
     };
-  }
+    }
+  });
 }
 
 router.post('/players/:playerId?/soldcrone', async (req, res) => {
