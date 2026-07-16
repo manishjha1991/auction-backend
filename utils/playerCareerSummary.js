@@ -42,9 +42,11 @@ function emptyBlock() {
     battingAverage: 0,
     bowlingAverage: 0,
     bestBowling: '0/0',
+    totalHattricks: 0,
     centuries: [],
     fifties: [],
     bestBowlingSpells: [],
+    hattrickSpells: [],
   };
 }
 
@@ -94,6 +96,12 @@ function battingMilestoneDedupeKey(c) {
 function bowlingSpellDedupeKey(b) {
   const dk = inningsDateKey(b.date);
   const opp = normOpp(b.opponentTeam);
+  return `${Number(b.wickets)}|${Number(b.runsGiven)}|${Number(b.ballsBowled)}|${opp}|${dk}|${b.isHattrick ? 1 : 0}`;
+}
+
+function hattrickSpellDedupeKey(b) {
+  const dk = inningsDateKey(b.date);
+  const opp = normOpp(b.opponentTeam);
   return `${Number(b.wickets)}|${Number(b.runsGiven)}|${Number(b.ballsBowled)}|${opp}|${dk}`;
 }
 
@@ -121,14 +129,28 @@ function dedupeBowlingSpells(items) {
   return out;
 }
 
+function dedupeHattrickSpells(items) {
+  const seen = new Set();
+  const out = [];
+  for (const b of items || []) {
+    const key = hattrickSpellDedupeKey(b);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(b);
+  }
+  return out;
+}
+
 function finalizeBlock(block) {
   const out = { ...block };
   let centuries = dedupeBattingMilestones(out.centuries || []);
   let fifties = dedupeBattingMilestones(out.fifties || []);
   let bestBowlingSpells = dedupeBowlingSpells(out.bestBowlingSpells || []);
+  let hattrickSpells = dedupeHattrickSpells(out.hattrickSpells || []);
 
   out.totalHundreds = centuries.length;
   out.totalFifties = fifties.length;
+  out.totalHattricks = hattrickSpells.length;
 
   out.notOutInnings = Number(out.notOutInnings) || 0;
   out.dismissals = deriveDismissals(out.innings, out.notOutInnings);
@@ -138,6 +160,7 @@ function finalizeBlock(block) {
   out.centuries = [...centuries].sort(sortCenturies).slice(0, MAX_DETAILS);
   out.fifties = [...fifties].sort(sortCenturies).slice(0, MAX_DETAILS);
   out.bestBowlingSpells = [...bestBowlingSpells].sort(sortBowling).slice(0, MAX_DETAILS);
+  out.hattrickSpells = [...hattrickSpells].sort(sortBowling).slice(0, MAX_DETAILS);
   const best = out.bestBowlingSpells[0];
   out.bestBowling = best ? `${best.wickets}/${best.runsGiven}` : '0/0';
   return out;
@@ -152,6 +175,7 @@ function computeLiveBlockFromStats(statsDocs, opponentById) {
     const wickets = Number(stat?.bowlingStats?.wickets) || 0;
     const runsGiven = Number(stat?.bowlingStats?.runsGiven) || 0;
     const ballsBowled = Number(stat?.bowlingStats?.ballsBowled) || 0;
+    const isHattrick = !!stat?.bowlingStats?.isHattrick && wickets >= 3;
     const opponentTeam = opponentById.get(String(stat?.opponentUserId || '')) || 'Unknown';
     const date = stat?.createdAt || null;
 
@@ -173,7 +197,10 @@ function computeLiveBlockFromStats(statsDocs, opponentById) {
       block.fifties.push({ runs, balls, opponentTeam, date });
     }
     if (wickets > 0 || runsGiven > 0 || ballsBowled > 0) {
-      block.bestBowlingSpells.push({ wickets, runsGiven, ballsBowled, opponentTeam, date });
+      block.bestBowlingSpells.push({ wickets, runsGiven, ballsBowled, opponentTeam, date, isHattrick });
+    }
+    if (isHattrick) {
+      block.hattrickSpells.push({ wickets, runsGiven, ballsBowled, opponentTeam, date });
     }
   }
   return finalizeBlock(block);
@@ -198,6 +225,7 @@ function mergeBlocks(historical, live) {
     centuries: [...(h.centuries || []), ...(l.centuries || [])],
     fifties: [...(h.fifties || []), ...(l.fifties || [])],
     bestBowlingSpells: [...(h.bestBowlingSpells || []), ...(l.bestBowlingSpells || [])],
+    hattrickSpells: [...(h.hattrickSpells || []), ...(l.hattrickSpells || [])],
   };
   return finalizeBlock(merged);
 }
@@ -265,10 +293,12 @@ function reconcileCareerTotalsForApi(metricsBlock) {
   const centuriesD = dedupeBattingMilestones(m.centuries || []);
   const fiftiesD = dedupeBattingMilestones(m.fifties || []);
   const spellsD = dedupeBowlingSpells(m.bestBowlingSpells || []);
+  const hattricksD = dedupeHattrickSpells(m.hattrickSpells || []);
 
   const centuriesSorted = [...centuriesD].sort(sortCenturies);
   const fiftiesSorted = [...fiftiesD].sort(sortCenturies);
   const spellsSorted = [...spellsD].sort(sortBowling).slice(0, MAX_DETAILS);
+  const hattricksSorted = [...hattricksD].sort(sortBowling).slice(0, MAX_DETAILS);
 
   let totalHundreds = m.totalHundreds ?? 0;
   let totalFifties = m.totalFifties ?? 0;
@@ -283,6 +313,13 @@ function reconcileCareerTotalsForApi(metricsBlock) {
     totalFifties = Math.max(totalFifties, fiftiesSorted.length);
   }
 
+  let totalHattricks = m.totalHattricks ?? 0;
+  if (hattricksSorted.length < MAX_DETAILS) {
+    totalHattricks = hattricksSorted.length;
+  } else {
+    totalHattricks = Math.max(totalHattricks, hattricksSorted.length);
+  }
+
   const best = spellsSorted[0];
   const bestBowling = best ? `${best.wickets}/${best.runsGiven}` : m.bestBowling || '0/0';
 
@@ -290,9 +327,11 @@ function reconcileCareerTotalsForApi(metricsBlock) {
     ...m,
     totalHundreds,
     totalFifties,
+    totalHattricks,
     centuries: centuriesSorted,
     fifties: fiftiesSorted,
     bestBowlingSpells: spellsSorted,
+    hattrickSpells: hattricksSorted,
     bestBowling,
   };
 }
@@ -317,6 +356,7 @@ async function syncPlayerRankingsFromCareerTotal(playerId, totalBlock) {
       totalRunsGiven: Number(t.totalRunsGiven) || 0,
       totalBallsBowled: Number(t.totalBallsBowled) || 0,
       totalWickets: Number(t.totalWickets) || 0,
+      totalHattricks: Number(t.totalHattricks) || 0,
       matchesPlayed: Number(t.innings) || 0,
       totalNotOutInnings: Number(t.notOutInnings) || 0,
       momCount,
@@ -514,6 +554,7 @@ function mapCareerSummaryLeanToApiPlayer(r) {
     highestScore: t.highestScore || 0,
     totalWickets: t.totalWickets || 0,
     bestBowling: t.bestBowling || '0/0',
+    totalHattricks: t.totalHattricks || 0,
     battingStrikeRate: t.battingStrikeRate || 0,
     battingAverage: t.battingAverage || 0,
     bowlingAverage: t.bowlingAverage || 0,
@@ -524,6 +565,7 @@ function mapCareerSummaryLeanToApiPlayer(r) {
     centuries: t.centuries || [],
     fifties: t.fifties || [],
     bestBowlingSpells: t.bestBowlingSpells || [],
+    hattrickSpells: t.hattrickSpells || [],
   };
 }
 
@@ -539,6 +581,7 @@ function emptyCareerApiPlayerFromPlayer(playerLean) {
     highestScore: 0,
     totalWickets: 0,
     bestBowling: '0/0',
+    totalHattricks: 0,
     battingStrikeRate: 0,
     battingAverage: 0,
     bowlingAverage: 0,
@@ -549,6 +592,7 @@ function emptyCareerApiPlayerFromPlayer(playerLean) {
     centuries: [],
     fifties: [],
     bestBowlingSpells: [],
+    hattrickSpells: [],
   };
 }
 

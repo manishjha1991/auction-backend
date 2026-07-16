@@ -498,12 +498,35 @@ router.get('/feed', async (_req, res) => {
       
       const runs = s.battingStats?.runs || 0;
       const wickets = s.bowlingStats?.wickets || 0;
+      const runsGiven = s.bowlingStats?.runsGiven || 0;
       const ballsBowled = s.bowlingStats?.ballsBowled || 0;
       const [player, user, opp] = await Promise.all([
         Player.findById(s.playerId).select('name type').lean(),
         User.findById(s.userId._id || s.userId).select('teamName').lean(),
         s.opponentUserId ? User.findById(s.opponentUserId).select('teamName').lean() : Promise.resolve(null),
       ]);
+
+      // Hat-trick first (explicit milestone)
+      if (s.bowlingStats?.isHattrick && wickets >= 3) {
+        const figure = `${wickets}/${runsGiven}`;
+        const hattrickPhrases = [
+          `🎩 ${player?.name} bags a HAT-TRICK vs ${opp?.teamName || 'opposition'}! ${figure}`,
+          `🔥 HAT-TRICK HERO! ${player?.name} - three in a row (${figure})!`,
+          `⚡ ${player?.name} - HAT-TRICK ALERT! ${figure} against ${opp?.teamName || 'opposition'}!`,
+          `🎯 ${player?.name} completes a dream HAT-TRICK - ${figure}!`,
+          `🏆 ${player?.name} joins the hat-trick club with ${figure}!`,
+        ];
+        news.push({
+          id: s._id,
+          kind: 'stats',
+          status: 'hattrick',
+          title: pickVariant(player?.name + figure + 'ht', hattrickPhrases),
+          body: `🎩 HAT-TRICK! ${player?.name} for ${user?.teamName} against ${opp?.teamName || 'opposition'} - bowling figures ${figure}!`,
+          isBreaking: true,
+          timestamp: s.createdAt,
+        });
+        continue;
+      }
 
       // All-round performance
       if (runs >= 20 && wickets >= 3) {

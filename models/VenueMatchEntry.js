@@ -29,6 +29,7 @@ const bowlingBlock = new mongoose.Schema(
     wickets: { type: Number, default: 0 },
     runsGiven: { type: Number, default: 0 },
     ballsBowled: { type: Number, default: 0 },
+    isHattrick: { type: Boolean, default: false },
   },
   { _id: false }
 );

@@ -17,6 +17,18 @@ const bowlingSpellSchema = new mongoose.Schema(
     ballsBowled: { type: Number, default: 0 },
     opponentTeam: { type: String, default: '' },
     date: { type: Date, default: null },
+    isHattrick: { type: Boolean, default: false },
+  },
+  { _id: false },
+);
+
+const hattrickSpellSchema = new mongoose.Schema(
+  {
+    wickets: { type: Number, default: 0 },
+    runsGiven: { type: Number, default: 0 },
+    ballsBowled: { type: Number, default: 0 },
+    opponentTeam: { type: String, default: '' },
+    date: { type: Date, default: null },
   },
   { _id: false },
 );
@@ -39,9 +51,11 @@ const metricsBlockSchema = new mongoose.Schema(
     battingAverage: { type: Number, default: 0 },
     bowlingAverage: { type: Number, default: 0 },
     bestBowling: { type: String, default: '0/0' },
+    totalHattricks: { type: Number, default: 0 },
     centuries: { type: [inningsMilestoneSchema], default: [] },
     fifties: { type: [inningsMilestoneSchema], default: [] },
     bestBowlingSpells: { type: [bowlingSpellSchema], default: [] },
+    hattrickSpells: { type: [hattrickSpellSchema], default: [] },
   },
   { _id: false },
 );

@@ -67,7 +67,8 @@ const summarizeRoleFocus = (player) => {
   return 'Squad Player';
 };
 
-const buildRecentHighlight = (runs, wickets) => {
+const buildRecentHighlight = (runs, wickets, isHattrick = false) => {
+  if (isHattrick) return 'Hat-trick hero';
   if (runs >= 50) return 'Match-winning knock';
   if (runs >= 35) return 'Anchor innings';
   if (wickets >= 4) return 'Devastating spell';
@@ -204,7 +205,11 @@ const computeInsightPayload = (player, ownerTeam, stats) => {
       const runs = stat.battingStats?.runs || 0;
       const balls = stat.battingStats?.balls || 0;
       const wickets = stat.bowlingStats?.wickets || 0;
-      const highlight = buildRecentHighlight(runs, wickets);
+      const highlight = buildRecentHighlight(
+        runs,
+        wickets,
+        !!stat.bowlingStats?.isHattrick && wickets >= 3
+      );
       const opponent =
         stat.opponentUserId?.teamName ||
         (stat.opponentUserId?.team ? stat.opponentUserId.team : 'Unknown Team');
@@ -460,6 +465,7 @@ const applyPlayerStatDelta = async (playerId, delta = {}) => {
     mom = 0,
     matches = 0,
     notOut = 0,
+    hattricks = 0,
   } = delta;
 
   const inc = {};
@@ -474,6 +480,7 @@ const applyPlayerStatDelta = async (playerId, delta = {}) => {
   if (mom !== undefined && mom !== null && mom !== 0) inc.momCount = mom;
   if (matches !== undefined && matches !== null && matches !== 0) inc.matchesPlayed = matches;
   if (notOut !== undefined && notOut !== null && notOut !== 0) inc.totalNotOutInnings = notOut;
+  if (hattricks !== undefined && hattricks !== null && hattricks !== 0) inc.totalHattricks = hattricks;
 
   if (!Object.keys(inc).length) {
     console.log('No stat deltas to apply for player:', playerId);
@@ -491,6 +498,27 @@ const applyPlayerStatDelta = async (playerId, delta = {}) => {
     console.error('Failed to apply stat delta', { playerId, delta, error: error.message, stack: error.stack });
     throw error; // Re-throw to ensure caller knows about the failure
   }
+};
+
+const sanitizeBattingStats = (battingStats = {}) => ({
+  runs: Math.max(0, Number(battingStats?.runs) || 0),
+  balls: Math.max(0, Number(battingStats?.balls) || 0),
+  notOut: !!battingStats?.notOut,
+});
+
+/** Normalize bowling payload; hat-trick only counts when wickets >= 3. */
+const sanitizeBowlingStats = (bowlingStats = {}, wicketsTaken) => {
+  const wickets =
+    wicketsTaken !== undefined && wicketsTaken !== null
+      ? Math.max(0, Number(wicketsTaken) || 0)
+      : Math.max(0, Number(bowlingStats?.wickets) || 0);
+  const isHattrick = !!bowlingStats?.isHattrick && wickets >= 3;
+  return {
+    runsGiven: Math.max(0, Number(bowlingStats?.runsGiven) || 0),
+    ballsBowled: Math.max(0, Number(bowlingStats?.ballsBowled) || 0),
+    wickets,
+    isHattrick,
+  };
 };
 
 const syncCareerAndRankingAfterStatChange = async (playerId, deltaTotals, contextLabel = 'stats-save') => {
@@ -567,6 +595,7 @@ const upsertVenueMatchEntry = async (
             runsGiven: playerStatsDoc.bowlingStats?.runsGiven || 0,
             ballsBowled: playerStatsDoc.bowlingStats?.ballsBowled || 0,
             wickets: playerStatsDoc.bowlingStats?.wickets || 0,
+            isHattrick: !!playerStatsDoc.bowlingStats?.isHattrick,
           },
           sourcePlayerStatsId: playerStatsDoc._id,
           teamInningsOrder:
@@ -709,7 +738,12 @@ const savePlayerStatsEntry = async (payload = {}) => {
         ? wicketsTaken
         : bowlingStats?.wickets || 0,
     mom: isMom ? 1 : 0,
+    hattricks: 0,
   };
+  const resolvedWickets = Math.max(0, Number(newTotals.wickets) || 0);
+  newTotals.wickets = resolvedWickets;
+  newTotals.hattricks =
+    !!bowlingStats?.isHattrick && resolvedWickets >= 3 ? 1 : 0;
 
   const deltaTotals = {
     runs: 0,
@@ -720,6 +754,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     mom: 0,
     matches: 0,
     notOut: 0,
+    hattricks: 0,
   };
 
   if (existingStats) {
@@ -733,6 +768,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
       ballsBowled: existingStats.bowlingStats?.ballsBowled || 0,
       wickets: existingStats.bowlingStats?.wickets || 0,
       mom: existingStats.isMom ? 1 : 0,
+      hattricks: existingStats.bowlingStats?.isHattrick ? 1 : 0,
     };
     deltaTotals.runs = newTotals.runs - previousTotals.runs;
     deltaTotals.balls = newTotals.balls - previousTotals.balls;
@@ -741,6 +777,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
     deltaTotals.wickets = newTotals.wickets - previousTotals.wickets;
     deltaTotals.mom = newTotals.mom - previousTotals.mom;
     deltaTotals.notOut = newTotals.notOut - previousTotals.notOut;
+    deltaTotals.hattricks = newTotals.hattricks - previousTotals.hattricks;
 
     existingStats.battingStats = {
       runs: battingStats?.runs || 0,
@@ -751,7 +788,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
     existingStats.bowlingStats = {
       runsGiven: bowlingStats?.runsGiven || 0,
       ballsBowled: bowlingStats?.ballsBowled || 0,
-      wickets: wicketsTaken !== undefined && wicketsTaken !== null ? wicketsTaken : (bowlingStats?.wickets || 0),
+      wickets: resolvedWickets,
+      isHattrick: !!newTotals.hattricks,
     };
 
     existingStats.isMom = !!isMom;
@@ -831,6 +869,7 @@ const savePlayerStatsEntry = async (payload = {}) => {
   deltaTotals.mom = newTotals.mom;
   deltaTotals.matches = 1;
   deltaTotals.notOut = newTotals.notOut;
+  deltaTotals.hattricks = newTotals.hattricks;
 
   const newStats = new PlayerStats({
     playerId,
@@ -847,7 +886,8 @@ const savePlayerStatsEntry = async (payload = {}) => {
     bowlingStats: {
       runsGiven: bowlingStats?.runsGiven || 0,
       ballsBowled: bowlingStats?.ballsBowled || 0,
-      wickets: wicketsTaken !== undefined && wicketsTaken !== null ? wicketsTaken : (bowlingStats?.wickets || 0),
+      wickets: resolvedWickets,
+      isHattrick: !!newTotals.hattricks,
     },
     isMom: !!isMom,
     metadata: {
@@ -1054,6 +1094,7 @@ router.get('/list', async (req, res) => {
         overs: convertBallsToOvers(stat.bowlingStats?.ballsBowled),
         wickets: stat.bowlingStats?.wickets || 0,
         runs: stat.bowlingStats?.runsGiven || 0,
+        isHattrick: !!stat.bowlingStats?.isHattrick,
         mom: stat.isMom || false,
         // Use pre-fetched opponent map (no database query)
         against: stat.opponentUserId 
@@ -2729,6 +2770,7 @@ router.post('/clear-cache', async (req, res) => {
             totalBalls: 0,
             totalBallsBowled: 0,
             momCount: 0,
+            totalHattricks: 0,
           },
         }
       );
@@ -2905,6 +2947,7 @@ router.post('/bulk-store', async (req, res) => {
         ballsBowled: bowlStats?.ballsBowled || 0,
         wickets: bowlStats?.wickets || 0,
         mom: entry.isMom ? 1 : 0,
+        hattricks: bowlStats?.isHattrick ? 1 : 0,
       };
 
       // Initialize delta totals
@@ -2917,6 +2960,7 @@ router.post('/bulk-store', async (req, res) => {
         mom: 0,
         matches: 0,
         notOut: 0,
+        hattricks: 0,
       };
 
       // Decision rules (in this priority):
@@ -2933,6 +2977,7 @@ router.post('/bulk-store', async (req, res) => {
           ballsBowled: statDoc.bowlingStats?.ballsBowled || 0,
           wickets: statDoc.bowlingStats?.wickets || 0,
           mom: statDoc.isMom ? 1 : 0,
+          hattricks: statDoc.bowlingStats?.isHattrick ? 1 : 0,
         };
         
         deltaTotals.runs = newTotals.runs - previousTotals.runs;
@@ -2942,6 +2987,7 @@ router.post('/bulk-store', async (req, res) => {
         deltaTotals.wickets = newTotals.wickets - previousTotals.wickets;
         deltaTotals.mom = newTotals.mom - previousTotals.mom;
         deltaTotals.notOut = newTotals.notOut - previousTotals.notOut;
+        deltaTotals.hattricks = newTotals.hattricks - previousTotals.hattricks;
 
         // Update existing entry (regular match)
         statDoc.opponentUserId = resolvedOpponentUserId || statDoc.opponentUserId || null;
@@ -2998,6 +3044,7 @@ router.post('/bulk-store', async (req, res) => {
         deltaTotals.mom = newTotals.mom;
         deltaTotals.matches = 1;
         deltaTotals.notOut = newTotals.notOut;
+        deltaTotals.hattricks = newTotals.hattricks;
 
         statDoc = new PlayerStats({
           playerId: entry.playerId,
@@ -3258,9 +3305,10 @@ router.get('/stats-overview', async (req, res) => {
     const totalBallsBowledMap = {};
     const momCountMap = {};
 
-    // 4) Arrays for 5-wicket hauls, 4-wicket hauls, centuries, half-centuries
+    // 4) Arrays for 5-wicket hauls, 4-wicket hauls, hat-tricks, centuries, half-centuries
     const highestFiveWicketHauls = [];
     const highestFourWicketHauls = [];
+    const hattricks = [];
     const centuries = [];
     const halfCenturies = [];
 
@@ -3442,6 +3490,22 @@ router.get('/stats-overview', async (req, res) => {
           date: createdAt,
         });
       }
+      // Hat-tricks => explicit flag (three consecutive wickets)
+      if (bowlingStats?.isHattrick && wickets >= 3) {
+        hattricks.push({
+          playerId: pid,
+          playerName,
+          playerType,
+          profilePicture,
+          teamName,
+          opponentTeam: opponentName,
+          wickets,
+          runsGiven,
+          ballsBowled,
+          bowlingFigure: `${wickets}/${runsGiven}`,
+          date: createdAt,
+        });
+      }
       // Centuries => if runs >= 100
       if (runs >= 100) {
         centuries.push({
@@ -3483,6 +3547,12 @@ router.get('/stats-overview', async (req, res) => {
     highestFourWicketHauls.sort((a, b) => {
       if (b.wickets !== a.wickets) return b.wickets - a.wickets;
       return a.runsGiven - b.runsGiven; // Lower runs given is better
+    });
+
+    // Hat-tricks: sort by wickets (desc), then runs given (asc)
+    hattricks.sort((a, b) => {
+      if (b.wickets !== a.wickets) return b.wickets - a.wickets;
+      return a.runsGiven - b.runsGiven;
     });
 
     // Centuries: sort by runs (descending), then by balls (ascending for better strike rate)
@@ -3585,9 +3655,10 @@ router.get('/stats-overview', async (req, res) => {
     runArray.sort((a, b) => b.runs - a.runs);
     const top5RunScorers = runArray.slice(0, 5);
 
-    // Count 4-wicket and 5-wicket hauls per player for top wicket takers
+    // Count 4-wicket, 5-wicket, and hat-trick hauls per player for top wicket takers
     const fourWicketCountMap = {};
     const fiveWicketCountMap = {};
+    const hattrickCountMap = {};
     highestFourWicketHauls.forEach(h4 => {
       const pid = h4.playerId;
       if (pid) {
@@ -3598,6 +3669,12 @@ router.get('/stats-overview', async (req, res) => {
       const pid = h5.playerId;
       if (pid) {
         fiveWicketCountMap[pid] = (fiveWicketCountMap[pid] || 0) + 1;
+      }
+    });
+    hattricks.forEach(ht => {
+      const pid = ht.playerId;
+      if (pid) {
+        hattrickCountMap[pid] = (hattrickCountMap[pid] || 0) + 1;
       }
     });
 
@@ -3612,6 +3689,7 @@ router.get('/stats-overview', async (req, res) => {
         wickets,
         fourWicketHauls: fourWicketCountMap[pid] || 0,
         fiveWicketHauls: fiveWicketCountMap[pid] || 0,
+        hattricks: hattrickCountMap[pid] || 0,
       };
     });
     wicketArray.sort((a, b) => b.wickets - a.wickets);
@@ -3780,6 +3858,7 @@ router.get('/stats-overview', async (req, res) => {
       },
       highestFiveWicketHauls,
       highestFourWicketHauls,
+      hattricks,
       centuries,
       halfCenturies,
 
@@ -3858,6 +3937,7 @@ router.get('/player-details/:playerId', async (req, res) => {
     let centuryCount = 0;
     let fourWicketHaulCount = 0;
     let fiveWicketHaulCount = 0;
+    let hattrickCount = 0;
 
     // Helper functions
     const calcStrikeRate = (runs, balls) => {
@@ -3908,6 +3988,9 @@ router.get('/player-details/:playerId', async (req, res) => {
       } else if (wickets === 4) {
         fourWicketHaulCount++;
       }
+      if (stat.bowlingStats?.isHattrick && wickets >= 3) {
+        hattrickCount++;
+      }
 
       const economy = ballsBowled > 0 ? (runsGiven / (ballsBowled / 6)) : null;
       const hasValidEconomy = ballsBowled > 0;
@@ -3922,6 +4005,8 @@ router.get('/player-details/:playerId', async (req, res) => {
         wickets: wickets,
         runsGiven: runsGiven,
         ballsBowled: ballsBowled,
+        bowlingFigure: ballsBowled > 0 || wickets > 0 ? `${wickets}/${runsGiven}` : null,
+        isHattrick: !!(stat.bowlingStats?.isHattrick && wickets >= 3),
         economy: hasValidEconomy ? parseFloat(economy.toFixed(2)) : null,
         isMom: stat.isMom || false
       };
@@ -3956,7 +4041,8 @@ router.get('/player-details/:playerId', async (req, res) => {
       halfCenturies: halfCenturyCount,
       centuries: centuryCount,
       fourWicketHauls: fourWicketHaulCount,
-      fiveWicketHauls: fiveWicketHaulCount
+      fiveWicketHauls: fiveWicketHaulCount,
+      hattricks: hattrickCount
     };
 
     res.json(response);

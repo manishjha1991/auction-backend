@@ -348,6 +348,20 @@ async function fetchSeasonPlayerHighlights(conn) {
                   ],
                 },
               },
+              hattricks: {
+                $sum: {
+                  $cond: [
+                    {
+                      $and: [
+                        { $eq: ['$bowlingStats.isHattrick', true] },
+                        { $gte: [WICKETS_EXPR, 3] },
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
             },
           },
         ])
@@ -395,6 +409,7 @@ async function fetchSeasonPlayerHighlights(conn) {
     matches: Number(row.matches) || 0,
     fourWicketHauls: Number(row.fourWicketHauls) || 0,
     fiveWicketHauls: Number(row.fiveWicketHauls) || 0,
+    hattricks: Number(row.hattricks) || 0,
   }));
 
   /** @type {Record<string, { runs: number, wickets: number }>} */
@@ -449,6 +464,7 @@ async function fetchSeasonPlayerHighlights(conn) {
     const parts = [`${b.wickets} wickets`];
     if (b.fiveWicketHauls) parts.push(`${b.fiveWicketHauls}× 5w`);
     if (b.fourWicketHauls) parts.push(`${b.fourWicketHauls}× 4w`);
+    if (b.hattricks) parts.push(`${b.hattricks}× hat-trick`);
     if (econ != null) parts.push(`econ ${econ.toFixed(2)}`);
     if (b.mom) parts.push(`${b.mom}× MoM`);
     const nm = playerName.get(b.playerId) || `Player …${shortId(b.playerId)}`;
@@ -458,6 +474,7 @@ async function fetchSeasonPlayerHighlights(conn) {
       totalWickets: b.wickets,
       fourWicketHauls: b.fourWicketHauls,
       fiveWicketHauls: b.fiveWicketHauls,
+      hattricks: b.hattricks,
       economy: econ != null ? Number(econ.toFixed(3)) : null,
       momCount: b.mom,
       matchesPlayed: b.matches,

@@ -66,6 +66,11 @@ const playerStatsSchema = new mongoose.Schema({
       required: false,
       default: 0,
     },
+    /** Explicit flag — three consecutive wickets; not inferred from wickets === 3 */
+    isHattrick: {
+      type: Boolean,
+      default: false,
+    },
   },
   isMom: {
     type: Boolean,

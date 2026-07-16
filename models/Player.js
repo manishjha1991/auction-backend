@@ -27,6 +27,7 @@ const PlayerSchema = new mongoose.Schema({
     totalRunsGiven: { type: Number, default: 0 },
     totalBallsBowled: { type: Number, default: 0 },
     totalWickets: { type: Number, default: 0 },
+    totalHattricks: { type: Number, default: 0 },
     momCount: { type: Number, default: 0 },
     matchesPlayed: { type: Number, default: 0 },
     totalNotOutInnings: { type: Number, default: 0 },
