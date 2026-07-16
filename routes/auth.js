@@ -23,19 +23,23 @@ router.post('/signup', async (req, res) => {
 });
 
 router.post('/login', async (req, res) => {
-  console.log(req.body,"@@@@@@@@@@@@@@");
   const { email, password } = req.body;
-  console.log(email, password,"@@@@@@@@@@@@@@");
   try {
     const user = await User.findOne({ email }).includeInactive();
-    console.log(user,"#########");
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.isActive === false && !user.isAdmin) {
       return res.status(403).json({ error: 'Account deactivated. Contact admin.' });
     }
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
+    const sessionId = require('crypto').randomBytes(16).toString('hex');
+    user.activeSessionId = sessionId;
+    await user.save();
+    const token = jwt.sign(
+      { id: user._id, sessionId },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
     res.status(200).json({ token });
   } catch (err) {
     res.status(500).json({ error: err.message });
