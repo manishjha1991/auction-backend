@@ -32,8 +32,9 @@ const authenticateJWT = async (req, res, next) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Verify session ID matches (optional - can be removed if you want to allow multiple sessions)
-    if (user.activeSessionId && decoded.sessionId && user.activeSessionId !== decoded.sessionId) {
+    // Bind the token to the server-side login session. A valid signature alone
+    // must never be enough to impersonate another user.
+    if (!user.activeSessionId || !decoded.sessionId || user.activeSessionId !== decoded.sessionId) {
       return res.status(403).json({ 
         message: 'Session expired or invalid. Please login again.',
         requiresReauth: true 

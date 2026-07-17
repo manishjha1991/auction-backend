@@ -6,6 +6,7 @@ const router = express.Router();
 const { getClientIp } = require('../utils/network');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
+const authenticateJWT = require('../middleware/authJWT');
 // Request logging only in development (avoids logging sensitive body in prod)
 router.use((req, res, next) => {
   if (process.env.NODE_ENV !== 'production') console.log(`👤 ${req.method} ${req.path}`);
@@ -1627,21 +1628,18 @@ router.get('/:userId/roster', async (req, res) => {
 });
 
 // PUT: set squad captain (team owner or admin; player must be on active roster)
-router.put('/:userId/captain', async (req, res) => {
+router.put('/:userId/captain', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { playerId, requesterUserId } = req.body || {};
-    if (!requesterUserId) {
-      return res.status(400).json({ message: 'requesterUserId is required' });
-    }
+    const { playerId } = req.body || {};
+    const requester = req.authenticatedUser;
 
-    const requester = await User.findById(requesterUserId).select('isAdmin').lean();
     const teamUser = await User.findById(userId);
     if (!teamUser) {
       return res.status(404).json({ message: 'Team not found' });
     }
 
-    const isOwner = String(requesterUserId) === String(userId);
+    const isOwner = String(requester._id) === String(userId);
     if (!requester?.isAdmin && !isOwner) {
       return res.status(403).json({ message: 'Only the team owner or an admin can set captain' });
     }
@@ -1696,21 +1694,18 @@ function normalizeThemeHex(input) {
 }
 
 // PUT: squad card colours for Team Squads page (owner for self, or admin for any team)
-router.put('/:userId/squad-theme', async (req, res) => {
+router.put('/:userId/squad-theme', authenticateJWT, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { requesterUserId, themePrimary, themeSecondary } = req.body || {};
-    if (!requesterUserId) {
-      return res.status(400).json({ message: 'requesterUserId is required' });
-    }
+    const { themePrimary, themeSecondary } = req.body || {};
+    const requester = req.authenticatedUser;
 
-    const requester = await User.findById(requesterUserId).select('isAdmin').lean();
     const teamUser = await User.findById(userId);
     if (!teamUser) {
       return res.status(404).json({ message: 'Team not found' });
     }
 
-    const isOwner = String(requesterUserId) === String(userId);
+    const isOwner = String(requester._id) === String(userId);
     if (!requester?.isAdmin && !isOwner) {
       return res.status(403).json({
         message: 'Only the team owner or an admin can change squad colours',
