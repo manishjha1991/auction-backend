@@ -38,8 +38,35 @@ function mergeRecord(merged, dbName, row) {
   const k = dedupeKey(dbName, row.team1, row.team2, row.date);
   if (!k) return;
   const prev = merged.get(k);
-  if (!prev || row.priority < prev.priority) {
+  if (!prev) {
     merged.set(k, row);
+    return;
+  }
+
+  const siblingPrefix = `${k}\0`;
+  if (row.priority < prev.priority) {
+    for (const existingKey of merged.keys()) {
+      if (existingKey === k || existingKey.startsWith(siblingPrefix)) {
+        merged.delete(existingKey);
+      }
+    }
+    merged.set(k, row);
+    return;
+  }
+
+  if (row.priority > prev.priority) return;
+
+  // The same teams can legitimately play more than once on a calendar day
+  // (for example, a tournament group match followed by a knockout rematch).
+  // Keep distinct records from the selected source while still collapsing the
+  // same record if it is encountered more than once.
+  const sourceId = row.sourceId == null ? '' : String(row.sourceId);
+  const previousSourceId = prev.sourceId == null ? '' : String(prev.sourceId);
+  if (!sourceId || sourceId === previousSourceId) return;
+
+  const siblingKey = `${siblingPrefix}${row.source}\0${sourceId}`;
+  if (!merged.has(siblingKey)) {
+    merged.set(siblingKey, row);
   }
 }
 
@@ -114,6 +141,7 @@ async function loadMergedMatchesForDb(dbName) {
 
   fixtures.forEach((f) => {
     mergeRecord(merged, dbName, {
+      sourceId: f._id,
       team1: f.team1,
       team2: f.team2,
       date: f.createdAt,
@@ -132,6 +160,7 @@ async function loadMergedMatchesForDb(dbName) {
   mrs.forEach((m) => {
     if (!m.winner || m.winner === 'tie' || m.winner === 'no_result') return;
     mergeRecord(merged, dbName, {
+      sourceId: m._id,
       team1: m.team1,
       team2: m.team2,
       date: m.matchDate,
@@ -152,6 +181,7 @@ async function loadMergedMatchesForDb(dbName) {
 
   pfs.forEach((p) => {
     mergeRecord(merged, dbName, {
+      sourceId: p._id,
       team1: p.team1,
       team2: p.team2,
       date: p.date || p.createdAt,
@@ -174,6 +204,7 @@ async function loadMergedMatchesForDb(dbName) {
     (t.tournamentFixtures || []).forEach((fx) => {
       if (!fx.winner || norm(fx.winner) === 'tie' || norm(fx.winner) === 'no_result') return;
       mergeRecord(merged, dbName, {
+        sourceId: `${t._id}:${fx._id}`,
         team1: fx.team1,
         team2: fx.team2,
         date: fx.createdAt || t.startDate,
@@ -255,5 +286,7 @@ module.exports = {
   resolveCareerDbNames,
   aggregateCareerStatsForTeams,
   getCachedCareerStatsForTeams,
+  mergeRecord,
+  countForTeam,
   norm,
 };
