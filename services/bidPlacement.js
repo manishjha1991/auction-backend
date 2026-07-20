@@ -169,16 +169,26 @@ async function placeBidCore({
         }),
       ]);
 
-    const totalTypeCount = boughtPlayersOfThisType + currentBidPlayersOfThisType;
     const alreadyBiddingThisPlayer = user.currentBids.some(
       (bid) => bid.playerId.toString() === playerId
     );
+    const queuedSlots =
+      process.env.ENABLE_BID_QUEUE === "true"
+        ? await countQueuedSlotsForUser(user._id, playerId)
+        : {
+            totalQueued: 0,
+            byType: { Sapphire: 0, Gold: 0, Emerald: 0, Silver: 0 },
+            esQueued: 0,
+          };
+    const queuedOfThisType = queuedSlots.byType[player.type] || 0;
+    const totalTypeCount =
+      boughtPlayersOfThisType + currentBidPlayersOfThisType + queuedOfThisType;
 
     if (totalTypeCount >= typeLimit[player.type] && !alreadyBiddingThisPlayer) {
       return {
         ok: false,
         status: 400,
-        message: `You have already reached the maximum limit for ${player.type} players (limit: ${typeLimit[player.type]}). You have ${boughtPlayersOfThisType} bought ${player.type} player(s) (including ${retainedPlayersOfThisType} retained) + ${currentBidPlayersOfThisType} current bids = ${totalTypeCount} total.`,
+        message: `You have already reached the maximum limit for ${player.type} players (limit: ${typeLimit[player.type]}). You have ${boughtPlayersOfThisType} bought ${player.type} player(s) (including ${retainedPlayersOfThisType} retained) + ${currentBidPlayersOfThisType} current bids + ${queuedOfThisType} queued = ${totalTypeCount} total.`,
       };
     }
 
@@ -190,7 +200,7 @@ async function placeBidCore({
 
     if (
       ["Emerald", "Sapphire"].includes(player.type) &&
-      combinedESCount >= combinedESLimit &&
+      combinedESCount + queuedSlots.esQueued >= combinedESLimit &&
       !alreadyBiddingThisPlayer
     ) {
       return {
@@ -232,7 +242,10 @@ async function placeBidCore({
       const totalOwned = boughtPlayersOfThisType;
       const maxConcurrentBids = typeLimit[player.type] - totalOwned;
 
-      if (playersOfThisTypeInCurrentBids >= maxConcurrentBids && !alreadyBiddingThisPlayer) {
+      if (
+        playersOfThisTypeInCurrentBids + queuedOfThisType >= maxConcurrentBids &&
+        !alreadyBiddingThisPlayer
+      ) {
         return {
           ok: false,
           status: 400,
@@ -240,7 +253,10 @@ async function placeBidCore({
         };
       }
     } else {
-      if (user.currentBids.length >= 6 && !alreadyBiddingThisPlayer) {
+      if (
+        user.currentBids.length + queuedSlots.totalQueued >= 6 &&
+        !alreadyBiddingThisPlayer
+      ) {
         return {
           ok: false,
           status: 400,
