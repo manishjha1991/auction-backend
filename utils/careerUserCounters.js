@@ -21,7 +21,8 @@ function isPlaceholderTeamName(name) {
  * Apply career counters for one completed match (league fixture, playoff, or tournament fixture).
  * - First result: both teams +1 played, winner +1 wins.
  * - Winner correction: −1 wins old winner, +1 wins new winner; played unchanged.
- * - Same winner re-save: no-op.
+ * - Result removal: both teams −1 played, old winner −1 wins.
+ * - Same result re-save: no-op.
  *
  * @param {object} opts
  * @param {string} opts.team1
@@ -30,41 +31,63 @@ function isPlaceholderTeamName(name) {
  * @param {string|null|undefined} opts.oldWinnerName
  */
 async function applyCareerLeagueResult({ team1, team2, newWinnerName, oldWinnerName }) {
-  if (!team1 || !team2 || !newWinnerName) return;
+  if (!team1 || !team2) return;
   if (isPlaceholderTeamName(team1) || isPlaceholderTeamName(team2)) return;
 
-  const nw = norm(newWinnerName);
   const t1 = norm(team1);
   const t2 = norm(team2);
-  if (nw === 'tie' || nw === 'no_result' || nw === 'tbd') return;
-  if (nw !== t1 && nw !== t2) return;
+  const resolveWinner = (winnerName) => {
+    const winner = norm(winnerName);
+    if (winner === t1) return team1;
+    if (winner === t2) return team2;
+    return null;
+  };
+  const newWinner = resolveWinner(newWinnerName);
+  const oldWinner = resolveWinner(oldWinnerName);
 
-  const ow = oldWinnerName ? norm(oldWinnerName) : '';
+  if (newWinner === oldWinner) return;
 
   const incOpts = { includeInactive: true };
 
-  if (ow && ow !== nw) {
-    if (ow === t1 || ow === t2) {
-      const oldName = ow === t1 ? team1 : team2;
-      await User.findOneAndUpdate(
-        { teamName: oldName },
-        { $inc: { careerWins: -1 } },
-        incOpts
-      );
-    }
+  if (oldWinner) {
     await User.findOneAndUpdate(
-      { teamName: newWinnerName },
+      { teamName: oldWinner },
+      { $inc: { careerWins: -1 } },
+      incOpts
+    );
+  }
+
+  if (!oldWinner && newWinner) {
+    await User.findOneAndUpdate(
+      { teamName: team1 },
+      { $inc: { careerMatchesPlayed: 1 } },
+      incOpts
+    );
+    await User.findOneAndUpdate(
+      { teamName: team2 },
+      { $inc: { careerMatchesPlayed: 1 } },
+      incOpts
+    );
+  } else if (oldWinner && !newWinner) {
+    await User.findOneAndUpdate(
+      { teamName: team1 },
+      { $inc: { careerMatchesPlayed: -1 } },
+      incOpts
+    );
+    await User.findOneAndUpdate(
+      { teamName: team2 },
+      { $inc: { careerMatchesPlayed: -1 } },
+      incOpts
+    );
+  }
+
+  if (newWinner) {
+    await User.findOneAndUpdate(
+      { teamName: newWinner },
       { $inc: { careerWins: 1 } },
       incOpts
     );
-    return;
   }
-
-  if (ow === nw) return;
-
-  await User.findOneAndUpdate({ teamName: team1 }, { $inc: { careerMatchesPlayed: 1 } }, incOpts);
-  await User.findOneAndUpdate({ teamName: team2 }, { $inc: { careerMatchesPlayed: 1 } }, incOpts);
-  await User.findOneAndUpdate({ teamName: newWinnerName }, { $inc: { careerWins: 1 } }, incOpts);
 }
 
 module.exports = {

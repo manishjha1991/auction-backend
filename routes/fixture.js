@@ -510,6 +510,13 @@ router.post('/save', isAdmin, async (req, res) => {
     
     // 🚀 PERFORMANCE: Invalidate fixtures cache when fixture is saved
     invalidateCache('fixtures:');
+
+    applyCareerLeagueResult({
+      team1: fixture.team1,
+      team2: fixture.team2,
+      newWinnerName: fixture.winner,
+      oldWinnerName: oldWinnerBeforeSave,
+    }).catch((err) => console.error('Career counters:', err));
     
     // Automatically update points for both teams after fixture is saved
     if (fixture.winner) {
@@ -550,16 +557,6 @@ router.post('/save', isAdmin, async (req, res) => {
           headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
         }
 
-        const shouldBumpCareer =
-          !oldWinnerBeforeSave || oldWinnerBeforeSave !== fixture.winner;
-        if (shouldBumpCareer) {
-          applyCareerLeagueResult({
-            team1: fixture.team1,
-            team2: fixture.team2,
-            newWinnerName: fixture.winner,
-            oldWinnerName: oldWinnerBeforeSave || null,
-          }).catch((err) => console.error('Career counters:', err));
-        }
       } catch (pointsError) {
         console.error('Error updating points:', pointsError);
         // Don't fail the fixture save if points update fails
