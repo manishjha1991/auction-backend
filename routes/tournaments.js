@@ -1087,17 +1087,12 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
 
     const fxAfterSave = tournament.tournamentFixtures[fixtureIndex];
     const twNow = fxAfterSave.winner;
-    const shouldBumpCareer =
-      twNow &&
-      (!oldTournamentFixtureWinner || oldTournamentFixtureWinner !== twNow);
-    if (shouldBumpCareer) {
-      applyCareerLeagueResult({
-        team1: fxAfterSave.team1,
-        team2: fxAfterSave.team2,
-        newWinnerName: twNow,
-        oldWinnerName: oldTournamentFixtureWinner || null,
-      }).catch((err) => console.error('Career counters (tournament):', err));
-    }
+    applyCareerLeagueResult({
+      team1: fxAfterSave.team1,
+      team2: fxAfterSave.team2,
+      newWinnerName: twNow,
+      oldWinnerName: oldTournamentFixtureWinner,
+    }).catch((err) => console.error('Career counters (tournament):', err));
 
     // Auto-update point table ONLY for round-robin fixtures (NOT for semi-finals or finals)
     // Knockout matches don't affect the point table

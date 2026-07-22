@@ -638,13 +638,20 @@ router.post('/update/:matchId', async (req, res) => {
       return res.status(404).json({ message: 'Playoff fixture not found' });
     }
 
+    applyCareerLeagueResult({
+      team1: playoffFixture.team1,
+      team2: playoffFixture.team2,
+      newWinnerName: playoffFixture.isCompleted ? playoffFixture.winner : null,
+      oldWinnerName: existing?.isCompleted ? existing.winner : null,
+    }).catch((err) => console.error('Career counters (playoff):', err));
+
     // If this match has a winner, update dependent matches
     console.log(`Match ${matchId} update data:`, { winner: updateData.winner, isCompleted: updateData.isCompleted });
     console.log(`Winner check: ${!!updateData.winner}, isCompleted check: ${!!updateData.isCompleted}`);
     
-    if (updateData.winner && updateData.isCompleted) {
-      console.log(`✅ Updating dependent matches for ${matchId} with winner: ${updateData.winner}`);
-      await updateDependentMatches(matchId, updateData.winner);
+    if (playoffFixture.winner && playoffFixture.isCompleted) {
+      console.log(`✅ Updating dependent matches for ${matchId} with winner: ${playoffFixture.winner}`);
+      await updateDependentMatches(matchId, playoffFixture.winner);
 
       // Head-to-head: update when playoff fixture has winner
       const t1 = playoffFixture.team1;
@@ -666,18 +673,6 @@ router.post('/update/:matchId', async (req, res) => {
           headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync:', err));
         }
 
-        const shouldBumpCareer =
-          validTeams &&
-          newWinner &&
-          (!oldWinner || oldWinner !== newWinner);
-        if (shouldBumpCareer) {
-          applyCareerLeagueResult({
-            team1: playoffFixture.team1,
-            team2: playoffFixture.team2,
-            newWinnerName: newWinner,
-            oldWinnerName: oldWinner || null,
-          }).catch((err) => console.error('Career counters (playoff):', err));
-        }
       }
 
       // Log the updated dependent matches
