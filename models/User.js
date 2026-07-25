@@ -48,6 +48,31 @@ const UserSchema = new mongoose.Schema({
   /** Custom colours for Team Squads page cards / modal (hex #rrggbb); null = use default palette */
   themePrimary: { type: String, default: null },
   themeSecondary: { type: String, default: null },
+  /** One-click league forfeit snapshot so admin can Restore prior results */
+  leagueForfeit: {
+    active: { type: Boolean, default: false },
+    forfeitedAt: { type: Date, default: null },
+    snapshot: [
+      {
+        fixtureId: { type: mongoose.Schema.Types.ObjectId, ref: 'Fixture' },
+        winner: { type: String, default: null },
+        winnerUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        team1Score: { type: String, default: null },
+        team2Score: { type: String, default: null },
+        team1Overs: { type: String, default: null },
+        team2Overs: { type: String, default: null },
+        margin: { type: String, default: null },
+        mom: {
+          name: { type: String, default: null },
+          score: { type: Number, default: null },
+          wickets: { type: Number, default: null },
+        },
+        team1Fairness: { type: Number, default: 0 },
+        team2Fairness: { type: Number, default: 0 },
+        pointsTableApplied: { type: Boolean, default: false },
+      },
+    ],
+  },
 });
 
 function applyActiveFilter(next) {

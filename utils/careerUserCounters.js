@@ -67,7 +67,41 @@ async function applyCareerLeagueResult({ team1, team2, newWinnerName, oldWinnerN
   await User.findOneAndUpdate({ teamName: newWinnerName }, { $inc: { careerWins: 1 } }, incOpts);
 }
 
+/**
+ * Undo career bump when a completed league result is cleared (e.g. forfeit restore).
+ * Both teams −1 played; winner −1 wins. Floors at 0.
+ */
+async function revertCareerLeagueResult({ team1, team2, winnerName }) {
+  if (!team1 || !team2 || !winnerName) return;
+  if (isPlaceholderTeamName(team1) || isPlaceholderTeamName(team2)) return;
+
+  const nw = norm(winnerName);
+  const t1 = norm(team1);
+  const t2 = norm(team2);
+  if (nw === 'tie' || nw === 'no_result' || nw === 'tbd') return;
+  if (nw !== t1 && nw !== t2) return;
+
+  const incOpts = { includeInactive: true };
+
+  const decPlayed = async (teamName) => {
+    const u = await User.findOne({ teamName }).setOptions(incOpts);
+    if (!u) return;
+    u.careerMatchesPlayed = Math.max(0, (u.careerMatchesPlayed || 0) - 1);
+    await u.save();
+  };
+
+  await decPlayed(team1);
+  await decPlayed(team2);
+
+  const winner = await User.findOne({ teamName: winnerName }).setOptions(incOpts);
+  if (winner) {
+    winner.careerWins = Math.max(0, (winner.careerWins || 0) - 1);
+    await winner.save();
+  }
+}
+
 module.exports = {
   applyCareerLeagueResult,
+  revertCareerLeagueResult,
   isPlaceholderTeamName,
 };

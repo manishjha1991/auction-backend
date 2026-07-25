@@ -5,6 +5,11 @@ const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const { cacheConfig } = require('../utils/cache');
 const { saveFixtureResult } = require('../utils/fixtureSaveService');
+const {
+  previewForfeit,
+  forfeitTeam,
+  restoreTeam,
+} = require('../utils/teamForfeitService');
 
 const router = express.Router();
 
@@ -550,6 +555,60 @@ router.get('/normal', async (req, res) => {
   } catch (error) {
     console.error('Error fetching normal fixtures:', error);
     res.status(500).json({ message: 'Failed to fetch normal fixtures.' });
+  }
+});
+
+// Admin: preview what forfeit would change for a team
+router.get('/forfeit-preview/:userId', isAdmin, async (req, res) => {
+  try {
+    const preview = await previewForfeit(req.params.userId);
+    res.status(200).json({ success: true, ...preview });
+  } catch (error) {
+    const status = error.status || 500;
+    res.status(status).json({
+      success: false,
+      error: error.message || 'Failed to preview forfeit',
+      code: error.code,
+      pending: error.pending,
+    });
+  }
+});
+
+// Admin: one-click forfeit — reverse wins + walkover remaining fixtures
+router.post('/forfeit/:userId', isAdmin, async (req, res) => {
+  try {
+    const result = await forfeitTeam(req.params.userId, { req });
+    res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    console.error('Team forfeit error:', error);
+    const status = error.status || (error.code === 'PENDING_SUBMISSIONS' ? 400 : 500);
+    res.status(status).json({
+      success: false,
+      error: error.message || 'Failed to forfeit team',
+      code: error.code,
+      pending: error.pending,
+      succeeded: error.succeeded,
+      errors: error.errors,
+      snapshotSaved: error.snapshotSaved,
+    });
+  }
+});
+
+// Admin: restore fixtures from forfeit snapshot
+router.post('/restore/:userId', isAdmin, async (req, res) => {
+  try {
+    const result = await restoreTeam(req.params.userId, { req });
+    res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    console.error('Team forfeit restore error:', error);
+    const status = error.status || 500;
+    res.status(status).json({
+      success: false,
+      error: error.message || 'Failed to restore forfeit',
+      code: error.code,
+      succeeded: error.succeeded,
+      errors: error.errors,
+    });
   }
 });
 

@@ -13,7 +13,7 @@ const { applyParticipationChanges } = require('../utils/participationSyncService
 router.get('/', async (req, res) => {
   try {
     const teams = await User.find({ isActive: true, isAdmin: false })
-      .select('_id name teamName abbreviation isParticipating')
+      .select('_id name teamName abbreviation isParticipating leagueForfeit')
       .sort({ teamName: 1 });
     
     res.json({
@@ -24,6 +24,8 @@ router.get('/', async (req, res) => {
         teamName: t.teamName,
         abbreviation: t.abbreviation,
         isParticipating: t.isParticipating !== false,
+        forfeitActive: !!(t.leagueForfeit && t.leagueForfeit.active),
+        forfeitedAt: t.leagueForfeit?.forfeitedAt || null,
       })),
     });
   } catch (error) {

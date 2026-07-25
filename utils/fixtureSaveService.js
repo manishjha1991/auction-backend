@@ -7,7 +7,7 @@ const User = require('../models/User');
 const headToHeadModule = require('../routes/headToHead');
 const { invalidateCache } = require('./cache');
 const { emitPointsTableUpdated } = require('./emitPointsTableUpdate');
-const { applyCareerLeagueResult } = require('./careerUserCounters');
+const { applyCareerLeagueResult, revertCareerLeagueResult } = require('./careerUserCounters');
 
 const SCORE_FORMAT_REGEX = /^\d+\/\d+$/;
 
@@ -490,8 +490,76 @@ async function saveFixtureResult(body, options = {}) {
   };
 }
 
+/**
+ * Clear a completed fixture result: revert points/MP if applied, null out result fields,
+ * decrement career counters, and resync H2H. Used by forfeit Restore for previously-unplayed games.
+ */
+async function clearFixtureResult(fixtureId, options = {}) {
+  const fixture = await Fixture.findById(fixtureId);
+  if (!fixture) {
+    throw new Error(`Fixture not found: ${fixtureId}`);
+  }
+
+  if (!fixture.winner) {
+    return {
+      message: 'Fixture already has no result.',
+      fixture: fixture.toObject ? fixture.toObject() : fixture,
+      cleared: false,
+    };
+  }
+
+  const oldWinner = fixture.winner;
+  const prevStatsApplied = !!fixture.pointsTableApplied;
+  const prevTeam1Fairness = fixture.team1Fairness || 0;
+  const prevTeam2Fairness = fixture.team2Fairness || 0;
+
+  if (prevStatsApplied) {
+    await revertPointsTableStats(fixture, oldWinner, prevTeam1Fairness, prevTeam2Fairness);
+  }
+
+  fixture.winner = null;
+  fixture.winnerUserId = null;
+  fixture.margin = null;
+  fixture.team1Score = null;
+  fixture.team2Score = null;
+  fixture.team1Overs = null;
+  fixture.team2Overs = null;
+  fixture.mom = { name: null, score: null, wickets: null };
+  fixture.team1Fairness = 0;
+  fixture.team2Fairness = 0;
+  fixture.pointsTableApplied = false;
+  fixture.headToHeadSynced = false;
+  await fixture.save();
+  invalidateCache('fixtures:');
+
+  try {
+    await revertCareerLeagueResult({
+      team1: fixture.team1,
+      team2: fixture.team2,
+      winnerName: oldWinner,
+    });
+  } catch (err) {
+    console.error('Career counters (clear):', err);
+  }
+
+  if (headToHeadModule.syncHeadToHead) {
+    headToHeadModule.syncHeadToHead().catch((err) => console.error('Head-to-head sync (clear):', err));
+  }
+
+  if (options.req) {
+    emitPointsTableUpdated(options.req, { reason: 'fixture_cleared' });
+  }
+
+  return {
+    message: 'Fixture result cleared. Points reverted.',
+    fixture: fixture.toObject ? fixture.toObject() : fixture,
+    cleared: true,
+  };
+}
+
 module.exports = {
   saveFixtureResult,
+  clearFixtureResult,
   buildFixtureSavePayload,
   resolveWinnerName,
   resolveWinnerUserId,
