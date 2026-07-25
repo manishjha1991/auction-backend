@@ -594,10 +594,13 @@ router.post('/forfeit/:userId', isAdmin, async (req, res) => {
   }
 });
 
-// Admin: restore fixtures from forfeit snapshot
+// Admin: restore fixtures from forfeit snapshot (+ optional manual walkover IDs)
 router.post('/restore/:userId', isAdmin, async (req, res) => {
   try {
-    const result = await restoreTeam(req.params.userId, { req });
+    const clearFixtureIds = Array.isArray(req.body?.clearFixtureIds)
+      ? req.body.clearFixtureIds
+      : [];
+    const result = await restoreTeam(req.params.userId, { req, clearFixtureIds });
     res.status(200).json({ success: true, ...result });
   } catch (error) {
     console.error('Team forfeit restore error:', error);

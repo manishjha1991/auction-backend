@@ -70,6 +70,11 @@ const UserSchema = new mongoose.Schema({
         team1Fairness: { type: Number, default: 0 },
         team2Fairness: { type: Number, default: 0 },
         pointsTableApplied: { type: Boolean, default: false },
+        restoreAction: {
+          type: String,
+          enum: ['clear', 'restoreWinner', 'leaveUnplayed', null],
+          default: null,
+        },
       },
     ],
   },
