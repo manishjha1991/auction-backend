@@ -7,6 +7,7 @@ const Player = require('../models/Player');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
 const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
+const { applyFixtureStandingsTransition } = require('../utils/fixtureStandings');
 
 const router = express.Router();
 
@@ -511,36 +512,26 @@ router.post('/save', isAdmin, async (req, res) => {
     // 🚀 PERFORMANCE: Invalidate fixtures cache when fixture is saved
     invalidateCache('fixtures:');
     
-    // Automatically update points for both teams after fixture is saved
-    if (fixture.winner) {
-      try {
-        // Find both teams by teamName
-        const team1User = await User.findOne({ teamName: fixture.team1 });
-        const team2User = await User.findOne({ teamName: fixture.team2 });
-        
-        if (team1User && team2User) {
-          // Update team1: winner gets +2 points, loser gets +0 points
-          if (fixture.winner === fixture.team1) {
-            team1User.points = (team1User.points || 0) + 2;
-            team2User.points = (team2User.points || 0) + 0;
-          } else {
-            team1User.points = (team1User.points || 0) + 0;
-            team2User.points = (team2User.points || 0) + 2;
-          }
-          
-          // Add fairness points to both teams
-          team1User.fairnessPoint = (team1User.fairnessPoint || 0) + (fixture.team1Fairness || 0);
-          team2User.fairnessPoint = (team2User.fairnessPoint || 0) + (fixture.team2Fairness || 0);
-          
-          // Increment matches played for both teams
-          team1User.matchesPlayed = (team1User.matchesPlayed || 0) + 1;
-          team2User.matchesPlayed = (team2User.matchesPlayed || 0) + 1;
-          
-          // Save both users
-          await Promise.all([team1User.save(), team2User.save()]);
-          
-          if (process.env.NODE_ENV !== 'production') console.log(`✅ Points updated: ${fixture.team1} vs ${fixture.team2}`);
-        }
+    // Points table: apply only on real result transitions (not same-winner re-saves).
+    try {
+      const standingsResult = await applyFixtureStandingsTransition({
+        team1: fixture.team1,
+        team2: fixture.team2,
+        newWinnerName: fixture.winner || null,
+        oldWinnerName: oldWinnerBeforeSave || null,
+        team1Fairness: fixture.team1Fairness || 0,
+        team2Fairness: fixture.team2Fairness || 0,
+      });
+      if (
+        process.env.NODE_ENV !== 'production' &&
+        standingsResult.applied
+      ) {
+        console.log(
+          `✅ Points updated (${standingsResult.reason}): ${fixture.team1} vs ${fixture.team2}`
+        );
+      }
+
+      if (fixture.winner) {
         // Head-to-head: if winner changed on update, mark unsynced, revert old winner, then re-sync
         if (oldWinnerBeforeSave && oldWinnerBeforeSave !== fixture.winner && headToHeadModule.revertAndResyncForRecord) {
           Fixture.updateOne({ _id: fixture._id }, { $set: { headToHeadSynced: false } })
@@ -560,10 +551,10 @@ router.post('/save', isAdmin, async (req, res) => {
             oldWinnerName: oldWinnerBeforeSave || null,
           }).catch((err) => console.error('Career counters:', err));
         }
-      } catch (pointsError) {
-        console.error('Error updating points:', pointsError);
-        // Don't fail the fixture save if points update fails
       }
+    } catch (pointsError) {
+      console.error('Error updating points:', pointsError);
+      // Don't fail the fixture save if points update fails
     }
     
     // Convert fixture to plain object for response (handle both Mongoose doc and plain object)
