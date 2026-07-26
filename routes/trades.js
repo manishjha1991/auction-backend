@@ -21,6 +21,13 @@ const {
   getTradeApprovalBlockers,
   validateTradeForAdminApproval,
 } = require('../utils/tradeApprovalBlockers');
+const {
+  TRADE_DECIDABLE_STATUSES,
+  isAdminDecidableStatus,
+  undecidableAdminMessage,
+  claimAdminDecision,
+  rollbackAdminDecisionClaim,
+} = require('../utils/adminDecideGuard');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
@@ -350,6 +357,9 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
     const { adminUserId, decision, note } = req.body; // decision: approve|reject
     const trade = await TradeRequest.findById(tradeId);
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
+    if (!isAdminDecidableStatus(trade.status, TRADE_DECIDABLE_STATUSES)) {
+      return res.status(409).json({ message: undecidableAdminMessage('trade', trade.status) });
+    }
 
     if (decision === 'approve') {
       const validation = await validateTradeForAdminApproval(trade);
@@ -362,75 +372,109 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
         team2,
         offeredUP,
         requestedUP,
-        offeredPlayer,
-        requestedPlayer,
         newTeam1Purse,
         newTeam2Purse,
       } = validation;
 
-      // ALL VALIDATIONS PASSED - Proceed with trade execution
-      console.log('✅ Trade validation passed - executing trade...');
+      const adminDecision = {
+        status: 'approved',
+        decidedBy: adminUserId,
+        decidedAt: new Date(),
+        note,
+      };
+      // Claim before roster/purse mutation so a second decide cannot reverse the swap.
+      const claimed = await claimAdminDecision(TradeRequest, tradeId, TRADE_DECIDABLE_STATUSES, {
+        terminalStatus: 'completed',
+        adminDecision,
+      });
+      if (!claimed) {
+        const latest = await TradeRequest.findById(tradeId).select('status').lean();
+        return res.status(409).json({
+          message: undecidableAdminMessage('trade', latest?.status || 'unknown'),
+        });
+      }
 
-      // Perform the swap same as players trade in players route
-      offeredUP.userId = team2._id;
-      requestedUP.userId = team1._id;
-      offeredUP.updatedAt = new Date();
-      requestedUP.updatedAt = new Date();
-
-      // Update purses
-      team1.purse = newTeam1Purse;
-      team2.purse = newTeam2Purse;
-
-      // CRITICAL FIX: Update boughtPlayers arrays
-      // Remove offered player from team1 and add requested player
-      team1.boughtPlayers = team1.boughtPlayers.filter(id => !id.equals(trade.offeredPlayer));
-      team1.boughtPlayers.push(trade.requestedPlayer);
-      
-      // Remove requested player from team2 and add offered player
-      team2.boughtPlayers = team2.boughtPlayers.filter(id => !id.equals(trade.requestedPlayer));
-      team2.boughtPlayers.push(trade.offeredPlayer);
-
-      // Save all updates
-      await Promise.all([
-        offeredUP.save(),
-        requestedUP.save(),
-        team1.save(),
-        team2.save()
-      ]);
-
-      await setTradeLockOnPlayers([trade.offeredPlayer, trade.requestedPlayer]);
       try {
-        invalidateCache('players:data');
-      } catch (_) {}
+        // ALL VALIDATIONS PASSED - Proceed with trade execution
+        console.log('✅ Trade validation passed - executing trade...');
 
-      trade.status = 'completed';
-      trade.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
+        // Perform the swap same as players trade in players route
+        offeredUP.userId = team2._id;
+        requestedUP.userId = team1._id;
+        offeredUP.updatedAt = new Date();
+        requestedUP.updatedAt = new Date();
 
-      // Each completed trade counts as one slot per team. A later unsold pick (e.g. to refill Sapphire after a cross-tier swap) is a separate slot unless it pairs to a same-tier release — see routes/picks.js.
-      try {
+        // Update purses
+        team1.purse = newTeam1Purse;
+        team2.purse = newTeam2Purse;
+
+        // CRITICAL FIX: Update boughtPlayers arrays
+        // Remove offered player from team1 and add requested player
+        team1.boughtPlayers = team1.boughtPlayers.filter(id => !id.equals(trade.offeredPlayer));
+        team1.boughtPlayers.push(trade.requestedPlayer);
+
+        // Remove requested player from team2 and add offered player
+        team2.boughtPlayers = team2.boughtPlayers.filter(id => !id.equals(trade.requestedPlayer));
+        team2.boughtPlayers.push(trade.offeredPlayer);
+
+        // Save all updates
         await Promise.all([
-          User.findByIdAndUpdate(trade.fromUser, { $inc: { tradesUsed: 1 } }),
-          User.findByIdAndUpdate(trade.toUser, { $inc: { tradesUsed: 1 } }),
+          offeredUP.save(),
+          requestedUP.save(),
+          team1.save(),
+          team2.save()
         ]);
-      } catch {}
 
-      await autoRejectTradesInvolvingPlayers(
-        adminUserId,
-        [trade.offeredPlayer, trade.requestedPlayer],
-        trade._id,
-      );
-    } else if (decision === 'reject') {
-      trade.status = 'rejected';
-      trade.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
-      
-      // Admin rejection does NOT affect trade count - only completed trades count
-      // No need to revert anything since tradesUsed is only incremented on approval
-    } else {
-      return res.status(400).json({ message: 'Invalid decision' });
+        await setTradeLockOnPlayers([trade.offeredPlayer, trade.requestedPlayer]);
+        try {
+          invalidateCache('players:data');
+        } catch (_) {}
+
+        // Each completed trade counts as one slot per team. A later unsold pick (e.g. to refill Sapphire after a cross-tier swap) is a separate slot unless it pairs to a same-tier release — see routes/picks.js.
+        try {
+          await Promise.all([
+            User.findByIdAndUpdate(trade.fromUser, { $inc: { tradesUsed: 1 } }),
+            User.findByIdAndUpdate(trade.toUser, { $inc: { tradesUsed: 1 } }),
+          ]);
+        } catch {}
+
+        await autoRejectTradesInvolvingPlayers(
+          adminUserId,
+          [trade.offeredPlayer, trade.requestedPlayer],
+          trade._id,
+        );
+      } catch (execErr) {
+        await rollbackAdminDecisionClaim(TradeRequest, claimed);
+        throw execErr;
+      }
+
+      const completed = await TradeRequest.findById(tradeId);
+      return res.json(completed);
     }
 
-    await trade.save();
-    res.json(trade);
+    if (decision === 'reject') {
+      const adminDecision = {
+        status: 'rejected',
+        decidedBy: adminUserId,
+        decidedAt: new Date(),
+        note,
+      };
+      const claimed = await claimAdminDecision(TradeRequest, tradeId, TRADE_DECIDABLE_STATUSES, {
+        terminalStatus: 'rejected',
+        adminDecision,
+      });
+      if (!claimed) {
+        const latest = await TradeRequest.findById(tradeId).select('status').lean();
+        return res.status(409).json({
+          message: undecidableAdminMessage('trade', latest?.status || 'unknown'),
+        });
+      }
+      // Admin rejection does NOT affect trade count - only completed trades count
+      const rejected = await TradeRequest.findById(tradeId);
+      return res.json(rejected);
+    }
+
+    return res.status(400).json({ message: 'Invalid decision' });
   } catch (err) {
     console.error('Admin decide error', err);
     res.status(500).json({ message: 'Internal server error' });
