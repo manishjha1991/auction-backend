@@ -9,6 +9,13 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
 const { findOrphanPickToPairOnReleaseApprove } = require('../utils/releasePickPairing');
+const {
+  RELEASE_DECIDABLE_STATUSES,
+  isAdminDecidableStatus,
+  undecidableAdminMessage,
+  claimAdminDecision,
+  rollbackAdminDecisionClaim,
+} = require('../utils/adminDecideGuard');
 
 const CRORE = 10000000;
 
@@ -186,15 +193,18 @@ router.get('/admin/pending', async (req, res) => {
 router.post('/admin/:releaseId/decide', async (req, res) => {
   try {
     const { releaseId } = req.params;
-    const { adminUserId, decision, note, confirmRelease } = req.body;
+    const { adminUserId, decision, note } = req.body;
     const item = await ReleaseRequest.findById(releaseId);
     if (!item) return res.status(404).json({ message: 'Release request not found' });
-    
+    if (!isAdminDecidableStatus(item.status, RELEASE_DECIDABLE_STATUSES)) {
+      return res.status(409).json({ message: undecidableAdminMessage('release', item.status) });
+    }
+
     if (decision === 'approve') {
       // VALIDATION: Only ensure user and player exist; releases are allowed with warning if below minimum.
       const user = await User.findById(item.user);
       const player = await Player.findById(item.player);
-      
+
       if (!user || !player) {
         return res.status(404).json({ message: 'User or player not found' });
       }
@@ -205,91 +215,125 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
         });
       }
 
-      // deactivate ownership
-      const up = await UserPlayer.findOne({ userId: item.user, playerId: item.player, isActive: true });
-      if (up) { 
-        up.isActive = false; 
-        up.updatedAt = new Date(); 
-        await up.save(); 
-        
-        // Refund the player's bid value back to the user's purse
-        const bidValue = Number(up.bidValue || 0);
-        if (bidValue > 0) {
-          try {
-            await User.findByIdAndUpdate(item.user, { 
-              $inc: { purse: bidValue }
-            });
-          } catch {}
-        }
-        
-        // CRITICAL FIX: Update the Player model to mark as unsold
-        try {
-          await Player.findByIdAndUpdate(item.player, {
-            $set: {
-              isSold: false,
-              isActive: false,
-              currentBid: null,
-              currentBidder: null,
-              tradeLocked: false,
-              tradeLockedUntil: null,
-              releasedAt: new Date() // Pick-from-unsold blocked for 48h after release
-            }
-          });
-        } catch (playerUpdateError) {
-          console.error('Error updating player status:', playerUpdateError);
-        }
-        
-        // Remove player from user's boughtPlayers array
-        try {
-          await User.findByIdAndUpdate(item.user, {
-            $pull: { boughtPlayers: item.player }
-          });
-        } catch (userUpdateError) {
-          console.error('Error removing player from boughtPlayers:', userUpdateError);
-        }
-        
-        // Clean up any remaining bid data for this player
-        try {
-          await Bid.deleteMany({ playerId: item.player });
-        } catch (bidCleanupError) {
-          console.error('Error cleaning up bid data:', bidCleanupError);
-        }
-      }
-      
-      item.status = 'completed';
-      item.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
-      if (player?.type && ['Sapphire', 'Gold', 'Emerald', 'Silver'].includes(player.type)) {
-        item.releasedPlayerType = player.type;
-      }
-
       // One slot for release + same-tier unsold pick together. If the pick was approved first, it already +1; link and skip release +1.
       let releaseSlotCharge = 1;
+      let orphanPick = null;
+      const extraSet = {};
       if (player?.type && ['Sapphire', 'Gold', 'Emerald', 'Silver'].includes(player.type)) {
-        const orphanPick = await findOrphanPickToPairOnReleaseApprove(item, player.type);
+        extraSet.releasedPlayerType = player.type;
+        orphanPick = await findOrphanPickToPairOnReleaseApprove(item, player.type);
         if (orphanPick) {
-          item.pairedPickRequest = orphanPick._id;
+          extraSet.pairedPickRequest = orphanPick._id;
           releaseSlotCharge = 0;
         }
       }
 
+      const adminDecision = {
+        status: 'approved',
+        decidedBy: adminUserId,
+        decidedAt: new Date(),
+        note,
+      };
+      // Claim before refund/tradesUsed so a second approve cannot inflate season slots.
+      const claimed = await claimAdminDecision(ReleaseRequest, releaseId, RELEASE_DECIDABLE_STATUSES, {
+        terminalStatus: 'completed',
+        adminDecision,
+        extraSet,
+      });
+      if (!claimed) {
+        const latest = await ReleaseRequest.findById(releaseId).select('status').lean();
+        return res.status(409).json({
+          message: undecidableAdminMessage('release', latest?.status || 'unknown'),
+        });
+      }
+
       try {
-        if (releaseSlotCharge) {
-          await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: releaseSlotCharge } });
+        // deactivate ownership
+        const up = await UserPlayer.findOne({ userId: item.user, playerId: item.player, isActive: true });
+        if (up) {
+          up.isActive = false;
+          up.updatedAt = new Date();
+          await up.save();
+
+          // Refund the player's bid value back to the user's purse
+          const bidValue = Number(up.bidValue || 0);
+          if (bidValue > 0) {
+            try {
+              await User.findByIdAndUpdate(item.user, {
+                $inc: { purse: bidValue }
+              });
+            } catch {}
+          }
+
+          // CRITICAL FIX: Update the Player model to mark as unsold
+          try {
+            await Player.findByIdAndUpdate(item.player, {
+              $set: {
+                isSold: false,
+                isActive: false,
+                currentBid: null,
+                currentBidder: null,
+                tradeLocked: false,
+                tradeLockedUntil: null,
+                releasedAt: new Date() // Pick-from-unsold blocked for 48h after release
+              }
+            });
+          } catch (playerUpdateError) {
+            console.error('Error updating player status:', playerUpdateError);
+          }
+
+          // Remove player from user's boughtPlayers array
+          try {
+            await User.findByIdAndUpdate(item.user, {
+              $pull: { boughtPlayers: item.player }
+            });
+          } catch (userUpdateError) {
+            console.error('Error removing player from boughtPlayers:', userUpdateError);
+          }
+
+          // Clean up any remaining bid data for this player
+          try {
+            await Bid.deleteMany({ playerId: item.player });
+          } catch (bidCleanupError) {
+            console.error('Error cleaning up bid data:', bidCleanupError);
+          }
         }
-      } catch {}
-      
+
+        try {
+          if (releaseSlotCharge) {
+            await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: releaseSlotCharge } });
+          }
+        } catch {}
+      } catch (execErr) {
+        await rollbackAdminDecisionClaim(ReleaseRequest, claimed, [
+          'releasedPlayerType',
+          'pairedPickRequest',
+        ]);
+        throw execErr;
+      }
     } else if (decision === 'reject') {
-      item.status = 'rejected';
-      item.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
-      
+      const adminDecision = {
+        status: 'rejected',
+        decidedBy: adminUserId,
+        decidedAt: new Date(),
+        note,
+      };
+      const claimed = await claimAdminDecision(ReleaseRequest, releaseId, RELEASE_DECIDABLE_STATUSES, {
+        terminalStatus: 'rejected',
+        adminDecision,
+      });
+      if (!claimed) {
+        const latest = await ReleaseRequest.findById(releaseId).select('status').lean();
+        return res.status(409).json({
+          message: undecidableAdminMessage('release', latest?.status || 'unknown'),
+        });
+      }
       // Admin rejection does NOT affect trade count - no increment/decrement
       // The release request was pending, so it doesn't count towards tradesUsed
     } else {
       return res.status(400).json({ message: 'Invalid decision' });
     }
-    
-    await item.save();
-    
+
     // Return populated release request
     const populatedItem = await ReleaseRequest.findById(releaseId)
       .populate('player', 'name type role profilePicture')
@@ -297,7 +341,7 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
 
     const responseObj = populatedItem.toObject({ virtuals: true });
     responseObj.aiInsight = await buildReleaseInsight(populatedItem);
-    
+
     res.json(responseObj);
   } catch (e) {
     console.error('Release decide error', e);

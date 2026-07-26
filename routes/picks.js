@@ -14,6 +14,13 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
+const {
+  PICK_DECIDABLE_STATUSES,
+  isAdminDecidableStatus,
+  undecidableAdminMessage,
+  claimAdminDecision,
+  rollbackAdminDecisionClaim,
+} = require('../utils/adminDecideGuard');
 
 // Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
 router.get('/unsold', async (req, res) => {
@@ -169,16 +176,19 @@ router.post('/admin/:pickId/decide', async (req, res) => {
     const { adminUserId, decision, note } = req.body;
     const item = await PickRequest.findById(pickId);
     if (!item) return res.status(404).json({ message: 'Pick request not found' });
+    if (!isAdminDecidableStatus(item.status, PICK_DECIDABLE_STATUSES)) {
+      return res.status(409).json({ message: undecidableAdminMessage('pick', item.status) });
+    }
 
     if (decision === 'approve') {
       // VALIDATION: Check type limits before approving
       const user = await User.findById(item.user).populate('boughtPlayers');
       const player = await Player.findById(item.player);
-      
+
       if (!user || !player) {
         return res.status(404).json({ message: 'User or player not found' });
       }
-      
+
       // Check type limits
       const typeLimit = {
         Sapphire: 2,
@@ -186,17 +196,17 @@ router.post('/admin/:pickId/decide', async (req, res) => {
         Emerald: 4,
         Silver: 6,
       };
-      
+
       // Count bought players of this type (including retained)
       const boughtPlayersOfThisType = await Player.countDocuments({
         _id: { $in: user.boughtPlayers },
         type: player.type,
       });
-      
+
       // Check if approving would exceed limit
       if (boughtPlayersOfThisType >= typeLimit[player.type]) {
-        return res.status(400).json({ 
-          message: `Cannot approve: User already has ${boughtPlayersOfThisType} ${player.type} player(s). Maximum allowed is ${typeLimit[player.type]}.` 
+        return res.status(400).json({
+          message: `Cannot approve: User already has ${boughtPlayersOfThisType} ${player.type} player(s). Maximum allowed is ${typeLimit[player.type]}.`
         });
       }
 
@@ -222,61 +232,108 @@ router.post('/admin/:pickId/decide', async (req, res) => {
         });
       }
 
-      const base = process.env.SELF_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
-      const soldResp = await axios.post(`${base}/api/bids/bid/sold`, { playerID: item.player });
-      if (soldResp.status >= 400) {
-        return res.status(400).json({ message: 'Failed to finalize sale via sold API' });
-      }
-
-      if (usePair && releasePairDoc) {
-        await ReleaseRequest.findByIdAndUpdate(releasePairDoc._id, {
-          $set: { pairedPickRequest: item._id },
+      const adminDecision = {
+        status: 'approved',
+        decidedBy: adminUserId,
+        decidedAt: new Date(),
+        note,
+      };
+      // Claim before sold/tradesUsed so a second approve cannot double-charge or re-sell.
+      const claimed = await claimAdminDecision(PickRequest, pickId, PICK_DECIDABLE_STATUSES, {
+        terminalStatus: 'completed',
+        adminDecision,
+      });
+      if (!claimed) {
+        const latest = await PickRequest.findById(pickId).select('status').lean();
+        return res.status(409).json({
+          message: undecidableAdminMessage('pick', latest?.status || 'unknown'),
         });
-      } else if (useStandaloneCharge) {
-        await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: 1 } });
       }
 
-      await Player.findByIdAndUpdate(item.player, { isActive: true });
-      await setTradeLockOnPlayers([item.player]);
-
-      item.status = 'completed';
-      item.adminDecision = { status: 'approved', decidedBy: adminUserId, decidedAt: new Date(), note };
-    } else if (decision === 'reject') {
-      // Free the locked money back to user's purse when rejecting pick
-      const user = await User.findById(item.user);
-      if (user) {
-        // Find the locked amount for this player
-        const userBid = user.currentBids.find(bid => bid.playerId.toString() === item.player.toString());
-        if (userBid) {
-          const lockedAmount = userBid.amount;
-          const purse = parseFloat(user.purse.toString());
-          user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
-          
-          // Remove the bid from user's current bids
-          user.currentBids = user.currentBids.filter(bid => bid.playerId.toString() !== item.player.toString());
-          await user.save();
+      try {
+        const base = process.env.SELF_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+        const soldResp = await axios.post(`${base}/api/bids/bid/sold`, { playerID: item.player });
+        if (soldResp.status >= 400) {
+          await rollbackAdminDecisionClaim(PickRequest, claimed);
+          return res.status(400).json({ message: 'Failed to finalize sale via sold API' });
         }
+
+        if (usePair && releasePairDoc) {
+          await ReleaseRequest.findByIdAndUpdate(releasePairDoc._id, {
+            $set: { pairedPickRequest: item._id },
+          });
+        } else if (useStandaloneCharge) {
+          await User.findByIdAndUpdate(item.user, { $inc: { tradesUsed: 1 } });
+        }
+
+        await Player.findByIdAndUpdate(item.player, { isActive: true });
+        await setTradeLockOnPlayers([item.player]);
+      } catch (execErr) {
+        await rollbackAdminDecisionClaim(PickRequest, claimed);
+        throw execErr;
       }
-      
-      // Mark the bid as inactive
-      await Bid.updateMany(
-        { playerId: item.player, bidder: item.user }, 
-        { $set: { isActive: false, isBidOn: false } }
-      );
-      
-      // Reset player's current bid if this was the only bid
-      const player = await Player.findById(item.player);
-      if (player && player.currentBidder && player.currentBidder.toString() === item.user.toString()) {
-        player.currentBid = null;
-        player.currentBidder = null;
-        // Ensure player is available for future picks by setting isActive to false
-        player.isActive = false;
-        await player.save();
+
+      const completed = await PickRequest.findById(pickId);
+      return res.json(completed);
+    }
+
+    if (decision === 'reject') {
+      const adminDecision = {
+        status: 'rejected',
+        decidedBy: adminUserId,
+        decidedAt: new Date(),
+        note,
+      };
+      const claimed = await claimAdminDecision(PickRequest, pickId, PICK_DECIDABLE_STATUSES, {
+        terminalStatus: 'rejected',
+        adminDecision,
+      });
+      if (!claimed) {
+        const latest = await PickRequest.findById(pickId).select('status').lean();
+        return res.status(409).json({
+          message: undecidableAdminMessage('pick', latest?.status || 'unknown'),
+        });
       }
-      
-      item.status = 'rejected';
-      item.adminDecision = { status: 'rejected', decidedBy: adminUserId, decidedAt: new Date(), note };
-      
+
+      let user;
+      let player;
+      try {
+        // Free the locked money back to user's purse when rejecting pick
+        user = await User.findById(item.user);
+        if (user) {
+          // Find the locked amount for this player
+          const userBid = user.currentBids.find(bid => bid.playerId.toString() === item.player.toString());
+          if (userBid) {
+            const lockedAmount = userBid.amount;
+            const purse = parseFloat(user.purse.toString());
+            user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
+
+            // Remove the bid from user's current bids
+            user.currentBids = user.currentBids.filter(bid => bid.playerId.toString() !== item.player.toString());
+            await user.save();
+          }
+        }
+
+        // Mark the bid as inactive
+        await Bid.updateMany(
+          { playerId: item.player, bidder: item.user },
+          { $set: { isActive: false, isBidOn: false } }
+        );
+
+        // Reset player's current bid if this was the only bid
+        player = await Player.findById(item.player);
+        if (player && player.currentBidder && player.currentBidder.toString() === item.user.toString()) {
+          player.currentBid = null;
+          player.currentBidder = null;
+          // Ensure player is available for future picks by setting isActive to false
+          player.isActive = false;
+          await player.save();
+        }
+      } catch (execErr) {
+        await rollbackAdminDecisionClaim(PickRequest, claimed);
+        throw execErr;
+      }
+
       // Emit rejection notification for admin branch
       try {
         const io = req.app.get('io');
@@ -294,11 +351,12 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       } catch (notificationError) {
         console.error('Notification error:', notificationError);
       }
-    } else {
-      return res.status(400).json({ message: 'Invalid decision' });
+
+      const rejected = await PickRequest.findById(pickId);
+      return res.json(rejected);
     }
-    await item.save();
-    res.json(item);
+
+    return res.status(400).json({ message: 'Invalid decision' });
   } catch (e) {
     console.error('Pick decide error', e);
     res.status(500).json({ message: 'Internal server error' });
