@@ -368,6 +368,12 @@ router.post('/pick/execute', async (req, res) => {
 
     await setTradeLockOnPlayers([playerId]);
 
+    try {
+      await autoRejectTradesInvolvingPlayers(adminUserId, [playerId], null);
+    } catch (tradeRejectError) {
+      console.error('Error auto-rejecting trades after roster pick:', tradeRejectError);
+    }
+
     res.json({
       ok: true,
       message: 'Pick completed',
@@ -472,6 +478,12 @@ router.post('/release/execute', async (req, res) => {
 
     await User.findByIdAndUpdate(teamUserId, { $pull: { boughtPlayers: playerId } });
     await Bid.deleteMany({ playerId });
+
+    try {
+      await autoRejectTradesInvolvingPlayers(adminUserId, [playerId], null);
+    } catch (tradeRejectError) {
+      console.error('Error auto-rejecting trades after roster release:', tradeRejectError);
+    }
 
     const user = await User.findById(teamUserId);
     res.json({

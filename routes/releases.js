@@ -7,7 +7,7 @@ const Player = require('../models/Player'); // Add Player model import
 const Bid = require('../models/Bid'); // Add Bid model import for cleanup
 const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
-const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
+const { isTradeLocked, TRADE_LOCK_HOURS, autoRejectTradesInvolvingPlayers } = require('../utils/tradeApprovalShared');
 const { findOrphanPickToPairOnReleaseApprove } = require('../utils/releasePickPairing');
 
 const CRORE = 10000000;
@@ -253,6 +253,14 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
           await Bid.deleteMany({ playerId: item.player });
         } catch (bidCleanupError) {
           console.error('Error cleaning up bid data:', bidCleanupError);
+        }
+
+        // Stale TradeRequests that still list this player must not stay admin_pending —
+        // approving them later would swap against whoever owns the player next.
+        try {
+          await autoRejectTradesInvolvingPlayers(adminUserId, [item.player], null);
+        } catch (tradeRejectError) {
+          console.error('Error auto-rejecting trades after release:', tradeRejectError);
         }
       }
       
