@@ -3,6 +3,7 @@ const Player = require('../models/Player');
 const { clampTradesUsed } = require('./tradeConstants');
 const { getTradeRules, assertPairAllowsCompletion } = require('./tradeRules');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('./tradeApprovalShared');
+const { tradePartiesMatchCurrentOwners } = require('./tradeOwnerMatch');
 
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5;
@@ -92,6 +93,13 @@ async function computeTradeApproval(tradeDoc) {
   const team2 = requestedUP.userId;
   if (!team1 || !team2) {
     blockers.push('Could not load team data for this trade.');
+    return { blockers, execution: null };
+  }
+
+  if (!tradePartiesMatchCurrentOwners(tradeDoc, team1._id, team2._id)) {
+    blockers.push(
+      'Player ownership no longer matches this trade request (roster changed since it was proposed). Reject or withdraw this trade and create a new one between the current owners.'
+    );
     return { blockers, execution: null };
   }
 
