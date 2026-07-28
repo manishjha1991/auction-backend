@@ -9,6 +9,8 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
 const { findOrphanPickToPairOnReleaseApprove } = require('../utils/releasePickPairing');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
 const CRORE = 10000000;
 
@@ -156,7 +158,7 @@ router.get('/user/:userId', async (req, res) => {
 });
 
 // Admin: pending
-router.get('/admin/pending', async (req, res) => {
+router.get('/admin/pending', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const list = await ReleaseRequest.find({ status: { $in: ['pending', 'admin_pending'] } })
@@ -183,10 +185,11 @@ router.get('/admin/pending', async (req, res) => {
 });
 
 // Admin decide
-router.post('/admin/:releaseId/decide', async (req, res) => {
+router.post('/admin/:releaseId/decide', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { releaseId } = req.params;
-    const { adminUserId, decision, note, confirmRelease } = req.body;
+    const { decision, note, confirmRelease } = req.body;
+    const adminUserId = req.authenticatedUser._id;
     const item = await ReleaseRequest.findById(releaseId);
     if (!item) return res.status(404).json({ message: 'Release request not found' });
     
@@ -353,7 +356,7 @@ router.post('/:releaseId/withdraw', async (req, res) => {
 });
 
 // Admin: history (approved/rejected)
-router.get('/admin/history', async (req, res) => {
+router.get('/admin/history', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const list = await ReleaseRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
       .populate('user', 'name teamName purse')

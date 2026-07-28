@@ -21,6 +21,8 @@ const {
   getTradeApprovalBlockers,
   validateTradeForAdminApproval,
 } = require('../utils/tradeApprovalBlockers');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
@@ -311,7 +313,7 @@ router.get('/user/:userId', async (req, res) => {
 });
 
 // GET trades pending admin approval
-router.get('/admin/pending', async (req, res) => {
+router.get('/admin/pending', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const trades = await TradeRequest.find({ status: 'admin_pending' })
       .populate('fromUser', 'name teamName')
@@ -327,7 +329,7 @@ router.get('/admin/pending', async (req, res) => {
 });
 
 // GET trades history for admin (completed, rejected, withdrawn)
-router.get('/admin/history', async (req, res) => {
+router.get('/admin/history', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const trades = await TradeRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
       .populate('fromUser', 'name teamName')
@@ -344,10 +346,11 @@ router.get('/admin/history', async (req, res) => {
 });
 
 // POST admin decision
-router.post('/admin/:tradeId/decide', async (req, res) => {
+router.post('/admin/:tradeId/decide', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { tradeId } = req.params;
-    const { adminUserId, decision, note } = req.body; // decision: approve|reject
+    const { decision, note } = req.body; // decision: approve|reject
+    const adminUserId = req.authenticatedUser._id;
     const trade = await TradeRequest.findById(tradeId);
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
 
@@ -438,15 +441,11 @@ router.post('/admin/:tradeId/decide', async (req, res) => {
 });
 
 // POST /api/trades/admin/unlock-players - Admin only: clear trade lock for specific players
-router.post('/admin/unlock-players', async (req, res) => {
+router.post('/admin/unlock-players', authenticateJWT, requireAdmin, async (req, res) => {
   try {
-    const { adminUserId, playerIds } = req.body;
-    if (!adminUserId || !Array.isArray(playerIds) || playerIds.length === 0) {
-      return res.status(400).json({ message: 'adminUserId and playerIds (array) required' });
-    }
-    const admin = await User.findById(adminUserId).select('isAdmin').lean();
-    if (!admin?.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can unlock players' });
+    const { playerIds } = req.body;
+    if (!Array.isArray(playerIds) || playerIds.length === 0) {
+      return res.status(400).json({ message: 'playerIds (array) required' });
     }
     const result = await Player.updateMany(
       { _id: { $in: playerIds } },
@@ -463,16 +462,8 @@ router.post('/admin/unlock-players', async (req, res) => {
 });
 
 // POST /api/trades/admin/unlock-stale - Admin only: clear ALL stale locks (tradeLocked true but expired or missing until)
-router.post('/admin/unlock-stale', async (req, res) => {
+router.post('/admin/unlock-stale', authenticateJWT, requireAdmin, async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    if (!adminUserId) {
-      return res.status(400).json({ message: 'adminUserId required' });
-    }
-    const admin = await User.findById(adminUserId).select('isAdmin').lean();
-    if (!admin?.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can unlock players' });
-    }
     const now = new Date();
     const result = await Player.updateMany(
       {

@@ -14,6 +14,8 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
 // Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
 router.get('/unsold', async (req, res) => {
@@ -149,7 +151,7 @@ router.get('/user/:userId', async (req, res) => {
 });
 
 // Admin: pending picks
-router.get('/admin/pending', async (req, res) => {
+router.get('/admin/pending', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const picks = await PickRequest.find({ status: { $in: ['pending', 'admin_pending'] } })
       .populate('user', 'name teamName')
@@ -163,10 +165,11 @@ router.get('/admin/pending', async (req, res) => {
 });
 
 // Admin: decide pick
-router.post('/admin/:pickId/decide', async (req, res) => {
+router.post('/admin/:pickId/decide', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { pickId } = req.params;
-    const { adminUserId, decision, note } = req.body;
+    const { decision, note } = req.body;
+    const adminUserId = req.authenticatedUser._id;
     const item = await PickRequest.findById(pickId);
     if (!item) return res.status(404).json({ message: 'Pick request not found' });
 
@@ -306,7 +309,7 @@ router.post('/admin/:pickId/decide', async (req, res) => {
 });
 
 // Admin: pick history
-router.get('/admin/history', async (req, res) => {
+router.get('/admin/history', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const picks = await PickRequest.find({ 'adminDecision.status': { $in: ['approved', 'rejected'] } })
       .populate('user', 'name teamName')
