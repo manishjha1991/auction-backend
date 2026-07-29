@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const AppSettings = require('../models/AppSettings');
-const User = require('../models/User');
 const Player = require('../models/Player');
 const { RULE_MIN, RULE_MAX, getTradeRules } = require('../utils/tradeRules');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
 async function getSettingsDoc() {
   let doc = await AppSettings.findOne();
@@ -37,11 +38,9 @@ router.get('/', async (_req, res) => {
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', authenticateJWT, requireAdmin, async (req, res) => {
   try {
-    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories, requiredGames, tradeSeasonCap, maxTradesPerOpponentPair } = req.body;
-    const admin = await User.findById(adminUserId);
-    if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update settings' });
+    const { enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories, requiredGames, tradeSeasonCap, maxTradesPerOpponentPair } = req.body;
     const doc = await getSettingsDoc();
     if (typeof enableTradeCenter === 'boolean') doc.enableTradeCenter = enableTradeCenter;
     if (typeof enableUnsoldPlayers === 'boolean') doc.enableUnsoldPlayers = enableUnsoldPlayers;

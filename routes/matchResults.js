@@ -4,8 +4,10 @@ const MatchResult = require('../models/MatchResult');
 const User = require('../models/User');
 const Player = require('../models/Player');
 const headToHeadModule = require('./headToHead');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
-// Middleware to check if user is authenticated
+// Soft identity from user-id header for non-mutating reads only.
 const isAuthenticated = (req, res, next) => {
   const userId = req.headers['user-id'];
   if (!userId || userId === 'undefined' || userId === 'null') {
@@ -13,22 +15,6 @@ const isAuthenticated = (req, res, next) => {
   }
   req.userId = userId;
   next();
-};
-
-// Middleware to check if user is admin
-const isAdmin = async (req, res, next) => {
-  try {
-    const user = await User.findById(req.userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    // Remove admin check - let frontend handle admin permissions
-    req.user = user;
-    next();
-  } catch (error) {
-    console.error('Error checking admin status:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
 };
 
 // GET /api/match-results/public - Get all match results (public for trophy hall)
@@ -49,7 +35,7 @@ router.get('/public', async (req, res) => {
 });
 
 // GET /api/match-results - Get all match results (admin only)
-router.get('/', isAuthenticated, isAdmin, async (req, res) => {
+router.get('/', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 20, search = '', matchType = '', trophyType = '' } = req.query;
     
@@ -116,7 +102,7 @@ router.get('/:id', isAuthenticated, async (req, res) => {
 });
 
 // POST /api/match-results - Create new match result (admin only)
-router.post('/', isAuthenticated, isAdmin, async (req, res) => {
+router.post('/', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const {
       matchNumber,
@@ -188,7 +174,7 @@ router.post('/', isAuthenticated, isAdmin, async (req, res) => {
       margin,
       matchStatus: matchStatus || 'completed',
       additionalNotes: additionalNotes || '',
-      createdBy: req.userId
+      createdBy: req.authenticatedUser._id
     });
 
     await matchResult.save();
@@ -217,7 +203,7 @@ router.post('/', isAuthenticated, isAdmin, async (req, res) => {
 });
 
 // PUT /api/match-results/:id - Update match result (admin only)
-router.put('/:id', isAuthenticated, isAdmin, async (req, res) => {
+router.put('/:id', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const matchResult = await MatchResult.findById(req.params.id);
     
@@ -285,7 +271,7 @@ router.put('/:id', isAuthenticated, isAdmin, async (req, res) => {
 });
 
 // DELETE /api/match-results/:id - Delete match result (admin only)
-router.delete('/:id', isAuthenticated, isAdmin, async (req, res) => {
+router.delete('/:id', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const matchResult = await MatchResult.findById(req.params.id);
     
@@ -303,7 +289,7 @@ router.delete('/:id', isAuthenticated, isAdmin, async (req, res) => {
 });
 
 // GET /api/match-results/stats/summary - Get match statistics summary (admin only)
-router.get('/stats/summary', isAuthenticated, isAdmin, async (req, res) => {
+router.get('/stats/summary', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const totalMatches = await MatchResult.countDocuments();
     const completedMatches = await MatchResult.countDocuments({ matchStatus: 'completed' });
