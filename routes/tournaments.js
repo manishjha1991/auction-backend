@@ -253,27 +253,11 @@ const upload = multer({
   }
 });
 
-// Middleware to check if user is admin - removed backend check, handled in frontend
-const isAdmin = async (req, res, next) => {
-  try {
-    const userId = req.headers['user-id'];
-    if (!userId || userId === 'undefined' || userId === 'null') {
-      return res.status(401).json({ error: 'User ID required' });
-    }
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    // Remove admin check - let frontend handle admin permissions
-    req.user = user;
-    next();
-  } catch (error) {
-    console.error('Authentication error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-};
+// Admin mutations require a session-bound JWT from a real admin account.
+const isAdmin = [authenticateJWT, requireAdmin];
 
 // Middleware to check if user is authenticated
 const isAuthenticated = async (req, res, next) => {

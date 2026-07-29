@@ -9,6 +9,8 @@ const RetainedPlayer = require('../models/RetainedPlayer');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const PickRequest = require('../models/PickRequest');
 const TradeRequest = require('../models/TradeRequest');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 const {
   previewAuctionFixes,
   executeAuctionFixes,
@@ -59,21 +61,6 @@ const toNumber = (value) => {
   } catch {
     return 0;
   }
-};
-
-const requireAdmin = async (adminUserId) => {
-  if (!adminUserId) {
-    const error = new Error('Admin user ID is required');
-    error.status = 400;
-    throw error;
-  }
-  const admin = await User.findById(adminUserId).includeInactive().select('isAdmin name');
-  if (!admin || !admin.isAdmin) {
-    const err = new Error('Only admins can perform this action');
-    err.status = 403;
-    throw err;
-  }
-  return admin;
 };
 
 const normalizeType = (type) => {
@@ -331,11 +318,20 @@ const {
 } = require('../utils/releasePickRepairPlan');
 const { getTeamTradeUsageRows } = require('../utils/teamTradeUsageAccounting');
 
+// All admin-tools routes require a session-bound admin JWT, except the public DLS calculator.
+router.use((req, res, next) => {
+  if (req.method === 'POST' && req.path === '/target/calculate') {
+    return next();
+  }
+  return authenticateJWT(req, res, (err) => {
+    if (err) return next(err);
+    return requireAdmin(req, res, next);
+  });
+});
+
 // POST: clear all backend caches (use after direct DB edits to see fresh data)
 router.post('/clear-all-cache', async (req, res) => {
   try {
-    const adminUserId = req.body.adminUserId || req.query.adminUserId;
-    await requireAdmin(adminUserId);
     clearAllCaches();
     res.json({
       message: 'All caches cleared. Hard refresh the UI (Ctrl+Shift+R) to see fresh data.',
@@ -350,8 +346,7 @@ router.post('/clear-all-cache', async (req, res) => {
 // GET: search teams by team name or player name (returns team IDs that match)
 router.get('/team-trade-activity/search', async (req, res) => {
   try {
-    const { adminUserId, q } = req.query;
-    await requireAdmin(adminUserId);
+    const { q } = req.query;
 
     const query = (q || '').trim();
     if (!query || query.length < 2) {
@@ -423,8 +418,6 @@ router.get('/team-trade-activity/search', async (req, res) => {
 // GET: team trade activity (picks, releases, trades by team; used/remaining)
 router.get('/team-trade-activity', async (req, res) => {
   try {
-    const { adminUserId } = req.query;
-    await requireAdmin(adminUserId);
     const teams = await getTeamTradeUsageRows();
     res.json({ teams });
   } catch (error) {
@@ -438,8 +431,6 @@ router.get('/team-trade-activity', async (req, res) => {
 // GET: teams where tradesUsed is BELOW event-based expected (under-count; e.g. wrong pick/release pairing)
 router.get('/trades-used-reconcile/preview', async (req, res) => {
   try {
-    const { adminUserId } = req.query;
-    await requireAdmin(adminUserId);
     const rows = await getTeamTradeUsageRows();
     const under = rows.filter((r) => r.usageDrift < 0);
     res.json({
@@ -467,8 +458,7 @@ router.get('/trades-used-reconcile/preview', async (req, res) => {
 // POST: set tradesUsed = min(expected, cap) for teams that are under-counted
 router.post('/trades-used-reconcile/execute', async (req, res) => {
   try {
-    const { adminUserId, userIds } = req.body;
-    await requireAdmin(adminUserId);
+    const { userIds } = req.body;
     const rows = await getTeamTradeUsageRows();
     const filter =
       Array.isArray(userIds) && userIds.length > 0 ? new Set(userIds.map(String)) : null;
@@ -501,8 +491,6 @@ router.post('/trades-used-reconcile/execute', async (req, res) => {
 // GET: preview same-tier release/pick pairs that were never linked (extra tradesUsed)
 router.get('/release-pick-repair/preview', async (req, res) => {
   try {
-    const { adminUserId } = req.query;
-    await requireAdmin(adminUserId);
     const data = await buildFullRepairPreview();
     res.json(data);
   } catch (error) {
@@ -516,8 +504,7 @@ router.get('/release-pick-repair/preview', async (req, res) => {
 // POST: link pairedPickRequest + decrement tradesUsed (optional userIds = only these teams)
 router.post('/release-pick-repair/execute', async (req, res) => {
   try {
-    const { adminUserId, userIds } = req.body;
-    await requireAdmin(adminUserId);
+    const { userIds } = req.body;
     const filter =
       Array.isArray(userIds) && userIds.length > 0 ? new Set(userIds.map(String)) : null;
     const out = await executeReleasePickRepairs(filter);
@@ -538,9 +525,7 @@ router.post('/release-pick-repair/execute', async (req, res) => {
 router.get('/team-trade-activity/:userId/details', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { adminUserId } = req.query;
-    await requireAdmin(adminUserId);
-
+    
     const uid = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null;
     if (!uid) {
       return res.status(400).json({ message: 'Invalid user ID' });
@@ -595,8 +580,6 @@ router.get('/team-trade-activity/:userId/details', async (req, res) => {
 
 router.get('/player-type/status', async (req, res) => {
   try {
-    const { adminUserId } = req.query;
-    await requireAdmin(adminUserId);
     const stats = await Promise.all(
       VALID_TYPES.map(async (type) => {
         const [totalUnsold, activeUnsold] = await Promise.all([
@@ -623,8 +606,7 @@ router.get('/player-type/status', async (req, res) => {
 
 router.post('/player-type/toggle', async (req, res) => {
   try {
-    const { adminUserId, type, enable } = req.body;
-    await requireAdmin(adminUserId);
+    const { type, enable } = req.body;
     const normalizedType = normalizeType(type);
     if (!VALID_TYPES.includes(normalizedType)) {
       return res.status(400).json({ message: 'Invalid player type' });
@@ -651,8 +633,6 @@ router.post('/player-type/toggle', async (req, res) => {
 
 router.post('/auction/reset', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
     const result = await runAuctionReset();
     res.json({
       message: 'Auction reset completed',
@@ -668,8 +648,6 @@ router.post('/auction/reset', async (req, res) => {
 
 router.post('/scripts/purse/preview', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
     const plan = await buildPurseUpdatePlan();
     res.json(plan);
   } catch (error) {
@@ -682,8 +660,6 @@ router.post('/scripts/purse/preview', async (req, res) => {
 
 router.post('/scripts/purse/execute', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
     const plan = await buildPurseUpdatePlan();
     const result = await executePursePlan(plan);
     res.json(result);
@@ -697,8 +673,6 @@ router.post('/scripts/purse/execute', async (req, res) => {
 
 router.post('/scripts/sync/preview', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
     const plan = await buildSyncPlan();
     res.json(plan);
   } catch (error) {
@@ -711,8 +685,7 @@ router.post('/scripts/sync/preview', async (req, res) => {
 
 router.post('/scripts/duplicate-player-stats/preview', async (req, res) => {
   try {
-    const { adminUserId, battingOnly } = req.body;
-    await requireAdmin(adminUserId);
+    const { battingOnly } = req.body;
     const plan = await previewDuplicatePlayerStats({ battingOnly: !!battingOnly });
     res.json(plan);
   } catch (error) {
@@ -725,8 +698,7 @@ router.post('/scripts/duplicate-player-stats/preview', async (req, res) => {
 
 router.post('/scripts/duplicate-player-stats/execute', async (req, res) => {
   try {
-    const { adminUserId, battingOnly, keepNewest } = req.body;
-    await requireAdmin(adminUserId);
+    const { battingOnly, keepNewest } = req.body;
     const result = await executeDeleteDuplicatePlayerStats({
       battingOnly: !!battingOnly,
       keepNewest: !!keepNewest,
@@ -744,8 +716,6 @@ router.post('/scripts/duplicate-player-stats/execute', async (req, res) => {
 
 router.post('/scripts/player-totals-migrate/preview', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
     const plan = await previewMigratePlayerTotals();
     res.json(plan);
   } catch (error) {
@@ -758,8 +728,6 @@ router.post('/scripts/player-totals-migrate/preview', async (req, res) => {
 
 router.post('/scripts/player-totals-migrate/execute', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
     const result = await executeMigratePlayerTotals();
     invalidateCache('players:data');
     res.json(result);
@@ -773,9 +741,7 @@ router.post('/scripts/player-totals-migrate/execute', async (req, res) => {
 
 router.post('/scripts/career-history-sync/preview', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
-    res.json(getCareerHistorySeedPreview());
+        res.json(getCareerHistorySeedPreview());
   } catch (error) {
     console.error('career-history-sync preview error', error);
     res
@@ -786,8 +752,6 @@ router.post('/scripts/career-history-sync/preview', async (req, res) => {
 
 router.post('/scripts/career-history-sync/execute', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
     const career = await runCareerHistorySeed();
     invalidateCareerSummaryCache();
     invalidateCache('players:data');
@@ -806,8 +770,6 @@ router.post('/scripts/career-history-sync/execute', async (req, res) => {
 
 router.post('/scripts/sync/execute', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
     const plan = await buildSyncPlan();
 
     const userOps = plan.users
@@ -859,8 +821,6 @@ router.post('/scripts/sync/execute', async (req, res) => {
 
 router.post('/scripts/auction-fix/preview', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    await requireAdmin(adminUserId);
     const plan = await previewAuctionFixes();
     res.json(plan);
   } catch (error) {
@@ -873,8 +833,7 @@ router.post('/scripts/auction-fix/preview', async (req, res) => {
 
 router.post('/scripts/auction-fix/execute', async (req, res) => {
   try {
-    const { adminUserId, playerIds } = req.body;
-    await requireAdmin(adminUserId);
+    const { playerIds } = req.body;
     const result = await executeAuctionFixes({ playerIds });
     res.json(result);
   } catch (error) {
@@ -887,9 +846,8 @@ router.post('/scripts/auction-fix/execute', async (req, res) => {
 
 router.post('/users/:userId/active', async (req, res) => {
   try {
-    const { adminUserId, isActive } = req.body;
+    const { isActive } = req.body;
     const { userId } = req.params;
-    await requireAdmin(adminUserId);
     if (typeof isActive !== 'boolean') {
       return res.status(400).json({ message: 'isActive boolean required' });
     }
