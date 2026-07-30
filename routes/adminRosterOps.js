@@ -12,6 +12,8 @@ const User = require('../models/User');
 const Player = require('../models/Player');
 const UserPlayer = require('../models/UserPlayer');
 const Bid = require('../models/Bid');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 const { invalidateCache } = require('../utils/cache');
 const {
   isTradeLocked,
@@ -22,19 +24,8 @@ const {
 
 const CRORE = 10_000_000;
 
-async function requireAdmin(adminUserId) {
-  if (!adminUserId) {
-    const e = new Error('adminUserId is required');
-    e.status = 400;
-    throw e;
-  }
-  const admin = await User.findById(adminUserId).includeInactive().select('isAdmin');
-  if (!admin?.isAdmin) {
-    const e = new Error('Only admins can use roster tools');
-    e.status = 403;
-    throw e;
-  }
-}
+// Do not trust body/query adminUserId — identity comes from the JWT principal.
+router.use(authenticateJWT, requireAdmin);
 
 function purseNum(doc) {
   if (!doc?.purse) return 0;
@@ -48,7 +39,6 @@ function toCr(n) {
 // ---------- Teams & rosters ----------
 router.get('/teams', async (req, res) => {
   try {
-    await requireAdmin(req.query.adminUserId);
     const teams = await User.find({ isAdmin: { $ne: true }, isActive: { $ne: false } })
       .select('_id teamName abbreviation purse')
       .sort({ teamName: 1 })
@@ -65,7 +55,6 @@ router.get('/teams', async (req, res) => {
 
 router.get('/team/:userId/players', async (req, res) => {
   try {
-    await requireAdmin(req.query.adminUserId);
     const { userId } = req.params;
     const ups = await UserPlayer.find({ userId, isActive: true })
       .populate('playerId', 'name type role basePrice')
@@ -89,7 +78,6 @@ router.get('/team/:userId/players', async (req, res) => {
 
 router.get('/unsold', async (req, res) => {
   try {
-    await requireAdmin(req.query.adminUserId);
     const search = (req.query.search || '').trim();
     const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const filter = {
@@ -118,8 +106,7 @@ router.get('/unsold', async (req, res) => {
 // Intentionally NO tradesUsed, NO roster type caps here. Normal rules stay in routes/trades.js & routes/picks.js.
 router.post('/trade/preview', async (req, res) => {
   try {
-    const { adminUserId, player1Id, player2Id } = req.body;
-    await requireAdmin(adminUserId);
+    const { player1Id, player2Id } = req.body;
     if (!player1Id || !player2Id || String(player1Id) === String(player2Id)) {
       return res.status(400).json({ message: 'Two different player IDs required' });
     }
@@ -195,8 +182,8 @@ router.post('/trade/preview', async (req, res) => {
 
 router.post('/trade/execute', async (req, res) => {
   try {
-    const { adminUserId, player1Id, player2Id } = req.body;
-    await requireAdmin(adminUserId);
+    const { player1Id, player2Id } = req.body;
+    const adminUserId = req.authenticatedUser._id;
     if (!player1Id || !player2Id) {
       return res.status(400).json({ message: 'player1Id and player2Id required' });
     }
@@ -273,8 +260,7 @@ router.post('/trade/execute', async (req, res) => {
 // ---------- Pick (unsold → team) ----------
 router.post('/pick/preview', async (req, res) => {
   try {
-    const { adminUserId, teamUserId, playerId } = req.body;
-    await requireAdmin(adminUserId);
+    const { teamUserId, playerId } = req.body;
     if (!teamUserId || !playerId) {
       return res.status(400).json({ message: 'teamUserId and playerId required' });
     }
@@ -317,8 +303,7 @@ router.post('/pick/preview', async (req, res) => {
 
 router.post('/pick/execute', async (req, res) => {
   try {
-    const { adminUserId, teamUserId, playerId } = req.body;
-    await requireAdmin(adminUserId);
+    const { teamUserId, playerId } = req.body;
     if (!teamUserId || !playerId) {
       return res.status(400).json({ message: 'teamUserId and playerId required' });
     }
@@ -385,8 +370,7 @@ router.post('/pick/execute', async (req, res) => {
 // ---------- Release ----------
 router.post('/release/preview', async (req, res) => {
   try {
-    const { adminUserId, teamUserId, playerId } = req.body;
-    await requireAdmin(adminUserId);
+    const { teamUserId, playerId } = req.body;
     if (!teamUserId || !playerId) {
       return res.status(400).json({ message: 'teamUserId and playerId required' });
     }
@@ -435,8 +419,10 @@ router.post('/release/preview', async (req, res) => {
 
 router.post('/release/execute', async (req, res) => {
   try {
-    const { adminUserId, teamUserId, playerId } = req.body;
-    await requireAdmin(adminUserId);
+    const { teamUserId, playerId } = req.body;
+    if (!teamUserId || !playerId) {
+      return res.status(400).json({ message: 'teamUserId and playerId required' });
+    }
 
     const up = await UserPlayer.findOne({ userId: teamUserId, playerId, isActive: true });
     if (!up) return res.status(404).json({ message: 'Ownership not found' });
