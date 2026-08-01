@@ -14,6 +14,7 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
+const authenticateJWT = require('../middleware/authJWT');
 
 // Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
 router.get('/unsold', async (req, res) => {
@@ -86,10 +87,12 @@ router.get('/unsold', async (req, res) => {
 });
 
 // Create pick request
-router.post('/', async (req, res) => {
+router.post('/', authenticateJWT, async (req, res) => {
   try {
-    const { userId, playerId } = req.body;
-    if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
+    const { playerId } = req.body;
+    // Never trust body userId — pick create immediately locks purse/currentBids.
+    const userId = req.authenticatedUser._id;
+    if (!playerId) return res.status(400).json({ message: 'Missing required fields' });
     const [player, user] = await Promise.all([
       Player.findById(playerId),
       User.findById(userId)

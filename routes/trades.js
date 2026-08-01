@@ -21,6 +21,7 @@ const {
   getTradeApprovalBlockers,
   validateTradeForAdminApproval,
 } = require('../utils/tradeApprovalBlockers');
+const authenticateJWT = require('../middleware/authJWT');
 // Limits similar to bidding constraints
 const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
 const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
@@ -72,10 +73,12 @@ router.get('/insights/:userId', async (req, res) => {
 });
 
 // POST create trade request
-router.post('/', async (req, res) => {
+router.post('/', authenticateJWT, async (req, res) => {
   try {
-    const { fromUserId, offeredPlayerId, requestedPlayerId } = req.body;
-    if (!fromUserId || !offeredPlayerId || !requestedPlayerId) {
+    const { offeredPlayerId, requestedPlayerId } = req.body;
+    // Never trust body fromUserId — proposals consume the victim's outgoing trade slots.
+    const fromUserId = req.authenticatedUser._id;
+    if (!offeredPlayerId || !requestedPlayerId) {
       return res.status(400).json({ message: 'Missing required fields.' });
     }
 
@@ -202,10 +205,11 @@ router.post('/', async (req, res) => {
 });
 
 // POST respond to trade (accept/reject)
-router.post('/:tradeId/respond', async (req, res) => {
+router.post('/:tradeId/respond', authenticateJWT, async (req, res) => {
   try {
     const { tradeId } = req.params;
-    const { byUserId, decision, message } = req.body; // decision: accept|reject
+    const { decision, message } = req.body; // decision: accept|reject
+    const byUserId = req.authenticatedUser._id;
     const trade = await TradeRequest.findById(tradeId);
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
     // Allow recipient to respond to initial proposals, and proposer to respond to counters
@@ -251,10 +255,10 @@ router.post('/:tradeId/negotiate', async (_req, res) => {
 });
 
 // POST withdraw own trade proposal (only proposer can withdraw if not completed/rejected)
-router.post('/:tradeId/withdraw', async (req, res) => {
+router.post('/:tradeId/withdraw', authenticateJWT, async (req, res) => {
   try {
     const { tradeId } = req.params;
-    const { byUserId } = req.body;
+    const byUserId = req.authenticatedUser._id;
     const trade = await TradeRequest.findById(tradeId);
     if (!trade) return res.status(404).json({ message: 'Trade not found' });
     if (String(trade.fromUser) !== String(byUserId)) {

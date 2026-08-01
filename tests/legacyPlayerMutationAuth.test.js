@@ -5,6 +5,8 @@ const jwt = require('jsonwebtoken');
 const requireAdmin = require('../middleware/requireAdmin');
 const authenticateJWT = require('../middleware/authJWT');
 const playerRoutes = require('../routes/players');
+const pickRoutes = require('../routes/picks');
+const tradeRoutes = require('../routes/trades');
 
 function getRouteStack(router, method, path) {
   const layer = router.stack.find(
@@ -14,8 +16,8 @@ function getRouteStack(router, method, path) {
   return layer.route.stack;
 }
 
-function handlerNames(method, path) {
-  return getRouteStack(playerRoutes, method, path).map((layer) => layer.handle.name);
+function handlerNames(router, method, path) {
+  return getRouteStack(router, method, path).map((layer) => layer.handle.name);
 }
 
 async function invoke(handler, req) {
@@ -59,13 +61,20 @@ test('requireAdmin blocks missing and non-admin users', async () => {
 });
 
 test('legacy trade-player and release-player require JWT admin middleware', () => {
-  const tradeHandlers = handlerNames('post', '/trade-player');
+  const tradeHandlers = handlerNames(playerRoutes, 'post', '/trade-player');
   assert.ok(tradeHandlers.includes('authenticateJWT'));
   assert.ok(tradeHandlers.includes('requireAdmin'));
 
-  const releaseHandlers = handlerNames('post', '/release-player');
+  const releaseHandlers = handlerNames(playerRoutes, 'post', '/release-player');
   assert.ok(releaseHandlers.includes('authenticateJWT'));
   assert.ok(releaseHandlers.includes('requireAdmin'));
+});
+
+test('pick create and trade create/respond/withdraw require JWT', () => {
+  assert.ok(handlerNames(pickRoutes, 'post', '/').includes('authenticateJWT'));
+  assert.ok(handlerNames(tradeRoutes, 'post', '/').includes('authenticateJWT'));
+  assert.ok(handlerNames(tradeRoutes, 'post', '/:tradeId/respond').includes('authenticateJWT'));
+  assert.ok(handlerNames(tradeRoutes, 'post', '/:tradeId/withdraw').includes('authenticateJWT'));
 });
 
 test('unauthenticated callers cannot reach trade-player or release-player handlers', async () => {
@@ -131,6 +140,16 @@ test('release-player handler returns player to unsold pool and ignores body admi
   assert.match(source, /req\.authenticatedUser\._id/);
   assert.equal(/User\.findById\(adminUserId\)/.test(source), false);
   assert.equal(/const\s*\{\s*adminUserId/.test(source), false);
+});
+
+test('pick create and trade respond bind actor to authenticated user', () => {
+  const pickHandler = getRouteStack(pickRoutes, 'post', '/').at(-1).handle.toString();
+  assert.match(pickHandler, /req\.authenticatedUser\._id/);
+  assert.equal(/const\s*\{\s*userId,\s*playerId/.test(pickHandler), false);
+
+  const respondHandler = getRouteStack(tradeRoutes, 'post', '/:tradeId/respond').at(-1).handle.toString();
+  assert.match(respondHandler, /req\.authenticatedUser\._id/);
+  assert.equal(/const\s*\{\s*byUserId/.test(respondHandler), false);
 });
 
 test('authenticateJWT rejects tokens that omit sessionId', async () => {
