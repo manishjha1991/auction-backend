@@ -11,6 +11,8 @@ const { cacheConfig, invalidateCache, flushStatsOverviewCache } = require('../ut
 const multerMemory = require('../config/multerMemory');
 const { saveProfilePictureLocal } = require('../utils/saveProfilePictureLocal');
 const { removeLocalProfilePictureIfSafe } = require('../utils/removeLocalProfilePictureIfSafe');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 const router = express.Router();
 const formatPrice = (value) => {
   if (value >= 10000000) {
@@ -479,7 +481,7 @@ router.get("/players/data", async (req, res) => {
 });
 
 // Add Trade Player API
-router.post('/trade-player', async (req, res) => {
+router.post('/trade-player', authenticateJWT, requireAdmin, async (req, res) => {
   const { player1Id, player2Id } = req.body;
 
   if (!player1Id || !player2Id) {
@@ -542,16 +544,13 @@ router.post('/trade-player', async (req, res) => {
 });
 
 // Admin: release a player immediately
-router.post('/release-player', async (req, res) => {
+router.post('/release-player', authenticateJWT, requireAdmin, async (req, res) => {
   try {
-    const { adminUserId, userId, playerId } = req.body;
-    if (!adminUserId || !userId || !playerId) {
+    const { userId, playerId } = req.body;
+    if (!userId || !playerId) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
-    const admin = await User.findById(adminUserId);
-    if (!admin || !admin.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can release players' });
-    }
+    const adminUserId = req.authenticatedUser._id;
     const up = await UserPlayer.findOne({ userId, playerId, isActive: true });
     if (!up) {
       return res.status(404).json({ message: 'Ownership not found or already inactive' });
@@ -570,6 +569,24 @@ router.post('/release-player', async (req, res) => {
     up.updatedAt = new Date();
     await up.save();
 
+    // Return player to the unsold pool so they can be re-auctioned / picked.
+    // Without this, ownership is removed while isSold stays true forever.
+    try {
+      await Player.findByIdAndUpdate(playerId, {
+        $set: {
+          isSold: false,
+          isActive: false,
+          currentBid: null,
+          currentBidder: null,
+          tradeLocked: false,
+          tradeLockedUntil: null,
+          releasedAt: new Date(),
+        },
+      });
+    } catch (playerUpdateError) {
+      console.error('Error updating player status after release:', playerUpdateError);
+    }
+
     // CRITICAL FIX: Remove player from user's boughtPlayers array
     try {
       await User.findByIdAndUpdate(userId, {
@@ -577,6 +594,12 @@ router.post('/release-player', async (req, res) => {
       });
     } catch (userUpdateError) {
       console.error('Error removing player from boughtPlayers:', userUpdateError);
+    }
+
+    try {
+      await Bid.deleteMany({ playerId });
+    } catch (bidCleanupError) {
+      console.error('Error clearing bids after release:', bidCleanupError);
     }
 
     // If a pending release request exists, mark it approved
