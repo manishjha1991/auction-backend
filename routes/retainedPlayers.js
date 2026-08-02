@@ -18,6 +18,8 @@ const Schedule = require('../models/Schedule');
 const TradeRequest = require('../models/TradeRequest');
 const AppSettings = require('../models/AppSettings');
 const { invalidateCache } = require('../utils/cache');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
 // Helper function to get original base price based on player type
 const getOriginalBasePrice = (playerType) => {
@@ -36,7 +38,7 @@ const getOriginalBasePrice = (playerType) => {
 };
 
 // NEW: Fix all player base prices to correct values
-router.post('/fix-base-prices', async (req, res) => {
+router.post('/fix-base-prices', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     console.log('🔧 Starting comprehensive base price fix...');
     
@@ -123,11 +125,12 @@ router.post('/fix-base-prices', async (req, res) => {
 });
 
 // Retain a player
-router.post('/retain', async (req, res) => {
+router.post('/retain', authenticateJWT, async (req, res) => {
   try {
-    const { userId, playerId } = req.body;
+    const userId = req.authenticatedUser._id;
+    const { playerId } = req.body;
     
-    if (!userId || !playerId) {
+    if (!playerId) {
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
@@ -316,16 +319,8 @@ router.get('/all', async (req, res) => {
 });
 
 // Release all other players (admin only)
-router.post('/release-all-others', async (req, res) => {
+router.post('/release-all-others', authenticateJWT, requireAdmin, async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    
-    // Verify admin
-    const admin = await User.findById(adminUserId);
-    if (!admin || !admin.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can release all other players' });
-    }
-
     // Get all retained player IDs
     const retainedPlayers = await RetainedPlayer.find({ isActive: true });
     const initialRetainedPlayerIds = retainedPlayers.map(rp => rp.playerId);
@@ -480,7 +475,7 @@ router.post('/release-all-others', async (req, res) => {
       Notification.deleteMany({
         $and: [
           { type: { $in: ['bid', 'bid_notification', 'bid_update'] } },
-          { 'metadata.playerId': { $nin: teamCleanupRetainedPlayerIds } }
+          { 'metadata.playerId': { $nin: cleanupRetainedPlayerIds } }
         ]
       }),
       // Delete all comments except for retained players
@@ -593,14 +588,10 @@ router.post('/release-all-others', async (req, res) => {
 });
 
 // Undo retention (user can undo their own retained players)
-router.post('/undo/:retainedPlayerId', async (req, res) => {
+router.post('/undo/:retainedPlayerId', authenticateJWT, async (req, res) => {
   try {
     const { retainedPlayerId } = req.params;
-    const { userId } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ message: 'User ID is required' });
-    }
+    const userId = String(req.authenticatedUser._id);
 
     // Check if admin has already released players
     const settings = await AppSettings.findOne();
@@ -644,14 +635,10 @@ router.post('/undo/:retainedPlayerId', async (req, res) => {
 });
 
 // Withdraw retention (user can withdraw their retained players - requires admin approval)
-router.post('/withdraw/:retainedPlayerId', async (req, res) => {
+router.post('/withdraw/:retainedPlayerId', authenticateJWT, async (req, res) => {
   try {
     const { retainedPlayerId } = req.params;
-    const { userId } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ message: 'User ID is required' });
-    }
+    const userId = String(req.authenticatedUser._id);
 
     // Find the retained player
     const retainedPlayer = await RetainedPlayer.findById(retainedPlayerId);
@@ -726,20 +713,9 @@ router.get('/withdrawals', async (req, res) => {
 });
 
 // Approve withdrawal and release all other players (admin only)
-router.post('/approve-withdrawal/:retainedPlayerId', async (req, res) => {
+router.post('/approve-withdrawal/:retainedPlayerId', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { retainedPlayerId } = req.params;
-    const { adminUserId } = req.body;
-
-    if (!adminUserId) {
-      return res.status(400).json({ message: 'Admin user ID is required' });
-    }
-
-    // Verify admin
-    const admin = await User.findById(adminUserId);
-    if (!admin || !admin.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can approve withdrawals' });
-    }
 
     // Find the withdrawn player
     const withdrawnPlayer = await RetainedPlayer.findById(retainedPlayerId);
@@ -849,18 +825,12 @@ router.post('/approve-withdrawal/:retainedPlayerId', async (req, res) => {
 });
 
 // Lock/Unlock team retention (admin only)
-router.post('/lock-retention', async (req, res) => {
+router.post('/lock-retention', authenticateJWT, requireAdmin, async (req, res) => {
   try {
-    const { adminUserId, userId, isRetentionLocked } = req.body;
+    const { userId, isRetentionLocked } = req.body;
 
-    if (!adminUserId || !userId || typeof isRetentionLocked !== 'boolean') {
+    if (!userId || typeof isRetentionLocked !== 'boolean') {
       return res.status(400).json({ message: 'Missing required fields' });
-    }
-
-    // Verify admin
-    const admin = await User.findById(adminUserId);
-    if (!admin || !admin.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can lock/unlock team retention' });
     }
 
     // Update user retention lock status
@@ -885,16 +855,9 @@ router.post('/lock-retention', async (req, res) => {
 });
 
 // Remove retained player (admin only)
-router.delete('/:retainedPlayerId', async (req, res) => {
+router.delete('/:retainedPlayerId', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { retainedPlayerId } = req.params;
-    const { adminUserId } = req.body;
-
-    // Verify admin
-    const admin = await User.findById(adminUserId);
-    if (!admin || !admin.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can remove retained players' });
-    }
 
     const retainedPlayer = await RetainedPlayer.findById(retainedPlayerId);
     if (!retainedPlayer) {
@@ -913,30 +876,19 @@ router.delete('/:retainedPlayerId', async (req, res) => {
 });
 
 // Release all players for a specific team (admin only)
-router.post('/release-team-players', async (req, res) => {
+router.post('/release-team-players', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     console.log('=== RELEASE TEAM PLAYERS START ===');
-    const { adminUserId, teamId, teamName } = req.body;
+    const { teamId, teamName } = req.body;
     
     console.log('Release team players request body:', req.body);
-    console.log('Admin user ID:', adminUserId);
     console.log('Team ID:', teamId);
     console.log('Team Name:', teamName);
 
-    if (!adminUserId || !teamId) {
-      console.log('Missing required fields - adminUserId:', adminUserId, 'teamId:', teamId);
+    if (!teamId) {
+      console.log('Missing required fields - teamId:', teamId);
       return res.status(400).json({ message: 'Missing required fields' });
     }
-
-    // Verify admin
-    console.log('Verifying admin...');
-    const admin = await User.findById(adminUserId);
-    console.log('Admin found:', admin ? 'Yes' : 'No');
-    if (!admin || !admin.isAdmin) {
-      console.log('Admin verification failed');
-      return res.status(403).json({ message: 'Only admin can release team players' });
-    }
-    console.log('Admin verified successfully');
 
     // Find the team
     console.log('Finding team...');
@@ -1268,7 +1220,7 @@ router.get('/debug-settings', async (req, res) => {
 });
 
 // Migration route to add allPlayersReleased field to existing users
-router.post('/migrate-users', async (req, res) => {
+router.post('/migrate-users', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     console.log('Starting migration to add allPlayersReleased field to existing users...');
     
@@ -1318,7 +1270,7 @@ router.post('/migrate-users', async (req, res) => {
 });
 
 // Test route to check user update functionality
-router.post('/test-user-update', async (req, res) => {
+router.post('/test-user-update', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     console.log('Testing user update functionality...');
     
@@ -1362,16 +1314,8 @@ router.post('/test-user-update', async (req, res) => {
 });
 
 // Reset allPlayersReleased to false for all users (admin only)
-router.post('/reset-all-players-released', async (req, res) => {
+router.post('/reset-all-players-released', authenticateJWT, requireAdmin, async (req, res) => {
   try {
-    const { adminUserId } = req.body;
-    
-    // Verify admin
-    const admin = await User.findById(adminUserId);
-    if (!admin || !admin.isAdmin) {
-      return res.status(403).json({ message: 'Only admin can reset allPlayersReleased status' });
-    }
-
     // Reset allPlayersReleased to false for all users
     console.log('Resetting allPlayersReleased to false for all users...');
     const updateResult = await User.updateMany(
