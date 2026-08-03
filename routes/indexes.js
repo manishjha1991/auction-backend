@@ -1,6 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
 // Import all models
 const User = require('../models/User');
@@ -27,7 +29,7 @@ const PlayerCareerSummary = require('../models/PlayerCareerSummary');
 const TeamHeadToHead = require('../models/TeamHeadToHead');
 
 // Create all indexes for maximum performance
-router.post('/create-all', async (req, res) => {
+router.post('/create-all', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     console.log('🚀 Starting comprehensive index creation...');
     const results = {};
@@ -937,7 +939,7 @@ async function createRetainedPlayerIndexes() {
  * Sync indexes declared on Mongoose schemas (PlayerCareerSummary compound indexes, uniques, etc.).
  * Safer than raw createIndex when schema already defines indexes.
  */
-router.post('/sync-schema-indexes', async (req, res) => {
+router.post('/sync-schema-indexes', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const models = [
       ['PlayerCareerSummary', PlayerCareerSummary],
@@ -1014,7 +1016,7 @@ router.get('/stats', async (req, res) => {
 });
 
 // Drop all indexes (use with caution!)
-router.post('/drop-all', async (req, res) => {
+router.post('/drop-all', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const collections = [
       'users', 'players', 'bids', 'bidhistories', 'matchresults', 'fixtures',
