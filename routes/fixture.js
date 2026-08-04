@@ -7,6 +7,8 @@ const Player = require('../models/Player');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
 const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
 const router = express.Router();
 
@@ -279,44 +281,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Middleware to check if user is admin
-const isAdmin = async (req, res, next) => {
-  try {
-    // Try to get userId from header first, then from body
-    const userId = req.headers['user-id'] || req.body.userId;
-    if (!userId || userId === 'undefined' || userId === 'null') {
-      console.error('❌ Admin check failed: User ID missing in headers or body');
-      console.error('❌ Headers:', JSON.stringify(req.headers, null, 2));
-      console.error('❌ Body keys:', Object.keys(req.body || {}));
-      return res.status(401).json({ 
-        error: 'User ID required',
-        message: 'Please provide user-id header or userId in request body'
-      });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      console.error(`❌ Admin check failed: User not found with ID: ${userId}`);
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    if (!user.isAdmin) {
-      console.error(`❌ Admin check failed: User ${userId} is not admin`);
-      return res.status(403).json({ error: 'Only admin can perform this action' });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    console.error('❌ Authentication error:', error);
-    res.status(500).json({ 
-      error: 'Server error',
-      message: error.message 
-    });
-  }
-};
-
-router.post('/save', isAdmin, async (req, res) => {
+router.post('/save', authenticateJWT, requireAdmin, async (req, res) => {
   let oldWinnerBeforeSave = null;
   try {
     if (process.env.NODE_ENV !== 'production') console.log('📥 Fixture save:', req.body._id);

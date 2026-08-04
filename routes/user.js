@@ -6,6 +6,8 @@ const router = express.Router();
 const { getClientIp } = require('../utils/network');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 // Request logging only in development (avoids logging sensitive body in prod)
 router.use((req, res, next) => {
   if (process.env.NODE_ENV !== 'production') console.log(`👤 ${req.method} ${req.path}`);
@@ -980,7 +982,7 @@ router.get('/teams', async (req, res) => {
   }
 });
 
-router.put('/update-points/:userId', async (req, res) => {
+router.put('/update-points/:userId', authenticateJWT, requireAdmin, async (req, res) => {
   const { userId } = req.params;
   const { points, fairness } = req.body;
 
@@ -1014,7 +1016,7 @@ router.put('/update-points/:userId', async (req, res) => {
 });
 
 // PUT: Update fairness points, matches played, and points directly (Admin only)
-router.put('/update-fairness/:userId', async (req, res) => {
+router.put('/update-fairness/:userId', authenticateJWT, requireAdmin, async (req, res) => {
   const { userId } = req.params;
   const { points, matchesPlayed, fairnessPoint } = req.body;
 
@@ -1550,14 +1552,12 @@ router.get('/groups', async (_req, res) => {
   }
 });
 
-// POST: set a team's group (A or B) - admin only via adminUserId
-router.post('/:userId/group', async (req, res) => {
+// POST: set a team's group (A or B) — admin only via session-bound JWT
+router.post('/:userId/group', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { group, adminUserId } = req.body;
+    const { group } = req.body;
     if (!['A', 'B', null].includes(group)) return res.status(400).json({ message: 'Invalid group' });
-    const admin = await User.findById(adminUserId);
-    if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update group' });
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
     user.group = group;

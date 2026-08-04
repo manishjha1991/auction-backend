@@ -7,6 +7,8 @@ const AppSettings = require('../models/AppSettings');
 const Fixture = require('../models/Fixture');
 const headToHeadModule = require('./headToHead');
 const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
 // Helper function to parse score string and extract runs
 const parseRuns = (scoreString) => {
@@ -277,7 +279,7 @@ router.get('/', async (req, res) => {
 });
 
 // Initialize playoff fixtures - different logic based on mode
-router.post('/initialize', async (req, res) => {
+router.post('/initialize', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { mode } = req.body; // Get mode from request body
     console.log('Playoff initialization mode:', mode); // Debug log
@@ -594,7 +596,7 @@ router.post('/initialize', async (req, res) => {
 });
 
 // Update playoff fixture
-router.post('/update/:matchId', async (req, res) => {
+router.post('/update/:matchId', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { matchId } = req.params;
     const existing = await PlayoffFixture.findOne({ matchId }).lean();
@@ -851,7 +853,7 @@ async function updateDependentMatches(matchId, winner) {
 }
 
 // Test endpoint to manually trigger dependent match updates
-router.post('/test-update/:matchId', async (req, res) => {
+router.post('/test-update/:matchId', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { matchId } = req.params;
     const { winner } = req.body;
