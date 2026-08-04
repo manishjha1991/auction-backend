@@ -13,9 +13,9 @@ const authenticateJWT = async (req, res, next) => {
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.substring(7);
-    } else if (req.body.token) {
+    } else if (req.body && req.body.token) {
       token = req.body.token;
-    } else if (req.query.token) {
+    } else if (req.query && req.query.token) {
       token = req.query.token;
     }
 
@@ -32,8 +32,9 @@ const authenticateJWT = async (req, res, next) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Verify session ID matches (optional - can be removed if you want to allow multiple sessions)
-    if (user.activeSessionId && decoded.sessionId && user.activeSessionId !== decoded.sessionId) {
+    // Bind the token to the server-side login session. A valid signature alone
+    // must never be enough — the repo's default JWT secret is public.
+    if (!user.activeSessionId || !decoded.sessionId || user.activeSessionId !== decoded.sessionId) {
       return res.status(403).json({ 
         message: 'Session expired or invalid. Please login again.',
         requiresReauth: true 
@@ -57,4 +58,3 @@ const authenticateJWT = async (req, res, next) => {
 };
 
 module.exports = authenticateJWT;
-
