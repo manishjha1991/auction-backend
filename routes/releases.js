@@ -9,6 +9,7 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
 const { findOrphanPickToPairOnReleaseApprove } = require('../utils/releasePickPairing');
+const authenticateJWT = require('../middleware/authJWT');
 
 const CRORE = 10000000;
 
@@ -86,10 +87,12 @@ async function attachInsights(docs) {
 }
 
 // Create release request
-router.post('/', async (req, res) => {
+router.post('/', authenticateJWT, async (req, res) => {
   try {
-    const { userId, playerId } = req.body;
-    if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
+    const { playerId } = req.body;
+    // Never trust body userId — forged create looks like a victim-initiated release.
+    const userId = req.authenticatedUser._id;
+    if (!playerId) return res.status(400).json({ message: 'Missing required fields' });
     // Guard: user cannot exceed season trade cap (trade + release combined)
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const u = await User.findById(userId).select('tradesUsed').lean();
@@ -306,10 +309,10 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
 });
 
 // Withdraw release request
-router.post('/:releaseId/withdraw', async (req, res) => {
+router.post('/:releaseId/withdraw', authenticateJWT, async (req, res) => {
   try {
     const { releaseId } = req.params;
-    const { byUserId } = req.body;
+    const byUserId = req.authenticatedUser._id;
     
     const item = await ReleaseRequest.findById(releaseId);
     if (!item) {
