@@ -9,6 +9,8 @@ const MatchResult = require('../models/MatchResult');
 const PlayoffFixture = require('../models/PlayoffFixture');
 const TeamHeadToHead = require('../models/TeamHeadToHead');
 const User = require('../models/User');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 
 // Normalize pair: always store smaller userId first for consistent lookup
 const normalizePair = (id1, id2) => {
@@ -294,7 +296,7 @@ router.get('/matches/:team1Id/:team2Id', async (req, res) => {
 });
 
 // POST /api/head-to-head/sync - Manually trigger sync (e.g. after bulk fixture update)
-router.post('/sync', async (req, res) => {
+router.post('/sync', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const synced = await syncHeadToHead();
     res.json({ message: `Synced ${synced} new results`, syncedCount: synced });
@@ -305,7 +307,7 @@ router.post('/sync', async (req, res) => {
 });
 
 // POST /api/head-to-head/reset - Clear TeamHeadToHead and re-sync from Fixture, MatchResult, PlayoffFixture
-router.post('/reset', async (req, res) => {
+router.post('/reset', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     await TeamHeadToHead.deleteMany({});
     const synced = await syncHeadToHead();

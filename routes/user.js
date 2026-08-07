@@ -3,6 +3,8 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
 const router = express.Router();
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 const { getClientIp } = require('../utils/network');
 const { cacheConfig, invalidateCache } = require('../utils/cache');
 const { emitPointsTableUpdated } = require('../utils/emitPointsTableUpdate');
@@ -1747,7 +1749,7 @@ router.put('/:userId/squad-theme', async (req, res) => {
 });
 
 // Cleanup boughtPlayers arrays endpoint
-router.post('/cleanup-bought-players', async (req, res) => {
+router.post('/cleanup-bought-players', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     console.log('🔍 Starting boughtPlayers cleanup via API...\n');
 
