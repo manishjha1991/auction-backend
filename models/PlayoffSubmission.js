@@ -7,6 +7,15 @@ const PlayoffSubmissionSchema = new mongoose.Schema(
       required: true,
     },
     stage: { type: String, default: '' },
+    /** When set, approval writes Tournament.tournamentFixtures instead of PlayoffFixture */
+    isWorldCupTournament: { type: Boolean, default: false },
+    tournamentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Tournament',
+      default: null,
+    },
+    fixtureIndex: { type: Number, default: null },
+    tournamentName: { type: String, default: '' },
     submittedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

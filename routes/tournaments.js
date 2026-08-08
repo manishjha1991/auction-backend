@@ -461,7 +461,6 @@ router.get('/subscription-count', isAuthenticated, async (req, res) => {
 // GET /api/tournaments/:id - Get single tournament
 router.get('/:id', isAuthenticated, async (req, res) => {
   try {
-    // 🚀 PERFORMANCE: Use .lean() for read-only query
     const tournament = await Tournament.findById(req.params.id)
       .populate('subscribedTeams.userId', 'name teamName teamImage')
       .populate('createdBy', 'name teamName')
@@ -471,17 +470,26 @@ router.get('/:id', isAuthenticated, async (req, res) => {
       return res.status(404).json({ error: 'Tournament not found' });
     }
 
+    const uid = String(req.user._id);
+    const isUserSubscribed = (tournament.subscribedTeams || []).some((team) => {
+      const teamUid = team.userId?._id || team.userId;
+      return teamUid && String(teamUid) === uid;
+    });
+
     const tournamentWithUserStatus = {
-      ...tournament.toObject(),
-      subscriptionCount: tournament.subscribedTeams.length,
-      slotsLeft: tournament.maxSlots - tournament.subscribedTeams.length,
-      isUserSubscribed: tournament.isUserSubscribed(req.user._id),
-      subscribedTeams: tournament.subscribedTeams.map(team => ({
-        ...team,
-        userId: team.userId._id,
-        teamName: team.userId.teamName || team.teamName,
-        teamImage: team.userId.teamImage || team.teamImage
-      }))
+      ...tournament,
+      subscriptionCount: (tournament.subscribedTeams || []).length,
+      slotsLeft: tournament.maxSlots - (tournament.subscribedTeams || []).length,
+      isUserSubscribed,
+      subscribedTeams: (tournament.subscribedTeams || []).map((team) => {
+        const populated = team.userId && typeof team.userId === 'object' ? team.userId : null;
+        return {
+          ...team,
+          userId: populated?._id || team.userId,
+          teamName: populated?.teamName || team.teamName,
+          teamImage: populated?.teamImage || team.teamImage,
+        };
+      }),
     };
 
     res.json(tournamentWithUserStatus);
@@ -1469,144 +1477,181 @@ router.post('/:id/sync-winner-from-final', isAdmin, async (req, res) => {
   }
 });
 
-// POST /api/tournaments/world-cup/initialize - Initialize World Cup tournament with top 8 teams
+// POST /api/tournaments/world-cup/initialize
+// Seed from CPL composite report: top 6 of "Who's in the qualification mix?"
 router.post('/world-cup/initialize', isAdmin, async (req, res) => {
   try {
-    // Check if World Cup mode is enabled
     const settings = await AppSettings.findOne().lean();
     if (!settings?.worldCupMode) {
-      return res.status(400).json({ error: 'World Cup mode is not enabled. Please enable it from admin panel first.' });
-    }
-
-    // Get top 8 teams from point table
-    const allTeams = await User.find({ 
-      teamName: { $exists: true, $ne: null, $ne: "NA" },
-      isAdmin: false,
-      isActive: true
-    })
-      .select('_id teamName points matchesPlayed fairnessPoint teamImage')
-      .lean();
-    
-    // Sort exactly like point table
-    const sortedTeams = allTeams.sort((a, b) => {
-      const pointsA = a.points || 0;
-      const pointsB = b.points || 0;
-      if (pointsB !== pointsA) return pointsB - pointsA;
-      
-      const fairnessA = a.fairnessPoint || 0;
-      const fairnessB = b.fairnessPoint || 0;
-      if (fairnessB !== fairnessA) return fairnessB - fairnessA;
-      
-      const matchesA = a.matchesPlayed || 0;
-      const matchesB = b.matchesPlayed || 0;
-      if (matchesA !== matchesB) return matchesA - matchesB;
-      
-      const nameA = (a.teamName || '').toLowerCase();
-      const nameB = (b.teamName || '').toLowerCase();
-      return nameA.localeCompare(nameB);
-    }).slice(0, 8);
-
-    if (sortedTeams.length < 8) {
-      return res.status(400).json({ error: 'Need at least 8 teams to initialize World Cup tournament' });
-    }
-
-    // Check if all top 8 teams have completed required games
-    const allTeamsCompletedGames = sortedTeams.every(team => (team.matchesPlayed || 0) >= 13);
-
-      if (!allTeamsCompletedGames) {
-        const incompleteTeams = sortedTeams.filter(team => (team.matchesPlayed || 0) < 13);
-        return res.status(400).json({
-          error: 'All top 8 teams must complete 13 matches before initializing World Cup tournament',
-        incompleteTeams: incompleteTeams.map(team => ({
-          teamName: team.teamName,
-          matchesPlayed: team.matchesPlayed || 0
-        }))
+      return res.status(400).json({
+        error: 'World Cup mode is not enabled. Please enable it from admin panel first.',
       });
     }
 
-    // Check for existing World Cup tournaments and find the next number
-    const existingWorldCups = await Tournament.find({ 
-      name: { $regex: /^World Cup \d+$/ }
-    }).sort({ name: -1 });
-    
-    let worldCupNumber = 1;
-    if (existingWorldCups.length > 0) {
-      // Extract number from the latest World Cup (e.g., "World Cup 3" -> 3)
-      const latestMatch = existingWorldCups[0].name.match(/World Cup (\d+)/);
-      if (latestMatch) {
-        worldCupNumber = parseInt(latestMatch[1]) + 1;
-      } else {
-        // If pattern doesn't match, count existing ones
-        worldCupNumber = existingWorldCups.length + 1;
+    const { buildCplReportSnapshot } = require('../utils/cplReportHelpers');
+    const snapshot = await buildCplReportSnapshot();
+    if (!snapshot?.ok) {
+      return res.status(503).json({
+        error:
+          snapshot?.message ||
+          'Could not build CPL qualification mix report. Check MONGO_URI / CPL_REPORT_DBS.',
+      });
+    }
+
+    const mixRows = Array.isArray(snapshot.composite?.rows) ? snapshot.composite.rows : [];
+    const topMix = mixRows.slice(0, 6);
+    if (topMix.length < 6) {
+      return res.status(400).json({
+        error: `Need at least 6 teams in "Who's in the qualification mix?" (found ${topMix.length}). Open /cpl-composite-report.`,
+        mixCount: topMix.length,
+      });
+    }
+
+    const normalizeKey = (name) =>
+      String(name || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toUpperCase();
+
+    const stripKey = (name) =>
+      normalizeKey(name)
+        .replace(/[^A-Z0-9]+/g, '')
+        .trim();
+
+    const users = await User.find({
+      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isAdmin: false,
+      isActive: true,
+    })
+      .select('_id teamName teamImage matchesPlayed points fairnessPoint isParticipating abbreviation')
+      .lean();
+
+    const byExact = new Map();
+    const byStrip = new Map();
+    const byAbbrev = new Map();
+    users.forEach((u) => {
+      const exact = normalizeKey(u.teamName);
+      const stripped = stripKey(u.teamName);
+      const abbrev = normalizeKey(u.abbreviation);
+      if (exact && !byExact.has(exact)) byExact.set(exact, u);
+      if (stripped && !byStrip.has(stripped)) byStrip.set(stripped, u);
+      // Historical CPL tables often store abbreviation as teamName (PUN, MSD, …)
+      if (abbrev && !byAbbrev.has(abbrev)) byAbbrev.set(abbrev, u);
+    });
+
+    const sortedTeams = [];
+    const unresolved = [];
+    for (const row of topMix) {
+      const exact = normalizeKey(row.teamName || row.teamKey);
+      const stripped = stripKey(row.teamName || row.teamKey);
+      const user =
+        byExact.get(exact) ||
+        byAbbrev.get(exact) ||
+        byStrip.get(stripped) ||
+        byAbbrev.get(stripped) ||
+        null;
+      if (!user) {
+        unresolved.push({
+          rank: row.rank,
+          teamName: row.teamName,
+          qualificationIndex: row.finalAvg,
+        });
+        continue;
+      }
+      sortedTeams.push({
+        ...user,
+        qualificationIndex: row.finalAvg,
+        mixRank: row.rank,
+      });
+    }
+
+    if (unresolved.length || sortedTeams.length < 6) {
+      return res.status(400).json({
+        error:
+          'Could not match all top 6 qualification-mix teams to active users in the current season database.',
+        matched: sortedTeams.map((t) => t.teamName),
+        unresolved,
+      });
+    }
+
+    // Next World Cup name — support "World Cup 3" and "World Cup Session 3"
+    const existingWorldCups = await Tournament.find({
+      name: { $regex: /world\s*cup/i },
+    }).sort({ createdAt: -1, name: -1 });
+
+    let worldCupNumber = existingWorldCups.length + 1;
+    for (const t of existingWorldCups) {
+      const m = String(t.name || '').match(/(\d+)\s*$/);
+      if (m) {
+        worldCupNumber = Math.max(worldCupNumber, parseInt(m[1], 10) + 1);
+        break;
       }
     }
-    
-    const worldCupName = `World Cup ${worldCupNumber}`;
 
-    // Get admin user for createdBy
+    const worldCupName = `World Cup Session ${worldCupNumber}`;
     const adminUser = await User.findOne({ isAdmin: true });
     if (!adminUser) {
       return res.status(500).json({ error: 'No admin user found' });
     }
 
-    // Create World Cup tournament
     const tournament = new Tournament({
       name: worldCupName,
-      description: 'Top 8 teams play round-robin, then top 4 play semi-finals and finals',
+      description:
+        "Top 6 from CPL composite report (Who's in the qualification mix?) — round-robin then knockout",
       startDate: new Date(),
-      endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
-      maxSlots: 8,
+      endDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      maxSlots: 6,
       status: 'running',
       createdBy: adminUser._id,
-      subscribedTeams: sortedTeams.map(team => ({
+      subscribedTeams: sortedTeams.map((team) => ({
         userId: team._id,
         teamName: team.teamName,
-        teamImage: team.teamImage || null
-      }))
+        teamImage: team.teamImage || null,
+      })),
     });
 
     await tournament.save();
 
-    // Generate round-robin fixtures (28 matches: 8 * 7 / 2)
-    const fixtures = [];
+    const wcFixtures = [];
     for (let i = 0; i < sortedTeams.length; i++) {
       for (let j = i + 1; j < sortedTeams.length; j++) {
-        fixtures.push({
+        wcFixtures.push({
           team1: sortedTeams[i].teamName,
           team2: sortedTeams[j].teamName,
-          team1UserId: sortedTeams[i]._id, // userId-based
-          team2UserId: sortedTeams[j]._id, // userId-based
+          team1UserId: sortedTeams[i]._id,
+          team2UserId: sortedTeams[j]._id,
           winner: null,
           margin: null,
           team1Score: null,
           team2Score: null,
           team1Fairness: 0,
           team2Fairness: 0,
-          mom: {
-            name: null,
-            score: null,
-            wickets: null
-          },
-          createdAt: new Date()
+          mom: { name: null, score: null, wickets: null },
+          createdAt: new Date(),
         });
       }
     }
 
-    tournament.tournamentFixtures = fixtures;
+    tournament.tournamentFixtures = wcFixtures;
     await tournament.save();
-
-    // Initialize point table
     await updateTournamentPointTable(tournament._id);
 
     res.status(201).json({
-      message: 'World Cup tournament initialized successfully',
+      message:
+        "World Cup initialized from top 6 of Who's in the qualification mix? (CPL composite report)",
       tournament: {
         _id: tournament._id,
         id: tournament._id,
         name: tournament.name,
         teamsCount: sortedTeams.length,
-        roundRobinFixtures: fixtures.length
-      }
+        teams: sortedTeams.map((t) => ({
+          teamName: t.teamName,
+          mixRank: t.mixRank,
+          qualificationIndex: t.qualificationIndex,
+        })),
+        roundRobinFixtures: wcFixtures.length,
+        reportDatabases: snapshot.reportDatabases || [],
+      },
     });
   } catch (error) {
     console.error('Initialize World Cup tournament error:', error);

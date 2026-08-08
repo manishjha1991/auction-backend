@@ -2,6 +2,8 @@ const express = require('express');
 const PlayoffFixture = require('../models/PlayoffFixture');
 const PlayoffSubmission = require('../models/PlayoffSubmission');
 const User = require('../models/User');
+const AppSettings = require('../models/AppSettings');
+const Tournament = require('../models/Tournament');
 const {
   isPlayoffMatchReady,
   userInPlayoffFixture,
@@ -10,6 +12,14 @@ const {
   applyPlayoffFixtureResult,
   buildPlayoffUpdateFromSubmission,
 } = require('../utils/playoffSaveService');
+const {
+  findRunningWorldCupTournament,
+  mapTournamentFixturesToPlayoffShape,
+  resolveTournamentFixtureByMatchId,
+  resolveWinnerOnTournamentFixture,
+  applyTournamentFixtureResult,
+  isPlaceholderTeam,
+} = require('../utils/tournamentFixtureSaveService');
 
 const router = express.Router();
 
@@ -47,7 +57,7 @@ const requireAdmin = async (req, res, next) => {
   }
 };
 
-const validateSubmissionBody = (body) => {
+const validateSubmissionBody = (body, { requireOvers = false } = {}) => {
   const errors = [];
   if (!body.matchId) errors.push('matchId is required');
   if (!body.winner) errors.push('Winner is required');
@@ -66,10 +76,52 @@ const validateSubmissionBody = (body) => {
   if (body.team2Fairness === '' || body.team2Fairness == null) {
     errors.push('Team 2 fairness is required');
   }
+  if (requireOvers) {
+    if (!body.team1Overs?.trim()) errors.push('Team 1 overs is required for World Cup fixtures');
+    if (!body.team2Overs?.trim()) errors.push('Team 2 overs is required for World Cup fixtures');
+  }
   return errors;
 };
 
-const buildSubmissionPayload = (body, fixture, user) => {
+const isWorldCupModeEnabled = async () => {
+  const settings = await AppSettings.findOne().lean();
+  return settings?.worldCupMode === true || settings?.worldCupMode === 'true';
+};
+
+const loadWorldCupVirtualFixture = async (matchId, tournamentId, fixtureIndex) => {
+  let tournament = null;
+  if (tournamentId) {
+    tournament = await Tournament.findById(tournamentId);
+  }
+  if (!tournament) {
+    tournament = await findRunningWorldCupTournament();
+  }
+  if (!tournament) return null;
+
+  if (fixtureIndex != null && fixtureIndex !== '' && !Number.isNaN(Number(fixtureIndex))) {
+    const idx = Number(fixtureIndex);
+    const mapped = mapTournamentFixturesToPlayoffShape(tournament);
+    const virtual = mapped[idx];
+    if (!virtual) return null;
+    return {
+      tournament,
+      fixtureIndex: idx,
+      fixture: tournament.tournamentFixtures[idx],
+      virtual,
+    };
+  }
+
+  const resolved = resolveTournamentFixtureByMatchId(tournament, matchId);
+  if (!resolved) return null;
+  return {
+    tournament,
+    fixtureIndex: resolved.fixtureIndex,
+    fixture: resolved.fixture,
+    virtual: resolved.virtual,
+  };
+};
+
+const buildSubmissionPayload = (body, fixture, user, wcMeta = null) => {
   const winnerUserId = resolvePlayoffWinnerUserId(body.winner, fixture);
   const winner = winnerUserId
     ? String(winnerUserId) === String(fixture.team1UserId)
@@ -80,6 +132,10 @@ const buildSubmissionPayload = (body, fixture, user) => {
   return {
     matchId: fixture.matchId,
     stage: fixture.stage || '',
+    isWorldCupTournament: !!wcMeta?.isWorldCupTournament,
+    tournamentId: wcMeta?.tournamentId || null,
+    fixtureIndex: wcMeta?.fixtureIndex != null ? wcMeta.fixtureIndex : null,
+    tournamentName: wcMeta?.tournamentName || '',
     submittedBy: user._id,
     submitterName: user.name || user.username || '',
     submitterTeamName: user.teamName || '',
@@ -109,12 +165,33 @@ function isOpponent(user, submission, fixture) {
   return userInPlayoffFixture(user, fixture);
 }
 
+async function resolveFixtureForSubmission(submission) {
+  if (submission.isWorldCupTournament && submission.tournamentId != null) {
+    const loaded = await loadWorldCupVirtualFixture(
+      submission.matchId,
+      submission.tournamentId,
+      submission.fixtureIndex
+    );
+    if (!loaded) return null;
+    return {
+      kind: 'wc',
+      fixture: loaded.virtual,
+      tournament: loaded.tournament,
+      fixtureIndex: loaded.fixtureIndex,
+    };
+  }
+
+  const fixture = await PlayoffFixture.findOne({ matchId: submission.matchId });
+  if (!fixture) return null;
+  return { kind: 'playoff', fixture };
+}
+
 async function getDecisionAccess(user, submission) {
   if (!user || !submission) return { allowed: false };
   if (user.isAdmin) return { allowed: true, role: 'admin' };
-  const fixture = await PlayoffFixture.findOne({ matchId: submission.matchId }).lean();
-  if (!fixture) return { allowed: false };
-  if (isOpponent(user, submission, fixture)) return { allowed: true, role: 'opponent' };
+  const resolved = await resolveFixtureForSubmission(submission);
+  if (!resolved?.fixture) return { allowed: false };
+  if (isOpponent(user, submission, resolved.fixture)) return { allowed: true, role: 'opponent' };
   return { allowed: false };
 }
 
@@ -132,6 +209,8 @@ async function processApproval(submission, req, overrides = {}, allowOverrides =
         margin: overrides.margin ?? submission.margin,
         team1Score: overrides.team1Score ?? submission.team1Score,
         team2Score: overrides.team2Score ?? submission.team2Score,
+        team1Overs: overrides.team1Overs ?? submission.team1Overs,
+        team2Overs: overrides.team2Overs ?? submission.team2Overs,
         mom: overrides.mom ?? submission.mom,
         team1Fairness: overrides.team1Fairness ?? submission.team1Fairness,
         team2Fairness: overrides.team2Fairness ?? submission.team2Fairness,
@@ -141,12 +220,18 @@ async function processApproval(submission, req, overrides = {}, allowOverrides =
         margin: submission.margin,
         team1Score: submission.team1Score,
         team2Score: submission.team2Score,
+        team1Overs: submission.team1Overs,
+        team2Overs: submission.team2Overs,
         mom: submission.mom,
         team1Fairness: submission.team1Fairness,
         team2Fairness: submission.team2Fairness,
       };
 
-  const errors = validateSubmissionBody({ matchId: submission.matchId, ...merged });
+  const requireOvers = !!submission.isWorldCupTournament;
+  const errors = validateSubmissionBody(
+    { matchId: submission.matchId, ...merged },
+    { requireOvers }
+  );
   if (errors.length) {
     const err = new Error(errors.join('; '));
     err.status = 400;
@@ -155,25 +240,60 @@ async function processApproval(submission, req, overrides = {}, allowOverrides =
 
   Object.assign(submission, merged);
 
-  const fixture = await PlayoffFixture.findOne({ matchId: submission.matchId });
-  if (!fixture) {
-    const err = new Error('Playoff fixture not found');
+  const resolved = await resolveFixtureForSubmission(submission);
+  if (!resolved?.fixture) {
+    const err = new Error(
+      submission.isWorldCupTournament
+        ? 'World Cup tournament fixture not found'
+        : 'Playoff fixture not found'
+    );
     err.status = 404;
     throw err;
   }
 
-  const winnerUserId = resolvePlayoffWinnerUserId(submission.winner, fixture);
-  if (!winnerUserId) {
-    const err = new Error('Winner must be one of the two teams in this playoff match.');
-    err.status = 400;
-    throw err;
+  const fixture = resolved.fixture;
+
+  if (resolved.kind === 'wc') {
+    const { winnerName, winnerUserId } = resolveWinnerOnTournamentFixture(
+      submission.winner,
+      fixture
+    );
+    if (!winnerName) {
+      const err = new Error('Winner must be one of the two teams in this World Cup match.');
+      err.status = 400;
+      throw err;
+    }
+    submission.winner = winnerName;
+    submission.winnerUserId = winnerUserId || null;
+
+    await applyTournamentFixtureResult(submission.tournamentId, submission.fixtureIndex, {
+      winner: winnerName,
+      margin: submission.margin,
+      team1Score: submission.team1Score,
+      team2Score: submission.team2Score,
+      team1Overs: submission.team1Overs,
+      team2Overs: submission.team2Overs,
+      team1Fairness: submission.team1Fairness,
+      team2Fairness: submission.team2Fairness,
+      mom: submission.mom,
+    });
+  } else {
+    const winnerUserId = resolvePlayoffWinnerUserId(submission.winner, fixture);
+    if (!winnerUserId) {
+      const err = new Error('Winner must be one of the two teams in this playoff match.');
+      err.status = 400;
+      throw err;
+    }
+
+    submission.winnerUserId = winnerUserId;
+    submission.winner =
+      String(winnerUserId) === String(fixture.team1UserId) ? fixture.team1 : fixture.team2;
+
+    await applyPlayoffFixtureResult(
+      submission.matchId,
+      buildPlayoffUpdateFromSubmission(submission)
+    );
   }
-
-  submission.winnerUserId = winnerUserId;
-  submission.winner =
-    String(winnerUserId) === String(fixture.team1UserId) ? fixture.team1 : fixture.team2;
-
-  await applyPlayoffFixtureResult(submission.matchId, buildPlayoffUpdateFromSubmission(submission));
 
   submission.status = 'approved';
   submission.adminDecision = {
@@ -212,48 +332,98 @@ async function processRejection(submission, req, note = '') {
 // POST /api/playoff-submissions/submit
 router.post('/submit', requireUser, async (req, res) => {
   try {
-    const errors = validateSubmissionBody(req.body);
+    const wcMode = await isWorldCupModeEnabled();
+    const lookingForWc =
+      wcMode ||
+      req.body?.isWorldCupTournament === true ||
+      !!req.body?.tournamentId ||
+      String(req.body?.matchId || '').startsWith('WC');
+
+    const errors = validateSubmissionBody(req.body, { requireOvers: lookingForWc });
     if (errors.length) {
       return res.status(400).json({ error: errors.join('; ') });
     }
 
-    const fixture = await PlayoffFixture.findOne({ matchId: req.body.matchId });
-    if (!fixture) {
-      return res.status(404).json({ error: 'Playoff fixture not found' });
+    let fixture = null;
+    let wcMeta = null;
+
+    if (lookingForWc) {
+      const loaded = await loadWorldCupVirtualFixture(
+        req.body.matchId,
+        req.body.tournamentId,
+        req.body.fixtureIndex
+      );
+      if (!loaded) {
+        return res.status(404).json({
+          error:
+            'World Cup fixture not found. Ensure World Cup mode is on and a running World Cup tournament exists.',
+        });
+      }
+      fixture = loaded.virtual;
+      wcMeta = {
+        isWorldCupTournament: true,
+        tournamentId: loaded.tournament._id,
+        fixtureIndex: loaded.fixtureIndex,
+        tournamentName: loaded.tournament.name || '',
+      };
+    } else {
+      fixture = await PlayoffFixture.findOne({ matchId: req.body.matchId });
+      if (!fixture) {
+        return res.status(404).json({ error: 'Playoff fixture not found' });
+      }
     }
-    if (!isPlayoffMatchReady(fixture)) {
+
+    const notReady =
+      fixture.winner ||
+      isPlaceholderTeam(fixture.team1) ||
+      isPlaceholderTeam(fixture.team2) ||
+      (!lookingForWc && !isPlayoffMatchReady(fixture));
+    if (notReady) {
       return res.status(400).json({
-        error: 'This playoff match is not ready yet (teams not set or already completed).',
+        error: 'This match is not ready yet (teams not set or already completed).',
       });
     }
-    if (!resolvePlayoffWinnerUserId(req.body.winner, fixture)) {
+
+    const winnerOk = lookingForWc
+      ? !!resolveWinnerOnTournamentFixture(req.body.winner, fixture).winnerName
+      : !!resolvePlayoffWinnerUserId(req.body.winner, fixture);
+    if (!winnerOk) {
       return res.status(400).json({
-        error: 'Winner must be one of the two teams in this playoff match.',
+        error: 'Winner must be one of the two teams in this match.',
       });
     }
 
     const user = req.authUser;
     if (!user.isAdmin && !userInPlayoffFixture(user, fixture)) {
       return res.status(403).json({
-        error: 'You can only submit results for playoff matches involving your team.',
+        error: 'You can only submit results for matches involving your team.',
       });
     }
 
-    const existingPending = await PlayoffSubmission.findOne({
+    const pendingQuery = {
       matchId: fixture.matchId,
       status: 'pending',
-    });
+    };
+    if (wcMeta?.tournamentId != null) {
+      pendingQuery.tournamentId = wcMeta.tournamentId;
+      pendingQuery.fixtureIndex = wcMeta.fixtureIndex;
+    }
+    const existingPending = await PlayoffSubmission.findOne(pendingQuery);
     if (existingPending) {
       return res.status(409).json({
-        error: 'A pending submission already exists for this playoff match.',
+        error: 'A pending submission already exists for this match.',
         submissionId: existingPending._id,
       });
     }
 
-    const doc = await PlayoffSubmission.create(buildSubmissionPayload(req.body, fixture, user));
+    const doc = await PlayoffSubmission.create(
+      buildSubmissionPayload(req.body, fixture, user, wcMeta)
+    );
 
     res.status(201).json({
-      message: 'Submitted — waiting for opponent or admin to confirm.',
+      message: lookingForWc
+        ? 'Submitted — waiting for opponent or admin to confirm. On approval this updates the World Cup tournament fixture.'
+        : 'Submitted — waiting for opponent or admin to confirm.',
       submission: doc,
     });
   } catch (err) {
@@ -284,16 +454,12 @@ router.get('/opponent/pending', requireUser, async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const fixtures = await PlayoffFixture.find({
-      matchId: { $in: pending.map((p) => p.matchId) },
-    }).lean();
-    const fixtureByMatchId = Object.fromEntries(fixtures.map((f) => [f.matchId, f]));
-
-    const list = pending.filter((item) => {
-      const fixture = fixtureByMatchId[item.matchId];
-      if (!fixture) return false;
-      return isOpponent(user, item, fixture);
-    });
+    const list = [];
+    for (const item of pending) {
+      const resolved = await resolveFixtureForSubmission(item);
+      if (!resolved?.fixture) continue;
+      if (isOpponent(user, item, resolved.fixture)) list.push(item);
+    }
 
     res.json(list);
   } catch (err) {
@@ -319,9 +485,9 @@ router.get('/admin/pending', requireAdmin, async (req, res) => {
 router.get('/admin/history', requireAdmin, async (req, res) => {
   try {
     const list = await PlayoffSubmission.find({ status: { $in: ['approved', 'rejected'] } })
-      .populate('submittedBy', 'name teamName')
+      .populate('submittedBy', 'name teamName teamImage')
       .populate('adminDecision.decidedBy', 'name teamName')
-      .sort({ updatedAt: -1 })
+      .sort({ 'adminDecision.decidedAt': -1 })
       .limit(100)
       .lean();
     res.json(list);
@@ -344,7 +510,9 @@ router.post('/:id/approve', requireUser, async (req, res) => {
     const updated = await processApproval(submission, req, overrides, allowOverrides);
 
     res.json({
-      message: 'Playoff result confirmed and bracket updated.',
+      message: updated.isWorldCupTournament
+        ? 'World Cup result confirmed and tournament fixture updated.'
+        : 'Playoff result confirmed and bracket updated.',
       submission: updated,
     });
   } catch (err) {
@@ -375,21 +543,33 @@ function applyPendingSubmissionFields(submission, body, fixture) {
   if (body.winner !== undefined) {
     submission.winner = body.winner;
     if (fixture) {
-      submission.winnerUserId = resolvePlayoffWinnerUserId(body.winner, fixture);
-      const winnerUserId = submission.winnerUserId;
-      if (winnerUserId) {
-        submission.winner =
-          String(winnerUserId) === String(fixture.team1UserId)
-            ? fixture.team1
-            : fixture.team2;
+      if (submission.isWorldCupTournament) {
+        const resolved = resolveWinnerOnTournamentFixture(body.winner, fixture);
+        submission.winner = resolved.winnerName || body.winner;
+        submission.winnerUserId = resolved.winnerUserId || null;
       } else {
-        submission.winner = resolvePlayoffWinnerName(body.winner, fixture) || body.winner;
+        submission.winnerUserId = resolvePlayoffWinnerUserId(body.winner, fixture);
+        const winnerUserId = submission.winnerUserId;
+        if (winnerUserId) {
+          submission.winner =
+            String(winnerUserId) === String(fixture.team1UserId)
+              ? fixture.team1
+              : fixture.team2;
+        } else {
+          submission.winner = resolvePlayoffWinnerName(body.winner, fixture) || body.winner;
+        }
       }
     }
   }
   if (body.margin !== undefined) submission.margin = String(body.margin || '').trim();
   if (body.team1Score !== undefined) submission.team1Score = String(body.team1Score || '').trim();
   if (body.team2Score !== undefined) submission.team2Score = String(body.team2Score || '').trim();
+  if (body.team1Overs !== undefined) {
+    submission.team1Overs = String(body.team1Overs || '').trim() || null;
+  }
+  if (body.team2Overs !== undefined) {
+    submission.team2Overs = String(body.team2Overs || '').trim() || null;
+  }
   if (body.team1Fairness !== undefined) submission.team1Fairness = Number(body.team1Fairness);
   if (body.team2Fairness !== undefined) submission.team2Fairness = Number(body.team2Fairness);
   if (body.mom !== undefined) {
@@ -418,21 +598,22 @@ router.post('/admin/:id/update', requireAdmin, async (req, res) => {
       margin: body.margin ?? submission.margin,
       team1Score: body.team1Score ?? submission.team1Score,
       team2Score: body.team2Score ?? submission.team2Score,
+      team1Overs: body.team1Overs ?? submission.team1Overs,
+      team2Overs: body.team2Overs ?? submission.team2Overs,
       mom: body.mom ?? submission.mom,
       team1Fairness: body.team1Fairness ?? submission.team1Fairness,
       team2Fairness: body.team2Fairness ?? submission.team2Fairness,
     };
 
-    const errors = validateSubmissionBody(merged);
+    const errors = validateSubmissionBody(merged, {
+      requireOvers: !!submission.isWorldCupTournament,
+    });
     if (errors.length) {
       return res.status(400).json({ error: errors.join('; ') });
     }
 
-    applyPendingSubmissionFields(
-      submission,
-      merged,
-      await PlayoffFixture.findOne({ matchId: submission.matchId })
-    );
+    const resolved = await resolveFixtureForSubmission(submission);
+    applyPendingSubmissionFields(submission, merged, resolved?.fixture || null);
     await submission.save();
 
     res.json({
@@ -457,7 +638,9 @@ router.post('/admin/:id/approve', requireAdmin, async (req, res) => {
     const updated = await processApproval(submission, req, req.body || {}, true);
 
     res.json({
-      message: 'Playoff result approved and bracket updated.',
+      message: updated.isWorldCupTournament
+        ? 'World Cup result confirmed and tournament fixture updated.'
+        : 'Playoff result approved and bracket updated.',
       submission: updated,
     });
   } catch (err) {

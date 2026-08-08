@@ -24,7 +24,7 @@ const AppSettingsSchema = new mongoose.Schema(
     // Which categories to check when running lock: ['sapphireEmerald','gold','silver']
     // If empty or missing, checks all (backward compatible). Use only active auction categories.
     lockCheckCategories: { type: [String], default: ['sapphireEmerald', 'gold', 'silver'] },
-    // World Cup mode: Top 8 teams play round-robin, then top 4 play semis and finals
+    // World Cup mode: seeded from CPL composite “qualification mix” top 6 (not points-table cut)
     worldCupMode: { type: Boolean, default: false },
     // Auction start date/time (stored as UTC Date)
     auctionStartAt: { type: Date, default: null },
