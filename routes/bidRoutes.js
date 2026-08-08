@@ -16,6 +16,10 @@ const { invalidateCache } = require('../utils/cache');
 const { placeBidCore } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
+const {
+  SALE_LOSER_USER_SELECT,
+  refundOtherBiddersForSoldPlayer,
+} = require('../utils/saleLoserRefund');
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
@@ -383,16 +387,36 @@ router.post("/bid/sold", async (req, res) => {
 
         // 4. Highest bid (regardless of active status)
         const highestBid = allBids[0];
-        
-        // Get all users who have this player in their currentBids (for cleanup)
-        const usersWithBidsOnThisPlayer = await User.find({
-          'currentBids.playerId': pid
-        }).select('_id currentBids');
 
-        // 5. Mark all bids as inactive
-        await Bid.updateMany({ playerId: pid }, { $set: { isActive: false } });
+        // 5. Validate winner + purse BEFORE any irreversible sale writes.
+        //    Previously UserPlayer was created and bids deactivated first; a later
+        //    continue left orphan ownership with isSold still false.
+        const winningUser = await User.findById(highestBid.bidder);
+        if (!winningUser) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: "Winning bidder not found.",
+          });
+          continue;
+        }
 
-        // 6. Check if there's already a UserPlayer doc
+        const winningBid = winningUser.currentBids.find(
+          (bid) => bid.playerId.toString() === pid
+        );
+        const lockedAmount = winningBid ? winningBid.amount : 0;
+        const totalPurse = parseFloat(winningUser.purse.toString());
+
+        if (totalPurse + lockedAmount < highestBid.bidAmount) {
+          results.push({
+            playerID: pid,
+            status: "error",
+            message: "Insufficient purse balance for the winning bidder.",
+          });
+          continue;
+        }
+
+        // 6. Check if there's already a UserPlayer doc (before deactivating bids)
         const existingUserPlayer = await UserPlayer.findOne({
           playerId: pid,
           userId: highestBid.bidder,
@@ -408,7 +432,15 @@ router.post("/bid/sold", async (req, res) => {
           continue;
         }
 
-        // 7. Otherwise, create a new UserPlayer doc
+        // 7. Load other bidders for refund (must include purse)
+        const usersWithBidsOnThisPlayer = await User.find({
+          'currentBids.playerId': pid
+        }).select(SALE_LOSER_USER_SELECT);
+
+        // 8. Mark all bids as inactive
+        await Bid.updateMany({ playerId: pid }, { $set: { isActive: false } });
+
+        // 9. Create a new UserPlayer doc
         const newUserPlayer = new UserPlayer({
           playerId: pid,
           userId: highestBid.bidder,
@@ -417,7 +449,7 @@ router.post("/bid/sold", async (req, res) => {
         });
         await newUserPlayer.save();
 
-        // 8. Log the sold bid in the BidHistory schema
+        // 10. Log the sold bid in the BidHistory schema
         const bidHistory = await BidHistory.findOne({ playerId: pid });
         if (!bidHistory) {
           await new BidHistory({
@@ -440,33 +472,6 @@ router.post("/bid/sold", async (req, res) => {
           await bidHistory.save();
         }
 
-        // 9. Fetch the winning user
-        const winningUser = await User.findById(highestBid.bidder);
-        if (!winningUser) {
-          results.push({
-            playerID: pid,
-            status: "error",
-            message: "Winning bidder not found.",
-          });
-          continue;
-        }
-
-        // 10. Ensure user has enough balance
-        const winningBid = winningUser.currentBids.find(
-          (bid) => bid.playerId.toString() === pid
-        );
-        const lockedAmount = winningBid ? winningBid.amount : 0;
-        const totalPurse = parseFloat(winningUser.purse.toString());
-
-        if (totalPurse + lockedAmount < highestBid.bidAmount) {
-          results.push({
-            playerID: pid,
-            status: "error",
-            message: "Insufficient purse balance for the winning bidder.",
-          });
-          continue;
-        }
-
         // 11. Deduct the bid amount and update user's current bids
         winningUser.purse = mongoose.Types.Decimal128.fromString(
           (totalPurse + lockedAmount - highestBid.bidAmount).toString()
@@ -478,25 +483,12 @@ router.post("/bid/sold", async (req, res) => {
         await winningUser.save();
 
         // 12. Refund other bidders and clean up currentBids (excluding the winner)
-        for (const user of usersWithBidsOnThisPlayer) {
-          // Skip the winner as they were already processed above
-          if (user._id.equals(highestBid.bidder)) {
-            continue;
-          }
-          
-          const userBid = user.currentBids.find(cb => cb.playerId.equals(pid));
-          if (userBid) {
-            const lockedAmount = userBid.amount || 0;
-            const purse = parseFloat(user.purse.toString());
-            
-            // Refund the locked amount
-            user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
-            
-            // Remove this player from currentBids
-            user.currentBids = user.currentBids.filter(cb => !cb.playerId.equals(pid));
-            await user.save();
-          }
-        }
+        await refundOtherBiddersForSoldPlayer({
+          mongoose,
+          playerId: pid,
+          winnerId: highestBid.bidder,
+          users: usersWithBidsOnThisPlayer,
+        });
 
         // 13. Mark the player as sold - GUARANTEED to set both isSold and isActive to true
         let playerStatusUpdated = false;
@@ -907,10 +899,11 @@ async function sellPlayer(playerId, io = null) {
     // Find the highest bid (regardless of active status)
     const highestBid = allBids[0];
     
-    // Get all users who have this player in their currentBids (for cleanup)
+    // Get all users who have this player in their currentBids (for cleanup).
+    // Must include purse — omitting it crashes loser refunds after winner settlement.
     const usersWithBidsOnThisPlayer = await User.find({
       'currentBids.playerId': playerId
-    }).select('_id currentBids');
+    }).select(SALE_LOSER_USER_SELECT);
 
     // c) Deactivate all bids
     await Bid.updateMany({ playerId: playerId }, { $set: { isActive: false } });
@@ -1038,25 +1031,12 @@ async function sellPlayer(playerId, io = null) {
     await winner.save();
 
     // h) Refund other bidders and clean up currentBids (excluding the winner)
-    for (const user of usersWithBidsOnThisPlayer) {
-      // Skip the winner as they were already processed above
-      if (user._id.equals(highestBid.bidder)) {
-        continue;
-      }
-      
-      const userBid = user.currentBids.find(cb => cb.playerId.equals(playerId));
-      if (userBid) {
-        const lockedAmount = userBid.amount || 0;
-        const purse = parseFloat(user.purse.toString());
-        
-        // Refund the locked amount
-        user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
-        
-        // Remove this player from currentBids
-        user.currentBids = user.currentBids.filter(cb => !cb.playerId.equals(playerId));
-        await user.save();
-      }
-    }
+    await refundOtherBiddersForSoldPlayer({
+      mongoose,
+      playerId,
+      winnerId: highestBid.bidder,
+      users: usersWithBidsOnThisPlayer,
+    });
 
     // i) Player is already marked as sold atomically in step (d) above
     // Verify the update was successful
