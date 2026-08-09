@@ -7,6 +7,8 @@ const User = require('../models/User'); // Adjust the path
 const UserPlayer = require('../models/UserPlayer'); // Adjust the path
 const MatchResult = require('../models/MatchResult');
 const Fixture = require('../models/Fixture');
+const authenticateJWT = require('../middleware/authJWT');
+const requireAdmin = require('../middleware/requireAdmin');
 const {
   cacheConfig,
   invalidateCache,
@@ -781,9 +783,9 @@ router.get('/list', async (req, res) => {
 
 
 
-// Store player stats
-// routes/playerStats.js (example)
-router.post('/store', async (req, res) => {
+// Store player stats (admin OCR / score entry). Must not be public —
+// savePlayerStatsEntry writes PlayerStats and $inc Player career totals.
+router.post('/store', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const result = await savePlayerStatsEntry(req.body);
     if (result.action === 'updated') {
@@ -870,7 +872,7 @@ router.post('/clear-cache', async (req, res) => {
   }
 });
 
-router.post('/bulk-store', async (req, res) => {
+router.post('/bulk-store', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const { entries } = req.body || {};
     if (!Array.isArray(entries) || !entries.length) {
@@ -919,7 +921,9 @@ const resolveOpponentUserId = async (rawOpponentUserId, opponentTeamName) => {
   return opponent ? opponent._id : null;
 };
 
-router.post('/bulk-store', async (req, res) => {
+// Unreachable duplicate registration (Express keeps the first /bulk-store).
+// Guarded anyway so a future reorder cannot reopen the auth hole.
+router.post('/bulk-store', authenticateJWT, requireAdmin, async (req, res) => {
   try {
     const {
       entries = [],
