@@ -8,7 +8,6 @@ const AppSettings = require('../models/AppSettings');
 const {
   normName,
   rebuildAllLiveCareerSummaries,
-  syncAllPlayerRankingsFromCareerSummaries,
   mapCareerSummaryLeanToApiPlayer,
   emptyCareerApiPlayerFromPlayer,
 } = require('../utils/playerCareerSummary');
@@ -97,10 +96,10 @@ async function getCareerSummaryOrCached({ refresh = false, includeInactive = tru
       .lean(),
   ]);
 
-  // First-time bootstrap: if summary docs are empty, rebuild from current DB playerstats.
+  // First-time bootstrap: if summary docs are empty, rebuild live blocks only.
+  // Do not syncAllPlayerRankingsFromCareerSummaries — Player totals are accumulate-only.
   if (!summaries.length) {
     await rebuildAllLiveCareerSummaries();
-    await syncAllPlayerRankingsFromCareerSummaries();
     try {
       invalidateCache('players:data');
       invalidateCache('players:data:all');

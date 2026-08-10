@@ -391,7 +391,7 @@ const buildComparisonRecommendation = (insightA, insightB) => {
     'steady output'}, so slot them in when conditions suit their strengths.`;
 };
 
-// Helper: rebuild live career block from PlayerStats, merge with historical, sync Player for Top Rankings
+// Helper: rebuild live career block from PlayerStats (does not overwrite Player rankings)
 const updatePlayerCumulativeStats = async (playerId) => {
   await upsertLiveCareerSummaryForPlayer(playerId);
 };
@@ -522,10 +522,11 @@ const sanitizeBowlingStats = (bowlingStats = {}, wicketsTaken) => {
 };
 
 const syncCareerAndRankingAfterStatChange = async (playerId, deltaTotals, contextLabel = 'stats-save') => {
+  // Rankings: accumulate-only $inc. Career summary live block updated separately (no Player $set).
   await applyPlayerStatDelta(playerId, deltaTotals);
   await upsertLiveCareerSummaryForPlayer(playerId);
   invalidateCareerSummaryCache();
-  console.log(`✅ Career + rankings synced after ${contextLabel} for player ${playerId}`);
+  console.log(`✅ Stats $inc + career live synced after ${contextLabel} for player ${playerId}`);
 };
 
 const VALID_WC_STAGES = ['super8', 'semi', 'final'];
@@ -2743,6 +2744,9 @@ router.post('/clear-cache', async (req, res) => {
     const clearStatsOverview = req.query.clearStatsOverview === '1' || req.body?.clearStatsOverview === true;
 
     if (clearStatsOverview) {
+      // Deletes match rows only. Player.totalRuns / totalWickets are left intact so
+      // future OCR uploads $inc on top of prior-season career (accumulate-only).
+      // Stats Overview will be empty until new tournament scorecards are uploaded.
       const [playerStatsResult, fixtureResult] = await Promise.all([
         PlayerStats.deleteMany({}),
         Fixture.updateMany(
@@ -2751,7 +2755,8 @@ router.post('/clear-cache', async (req, res) => {
         ),
       ]);
       return res.json({
-        message: 'Stats overview fully cleared (PlayerStats + Fixture scores + cache). Hard refresh the UI.',
+        message:
+          'Stats overview cleared (PlayerStats + Fixture scores + cache). Player career totals were NOT reset — new uploads will accumulate. Hard refresh the UI.',
         playerStatsDeleted: playerStatsResult.deletedCount,
         fixturesCleared: fixtureResult.modifiedCount,
       });

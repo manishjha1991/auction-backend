@@ -252,6 +252,10 @@ async function upsertLiveCareerSummaryForPlayer(playerId) {
   const historical = existing?.historical || emptyBlock();
   const total = mergeBlocks(historical, live);
 
+  // Career summary is for career UI / reports only.
+  // Player.totalRuns / totalWickets (Top Rankings) are accumulate-only via $inc on
+  // stats save — never overwrite them from historical+live (that drops totals after
+  // clearStatsOverview when historical is empty/incomplete).
   const doc = await PlayerCareerSummary.findOneAndUpdate(
     { playerKey },
     {
@@ -267,7 +271,6 @@ async function upsertLiveCareerSummaryForPlayer(playerId) {
     },
     { upsert: true, new: true },
   );
-  await syncPlayerRankingsFromCareerTotal(player._id, total);
   return doc;
 }
 

@@ -15,7 +15,6 @@ const {
   finalizeBlock,
   mergeBlocks,
   rebuildAllLiveCareerSummaries,
-  syncAllPlayerRankingsFromCareerSummaries,
   upsertLiveCareerSummaryForPlayer,
 } = require('./playerCareerSummary');
 
@@ -73,10 +72,10 @@ async function updatePlayerCumulativeStatsFromStats(playerId) {
   await upsertLiveCareerSummaryForPlayer(playerId);
 }
 
-/** Rebuild live career blocks from PlayerStats and align Player totals with merged career (historical + live). */
+/** Rebuild live career blocks from PlayerStats only (does not overwrite Player rankings). */
 async function rebuildAllPlayerTotalsFromCurrentStats() {
   await rebuildAllLiveCareerSummaries();
-  return syncAllPlayerRankingsFromCareerSummaries();
+  return { rankingsPlayersSynced: 0, note: 'Player totals are accumulate-only; rankings not overwritten' };
 }
 
 /**
@@ -149,13 +148,16 @@ async function runCareerHistorySeed() {
   }
 
   await rebuildAllLiveCareerSummaries();
-  const rankingsSync = await syncAllPlayerRankingsFromCareerSummaries();
+  // Do not syncAllPlayerRankingsFromCareerSummaries — Player.totalRuns/wickets stay accumulate-only.
 
   return {
     upserts,
     aggregateKeys: aggregateByKey.size,
     perDb,
-    rankingsSync,
+    rankingsSync: {
+      rankingsPlayersSynced: 0,
+      note: 'Player rankings left unchanged (accumulate-only)',
+    },
   };
 }
 
