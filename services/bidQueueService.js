@@ -78,9 +78,14 @@ async function shouldBlockManualBid(playerId, bidderId) {
   return !active.includes(bidderId.toString());
 }
 
+/** Load user even if deactivated — queue refunds/promotion must settle locked purse. */
+async function loadUserForPurse(userId) {
+  return User.findById(userId).setOptions({ includeInactive: true });
+}
+
 async function refundPurse(userId, amount) {
   if (amount <= 0) return;
-  const user = await User.findById(userId);
+  const user = await loadUserForPurse(userId);
   if (!user) return;
   const p = parseFloat(user.purse.toString()) + amount;
   user.purse = mongoose.Types.Decimal128.fromString(String(p));
@@ -143,8 +148,14 @@ async function pruneQueuedOverMax(playerId, io) {
   });
 }
 
+/**
+ * @returns {Promise<boolean>} false when the queued user cannot be promoted (missing/inactive/locked)
+ */
 async function preparePromotedUser(userId, playerId, queueEntry, nextBidAmount) {
-  const user = await User.findById(userId);
+  const user = await loadUserForPurse(userId);
+  if (!user || user.isActive === false || user.isLocked) {
+    return false;
+  }
   const M = queueEntry.lockedAmount;
   const refund = M - nextBidAmount;
   const purse = parseFloat(user.purse.toString()) + refund;
@@ -153,10 +164,12 @@ async function preparePromotedUser(userId, playerId, queueEntry, nextBidAmount) 
   if (ex) ex.amount = nextBidAmount;
   else user.currentBids.push({ playerId, amount: nextBidAmount });
   await user.save();
+  return true;
 }
 
 async function revertPreparePromotedUser(userId, playerId, nextBidAmount, lockedMax) {
-  const user = await User.findById(userId);
+  const user = await loadUserForPurse(userId);
+  if (!user) return;
   const undoRefund = lockedMax - nextBidAmount;
   const p = parseFloat(user.purse.toString()) - undoRefund;
   user.purse = mongoose.Types.Decimal128.fromString(String(p));
@@ -165,7 +178,7 @@ async function revertPreparePromotedUser(userId, playerId, nextBidAmount, locked
 }
 
 async function forceExitProxyUser(userId, playerId, io) {
-  const user = await User.findById(userId);
+  const user = await loadUserForPurse(userId);
   if (!user) return;
   const bidOnPlayer = user.currentBids.find((b) => b.playerId.toString() === playerId);
   const locked = bidOnPlayer ? bidOnPlayer.amount : 0;
@@ -181,29 +194,31 @@ async function forceExitProxyUser(userId, playerId, io) {
   );
 
   const player = await Player.findById(playerId);
-  const remaining = await Bid.find({ playerId, isActive: true, isBidOn: true })
-    .sort({ bidAmount: -1 })
-    .lean();
-  if (remaining.length) {
-    player.currentBid = remaining[0].bidAmount;
-    player.currentBidder = remaining[0].bidder;
-  } else {
-    player.currentBid = null;
-    player.currentBidder = null;
-  }
-  await player.save();
+  if (player) {
+    const remaining = await Bid.find({ playerId, isActive: true, isBidOn: true })
+      .sort({ bidAmount: -1 })
+      .lean();
+    if (remaining.length) {
+      player.currentBid = remaining[0].bidAmount;
+      player.currentBidder = remaining[0].bidder;
+    } else {
+      player.currentBid = null;
+      player.currentBidder = null;
+    }
+    await player.save();
 
-  emitQueuePersonal(io, userId, {
-    type: "proxy_exited_max",
-    playerId: playerId.toString(),
-    playerName: player.name,
-  });
-  io?.emit("player_bid_update", {
-    playerId: playerId.toString(),
-    currentBid: player.currentBid,
-    currentBidder: player.currentBidder,
-    playerName: player.name,
-  });
+    emitQueuePersonal(io, userId, {
+      type: "proxy_exited_max",
+      playerId: playerId.toString(),
+      playerName: player.name,
+    });
+    io?.emit("player_bid_update", {
+      playerId: playerId.toString(),
+      currentBid: player.currentBid,
+      currentBidder: player.currentBidder,
+      playerName: player.name,
+    });
+  }
   await emitBidQueueUpdated(io, playerId);
 }
 
@@ -304,7 +319,12 @@ async function tryPromoteNextQueued(playerId, io) {
       const headEntry = doc.entries.id(head._id);
       const lockedSnapshot = head.lockedAmount;
 
-      await preparePromotedUser(head.userId, playerId, head, nextBid);
+      const prepared = await preparePromotedUser(head.userId, playerId, head, nextBid);
+      if (!prepared) {
+        // Drop unavailable head (deactivated/locked/missing) and refund so the queue cannot stall.
+        await removeQueuedEntryById(playerId, head._id, "user_unavailable", io);
+        continue;
+      }
       headEntry.status = "active_proxy";
       await doc.save();
 
