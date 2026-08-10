@@ -171,20 +171,20 @@ router.post("/:playerId/exit", async (req, res) => {
         const secondHighestBidder = await User.findById(secondHighestBid.bidder);
 
         if (secondHighestBidder) {
-          const lockedAmount = secondHighestBidder.currentBids.find(
+          const bidEntry = secondHighestBidder.currentBids.find(
             (bid) => bid.playerId.toString() === playerId
-          ).amount;
-
-          const purse = parseFloat(secondHighestBidder.purse.toString());
-          secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
-            (purse + lockedAmount).toString()
           );
-
-          // Remove the second-highest bid from their current bids
-          secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
-            (bid) => bid.playerId.toString() !== playerId
-          );
-          await secondHighestBidder.save();
+          if (bidEntry) {
+            const lockedAmount = bidEntry.amount || 0;
+            const purse = parseFloat(secondHighestBidder.purse.toString());
+            secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
+              (purse + lockedAmount).toString()
+            );
+            secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
+              (bid) => bid.playerId.toString() !== playerId
+            );
+            await secondHighestBidder.save();
+          }
 
           // Mark the second-highest bid as inactive
           await Bid.updateMany(
@@ -203,6 +203,9 @@ router.post("/:playerId/exit", async (req, res) => {
             player.currentBid = null;
             player.currentBidder = null;
           }
+          // Required for overnight counter-bid / post-window auto-sell (shouldSellNoNewBidSinceExit).
+          player.lastExitAt = new Date();
+          player.lastExitBy = 'system';
           await player.save();
 
           const ioAdmin = req.app.get("io");
@@ -254,6 +257,9 @@ router.post("/:playerId/exit", async (req, res) => {
       player.currentBid = null;
       player.currentBidder = null;
     }
+    // Required for overnight counter-bid / post-window auto-sell (shouldSellNoNewBidSinceExit).
+    player.lastExitAt = new Date();
+    player.lastExitBy = 'user';
     await player.save();
     // Emit exit notification for admin branch
     const io = req.app.get('io');
@@ -710,17 +716,15 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
       const secondHighestBidder = await User.findById(secondHighestBid.bidder);
 
       if (secondHighestBidder) {
-        const lockedAmount = secondHighestBidder.currentBids.find(
+        const bidEntry = secondHighestBidder.currentBids.find(
           (bid) => bid.playerId.toString() === playerId
-        )?.amount;
-
-        if (lockedAmount) {
+        );
+        if (bidEntry) {
+          const lockedAmount = bidEntry.amount || 0;
           const purse = parseFloat(secondHighestBidder.purse.toString());
           secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
             (purse + lockedAmount).toString()
           );
-
-          // Remove the second-highest bid from their current bids
           secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
             (bid) => bid.playerId.toString() !== playerId
           );
@@ -906,24 +910,64 @@ async function sellPlayer(playerId, io = null) {
 
     // Find the highest bid (regardless of active status)
     const highestBid = allBids[0];
-    
-    // Get all users who have this player in their currentBids (for cleanup)
+
+    // Validate winner + purse BEFORE any irreversible sale writes.
+    // User.isActive pre-hooks make findById return null for deactivated winners; previously
+    // that crashed after marking the player sold / creating UserPlayer, leaving a stuck sale
+    // with no purse settlement and no loser refunds.
+    const winner = await User.findById(highestBid.bidder).setOptions({ includeInactive: true });
+    if (!winner) {
+      return {
+        playerID: playerId,
+        status: 'error',
+        message: 'Winning bidder not found.',
+      };
+    }
+    if (winner.isActive === false) {
+      return {
+        playerID: playerId,
+        status: 'error',
+        message: 'Winning bidder is deactivated; resolve team status before selling.',
+      };
+    }
+
+    const locked = winner.currentBids.find((cb) => cb.playerId.equals(playerId))?.amount || 0;
+    const winnerPurse = parseFloat(winner.purse.toString());
+    if (winnerPurse + locked < highestBid.bidAmount) {
+      return {
+        playerID: playerId,
+        status: 'error',
+        message: 'Insufficient purse balance for the winning bidder.',
+      };
+    }
+
+    const existingUserPlayer = await UserPlayer.findOne({
+      playerId: playerId,
+      userId: highestBid.bidder,
+      isActive: true,
+    });
+    if (existingUserPlayer) {
+      return {
+        playerID: playerId,
+        status: 'error',
+        message: 'Player already sold to this user.',
+      };
+    }
+
+    // Get all users who have this player in their currentBids (for cleanup).
+    // Must include purse — omitting it crashes loser refunds after winner settlement.
     const usersWithBidsOnThisPlayer = await User.find({
-      'currentBids.playerId': playerId
-    }).select('_id currentBids');
+      'currentBids.playerId': playerId,
+    }).select('_id currentBids purse');
 
-    // c) Deactivate all bids
-    await Bid.updateMany({ playerId: playerId }, { $set: { isActive: false } });
-
-    // d) ATOMIC OPERATION: Atomically check and create UserPlayer
-    // Use findOneAndUpdate with upsert to atomically check if UserPlayer exists and create if not
-    // The unique index on (playerId, userId, isActive: true) will prevent duplicates at DB level
+    // ATOMIC: mark player sold only if still unsold, then create UserPlayer, then settle purses.
+    // Deactivate bids after the sold mark so a failed pre-check cannot kill the auction.
+    let playerUpdateResult;
     try {
-      // First, atomically check if Player is still unsold and mark as sold in one operation
-      const playerUpdateResult = await Player.findOneAndUpdate(
+      playerUpdateResult = await Player.findOneAndUpdate(
         {
           _id: playerId,
-          isSold: false  // Only update if not already sold (atomic check)
+          isSold: false, // Only update if not already sold (atomic check)
         },
         {
           $set: {
@@ -931,78 +975,57 @@ async function sellPlayer(playerId, io = null) {
             isActive: true,
             currentBid: highestBid.bidAmount,
             currentBidder: highestBid.bidder,
-            updatedAt: new Date()
+            updatedAt: new Date(),
           },
-          $unset: { currentBids: "" }
+          $unset: { currentBids: '' },
         },
         {
           new: true,
-          runValidators: true
+          runValidators: true,
         }
       );
 
-      // If player was already sold (update returned null), check for existing UserPlayer
       if (!playerUpdateResult) {
-        const existingUP = await UserPlayer.findOne({
-          playerId: playerId,
-          userId: highestBid.bidder,
-          isActive: true
-        });
-        if (existingUP) {
-          return {
-            playerID: playerId,
-            status: 'error',
-            message: 'Player already sold to this user.'
-          };
-        }
         return {
           playerID: playerId,
           status: 'error',
-          message: 'Player was already sold by another process.'
+          message: 'Player was already sold by another process.',
         };
       }
 
-      // Now atomically create UserPlayer - the unique index will prevent duplicates
-      // Use findOneAndUpdate with upsert: false to ensure we only create if it doesn't exist
-      const existingUserPlayer = await UserPlayer.findOne({
-        playerId: playerId,
-        userId: highestBid.bidder,
-        isActive: true
-      });
-
-      if (existingUserPlayer) {
-        // Another process created it between our checks - this is rare but possible
-        return {
-          playerID: playerId,
-          status: 'error',
-          message: 'Player already sold to this user (race condition detected).'
-        };
-      }
-
-      // Create UserPlayer - unique index will prevent duplicates if two processes reach here simultaneously
       try {
         await new UserPlayer({
           playerId: playerId,
           userId: highestBid.bidder,
           bidValue: highestBid.bidAmount,
-          isActive: true
+          isActive: true,
         }).save();
       } catch (saveError) {
-        // Handle unique index violation (duplicate key error)
         if (saveError.code === 11000 || saveError.code === 11001) {
           return {
             playerID: playerId,
             status: 'error',
-            message: 'Player already sold to this user (unique constraint prevented duplicate).'
+            message: 'Player already sold to this user (unique constraint prevented duplicate).',
           };
         }
-        // Re-throw other errors
+        // Roll back the sold mark we just wrote so the lot is not stuck without an owner.
+        await Player.updateOne(
+          { _id: playerId, isSold: true, currentBidder: highestBid.bidder },
+          {
+            $set: {
+              isSold: false,
+              currentBid: highestBid.bidAmount,
+              currentBidder: highestBid.bidder,
+            },
+          }
+        );
         throw saveError;
       }
     } catch (error) {
-      // If Player update failed, rollback is not needed since we use atomic operations
       throw error;
     }
+
+    await Bid.updateMany({ playerId: playerId }, { $set: { isActive: false } });
 
     // f) Log BidHistory
     let bidHist = await BidHistory.findOne({ playerId: playerId });
@@ -1010,50 +1033,47 @@ async function sellPlayer(playerId, io = null) {
       await new BidHistory({
         playerId: playerId,
         bidID: highestBid._id,
-        bids: allBids.map(b => ({
+        bids: allBids.map((b) => ({
           userID: b.bidder,
           bidAmount: b.bidAmount,
           status: b._id.equals(highestBid._id),
           createdAt: b.createdAt,
-          updatedAt: b.updatedAt
-        }))
+          updatedAt: b.updatedAt,
+        })),
       }).save();
     } else {
-      bidHist.bids = bidHist.bids.map(h => ({
+      bidHist.bids = bidHist.bids.map((h) => ({
         ...h.toObject(),
-        status: h._id.equals(highestBid._id)
+        status: h._id.equals(highestBid._id),
       }));
       await bidHist.save();
     }
 
-    // g) Adjust winner's purse & currentBids
-    const winner = await User.findById(highestBid.bidder);
-    const locked = winner.currentBids.find(cb => cb.playerId.equals(playerId))?.amount || 0;
-    const purse = parseFloat(winner.purse.toString());
+    // g) Adjust winner's purse & currentBids (winner already validated above)
     winner.purse = mongoose.Types.Decimal128.fromString(
-      (purse + locked - highestBid.bidAmount).toString()
+      (winnerPurse + locked - highestBid.bidAmount).toString()
     );
-    winner.currentBids = winner.currentBids.filter(cb => !cb.playerId.equals(playerId));
+    winner.currentBids = winner.currentBids.filter((cb) => !cb.playerId.equals(playerId));
     winner.boughtPlayers.push(playerId);
     await winner.save();
 
     // h) Refund other bidders and clean up currentBids (excluding the winner)
     for (const user of usersWithBidsOnThisPlayer) {
-      // Skip the winner as they were already processed above
       if (user._id.equals(highestBid.bidder)) {
         continue;
       }
-      
-      const userBid = user.currentBids.find(cb => cb.playerId.equals(playerId));
+
+      const userBid = user.currentBids.find((cb) => cb.playerId.equals(playerId));
       if (userBid) {
+        if (user.purse == null) {
+          throw new Error(
+            `Missing purse on user ${user._id} while refunding sale of player ${playerId}`
+          );
+        }
         const lockedAmount = userBid.amount || 0;
         const purse = parseFloat(user.purse.toString());
-        
-        // Refund the locked amount
         user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
-        
-        // Remove this player from currentBids
-        user.currentBids = user.currentBids.filter(cb => !cb.playerId.equals(playerId));
+        user.currentBids = user.currentBids.filter((cb) => !cb.playerId.equals(playerId));
         await user.save();
       }
     }
