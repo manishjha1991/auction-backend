@@ -16,6 +16,7 @@ const { invalidateCache } = require('../utils/cache');
 const { placeBidCore } = require('../services/bidPlacement');
 const bidQueueService = require('../services/bidQueueService');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
+const { countBoughtAndBiddingByType } = require('../utils/lockUnderLimitCounts');
 
 // Place a bid
 router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
@@ -1447,18 +1448,19 @@ async function lockUnderLimitAll(options = {}) {
         { type: 1 }
       ).lean();
 
-      const counts = players.reduce((acc, p) => {
-        acc[p.type] = (acc[p.type] || 0) + 1;
-        return acc;
-      }, {});
+      // Bought and bidding must be counted separately. Mixing currentBids into a
+      // combined type tally then adding goldBidding/silverBidding again double-counts
+      // active lots and lets under-minimum teams skip the 22:00 lock.
+      const { boughtCounts, biddingCounts } = countBoughtAndBiddingByType(
+        players,
+        user.boughtPlayers,
+        user.currentBids
+      );
 
       // ── 2-a. Check Gold type minimum requirement ─────────────────────────────
       if (checkGold) {
-        const goldBought = counts['Gold'] || 0;
-        const goldBidding = user.currentBids.filter(bid => {
-          // Count only Gold players in current bids
-          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Gold';
-        }).length;
+        const goldBought = boughtCounts['Gold'] || 0;
+        const goldBidding = biddingCounts['Gold'] || 0;
         const goldTotal = goldBought + goldBidding;
         
         // Lock user if they have less than minimum 8 Gold total
@@ -1488,12 +1490,8 @@ async function lockUnderLimitAll(options = {}) {
         });
 
         // Count all Silver players in boughtPlayers (includes retained)
-        const silverBought = counts['Silver'] || 0;
-        
-        // Count Silver players in current bids
-        const silverBidding = user.currentBids.filter(bid => {
-          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Silver';
-        }).length;
+        const silverBought = boughtCounts['Silver'] || 0;
+        const silverBidding = biddingCounts['Silver'] || 0;
         
         const silverTotal = silverBought + silverBidding;
         
@@ -1521,15 +1519,10 @@ async function lockUnderLimitAll(options = {}) {
 
       // ── 2-c. Check Sapphire + Emerald combined requirement ──────────────────
       if (checkSapphireEmerald) {
-        const sapphireBought = counts['Sapphire'] || 0;
-        const emeraldBought = counts['Emerald'] || 0;
-
-        const sapphireBidding = user.currentBids.filter(bid => {
-          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Sapphire';
-        }).length;
-        const emeraldBidding = user.currentBids.filter(bid => {
-          return players.find(p => p._id.toString() === bid.playerId.toString())?.type === 'Emerald';
-        }).length;
+        const sapphireBought = boughtCounts['Sapphire'] || 0;
+        const emeraldBought = boughtCounts['Emerald'] || 0;
+        const sapphireBidding = biddingCounts['Sapphire'] || 0;
+        const emeraldBidding = biddingCounts['Emerald'] || 0;
 
         const sapphireTotal = sapphireBought + sapphireBidding;
         const emeraldTotal = emeraldBought + emeraldBidding;
