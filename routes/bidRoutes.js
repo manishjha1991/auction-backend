@@ -168,52 +168,62 @@ router.post("/:playerId/exit", async (req, res) => {
     if (user.isAdmin) {
       if (activeBids.length > 1) {
         const secondHighestBid = activeBids[1]; // Second-highest bidder
-        const secondHighestBidder = await User.findById(secondHighestBid.bidder);
+        // includeInactive: deactivated teams still hold Bid.isActive + locked purse.
+        // Without it, findById returns null, exit no-ops, and overnight sell stalls.
+        const secondHighestBidder = await User.findById(secondHighestBid.bidder).includeInactive();
 
         if (secondHighestBidder) {
-          const lockedAmount = secondHighestBidder.currentBids.find(
+          const bidEntry = secondHighestBidder.currentBids.find(
             (bid) => bid.playerId.toString() === playerId
-          ).amount;
-
-          const purse = parseFloat(secondHighestBidder.purse.toString());
-          secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
-            (purse + lockedAmount).toString()
           );
-
-          // Remove the second-highest bid from their current bids
-          secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
-            (bid) => bid.playerId.toString() !== playerId
-          );
-          await secondHighestBidder.save();
-
-          // Mark the second-highest bid as inactive
-          await Bid.updateMany(
-            { playerId, bidder: secondHighestBid.bidder },
-            { $set: { isActive: false, isBidOn: false } }
-          );
-
-          // Update the player's current bid and bidder
-          const remainingBidders = activeBids.filter((bid) => bid.bidder.toString() !== secondHighestBid.bidder);
-          if (remainingBidders.length > 0) {
-            const newHighestBid = remainingBidders[0];
-            player.currentBid = newHighestBid.bidAmount;
-            player.currentBidder = newHighestBid.bidder;
-          } else {
-            // If no other bidders, reset the player's current bid
-            player.currentBid = null;
-            player.currentBidder = null;
+          const lockedAmount = bidEntry?.amount;
+          if (lockedAmount) {
+            const purse = parseFloat(secondHighestBidder.purse.toString());
+            secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
+              (purse + lockedAmount).toString()
+            );
+            secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
+              (bid) => bid.playerId.toString() !== playerId
+            );
+            await secondHighestBidder.save();
+          } else if (bidEntry) {
+            secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
+              (bid) => bid.playerId.toString() !== playerId
+            );
+            await secondHighestBidder.save();
           }
-          await player.save();
-
-          const ioAdmin = req.app.get("io");
-          await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin);
-
-          return res.json({
-            message: "The second-highest bidder has exited successfully. Locked amount refunded.",
-            currentBid: player.currentBid,
-            currentBidder: player.currentBidder,
-          });
         }
+
+        // Always clear the Bid row even if the user doc is missing — otherwise
+        // getBidderCount stays at 2 and auto-sell never progresses.
+        await Bid.updateMany(
+          { playerId, bidder: secondHighestBid.bidder },
+          { $set: { isActive: false, isBidOn: false } }
+        );
+
+        const remainingBidders = activeBids.filter(
+          (bid) => bid.bidder.toString() !== secondHighestBid.bidder.toString()
+        );
+        if (remainingBidders.length > 0) {
+          const newHighestBid = remainingBidders[0];
+          player.currentBid = newHighestBid.bidAmount;
+          player.currentBidder = newHighestBid.bidder;
+        } else {
+          player.currentBid = null;
+          player.currentBidder = null;
+        }
+        player.lastExitAt = new Date();
+        player.lastExitBy = 'system';
+        await player.save();
+
+        const ioAdmin = req.app.get("io");
+        await bidQueueService.tryPromoteNextQueued(playerId, ioAdmin);
+
+        return res.json({
+          message: "The second-highest bidder has exited successfully. Locked amount refunded.",
+          currentBid: player.currentBid,
+          currentBidder: player.currentBidder,
+        });
       } else {
         return res.status(400).json({ message: "No second-highest bidder to exit." });
       }
@@ -707,53 +717,60 @@ async function exitSecondHighestForPlayerSingle(playerId, io = null) {
     
     if (activeBids.length > 1) {
       const secondHighestBid = activeBids[1]; // Second-highest bidder
-      const secondHighestBidder = await User.findById(secondHighestBid.bidder);
+      // includeInactive: admin deactivation does not clear Bid.isActive / currentBids.
+      // Default User.findById filters isActive≠false, so exit used to no-op and leave
+      // getBidderCount at 2 forever (overnight exit/sell never completes).
+      const secondHighestBidder = await User.findById(secondHighestBid.bidder).includeInactive();
 
       if (secondHighestBidder) {
-        const lockedAmount = secondHighestBidder.currentBids.find(
+        const bidEntry = secondHighestBidder.currentBids.find(
           (bid) => bid.playerId.toString() === playerId
-        )?.amount;
+        );
+        const lockedAmount = bidEntry?.amount;
 
         if (lockedAmount) {
           const purse = parseFloat(secondHighestBidder.purse.toString());
           secondHighestBidder.purse = mongoose.Types.Decimal128.fromString(
             (purse + lockedAmount).toString()
           );
-
-          // Remove the second-highest bid from their current bids
+          secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
+            (bid) => bid.playerId.toString() !== playerId
+          );
+          await secondHighestBidder.save();
+        } else if (bidEntry) {
           secondHighestBidder.currentBids = secondHighestBidder.currentBids.filter(
             (bid) => bid.playerId.toString() !== playerId
           );
           await secondHighestBidder.save();
         }
-
-        // Mark the second-highest bid as inactive
-        await Bid.updateMany(
-          { playerId, bidder: secondHighestBid.bidder },
-          { $set: { isActive: false, isBidOn: false } }
-        );
-
-        // Update the player's current bid and bidder
-        const remainingBidders = activeBids.filter((bid) => bid.bidder.toString() !== secondHighestBid.bidder);
-        if (remainingBidders.length > 0) {
-          const newHighestBid = remainingBidders[0];
-          player.currentBid = newHighestBid.bidAmount;
-          player.currentBidder = newHighestBid.bidder;
-        } else {
-          // If no other bidders, reset the player's current bid
-          player.currentBid = null;
-          player.currentBidder = null;
-        }
-        player.lastExitAt = new Date();
-        player.lastExitBy = 'system';
-        await player.save();
-
-        return {
-          message: "The second-highest bidder has exited successfully. Locked amount refunded.",
-          currentBid: player.currentBid,
-          currentBidder: player.currentBidder,
-        };
       }
+
+      // Always deactivate the Bid (even if user doc is gone) so bidder count drops.
+      await Bid.updateMany(
+        { playerId, bidder: secondHighestBid.bidder },
+        { $set: { isActive: false, isBidOn: false } }
+      );
+
+      const remainingBidders = activeBids.filter(
+        (bid) => bid.bidder.toString() !== secondHighestBid.bidder.toString()
+      );
+      if (remainingBidders.length > 0) {
+        const newHighestBid = remainingBidders[0];
+        player.currentBid = newHighestBid.bidAmount;
+        player.currentBidder = newHighestBid.bidder;
+      } else {
+        player.currentBid = null;
+        player.currentBidder = null;
+      }
+      player.lastExitAt = new Date();
+      player.lastExitBy = 'system';
+      await player.save();
+
+      return {
+        message: "The second-highest bidder has exited successfully. Locked amount refunded.",
+        currentBid: player.currentBid,
+        currentBidder: player.currentBidder,
+      };
     }
     return { message: "No second-highest bidder to exit." };
   } catch (error) {
