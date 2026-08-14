@@ -14,6 +14,7 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
+const { getPickCreateBlocker } = require('../utils/pickCreateGuard');
 
 // Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
 router.get('/unsold', async (req, res) => {
@@ -90,45 +91,94 @@ router.post('/', async (req, res) => {
   try {
     const { userId, playerId } = req.body;
     if (!userId || !playerId) return res.status(400).json({ message: 'Missing required fields' });
-    const [player, user] = await Promise.all([
+    const [player, user, existingPendingPick, hasActiveBid] = await Promise.all([
       Player.findById(playerId),
-      User.findById(userId)
+      User.findById(userId),
+      PickRequest.findOne({
+        player: playerId,
+        status: { $in: ['pending', 'admin_pending'] },
+      }).lean(),
+      Bid.exists({ playerId, isActive: true, isBidOn: true }),
     ]);
-    if (!player || player.isSold) return res.status(400).json({ message: 'Player is not available' });
-    // Block pick-from-unsold if player was released in last 48h (normal bidding unaffected)
-    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
-    if (player.releasedAt && new Date(player.releasedAt) > fortyEightHoursAgo) {
-      return res.status(400).json({ message: 'This player was recently released and cannot be picked from unsold for 48 hours' });
-    }
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    const alreadyLockedOnPlayer = !!(user?.currentBids || []).find(
+      (cb) => cb.playerId && cb.playerId.toString() === String(playerId)
+    );
+    const blocker = getPickCreateBlocker({
+      player,
+      user,
+      existingPendingPick,
+      alreadyLockedOnPlayer,
+      hasActiveBid: !!hasActiveBid,
+    });
+    if (blocker) return res.status(blocker.status).json({ message: blocker.message });
 
-    // Create an initial bid at base price and lock funds, so that existing sold API can finalize later
     const basePrice = Number(player.basePrice || 0);
     const purse = Number(user.purse ? parseFloat(user.purse.toString()) : 0);
     if (purse < basePrice) return res.status(400).json({ message: 'Insufficient purse for base price' });
 
-    // Deduct basePrice as locked amount and add to currentBids
-    const updatedPurse = purse - basePrice;
-    user.purse = mongoose.Types.Decimal128.fromString(updatedPurse.toString());
-    user.currentBids = user.currentBids || [];
-    const existingCB = user.currentBids.find(cb => cb.playerId && cb.playerId.toString() === String(player._id));
-    if (existingCB) {
-      existingCB.amount = basePrice;
-    } else {
-      user.currentBids.push({ playerId: player._id, amount: basePrice });
+    // Insert the pending pick first so a concurrent retry hits the unique index
+    // before any purse is deducted.
+    let pr;
+    try {
+      pr = await PickRequest.create({
+        user: userId,
+        player: playerId,
+        status: 'pending',
+        history: [{ byUser: userId, action: 'propose' }],
+      });
+    } catch (createErr) {
+      if (createErr && (createErr.code === 11000 || createErr.code === 11001)) {
+        return res.status(409).json({
+          message: 'A pick request for this player is already pending admin approval.',
+        });
+      }
+      throw createErr;
     }
-    await user.save();
 
-    // Create a live bid
-    const newBid = new Bid({ playerId: player._id, bidder: user._id, bidAmount: basePrice, isActive: true, isBidOn: true });
-    await newBid.save();
+    try {
+      const updatedPurse = purse - basePrice;
+      user.purse = mongoose.Types.Decimal128.fromString(updatedPurse.toString());
+      user.currentBids = user.currentBids || [];
+      user.currentBids.push({ playerId: player._id, amount: basePrice });
+      await user.save();
 
-    // Reflect current bid on player
-    player.currentBid = basePrice;
-    player.currentBidder = user._id;
-    await player.save();
+      const newBid = new Bid({
+        playerId: player._id,
+        bidder: user._id,
+        bidAmount: basePrice,
+        isActive: true,
+        isBidOn: true,
+      });
+      await newBid.save();
 
-    const pr = await PickRequest.create({ user: userId, player: playerId, status: 'pending', history: [{ byUser: userId, action: 'propose' }] });
+      player.currentBid = basePrice;
+      player.currentBidder = user._id;
+      await player.save();
+    } catch (lockErr) {
+      await PickRequest.findByIdAndDelete(pr._id).catch(() => {});
+      await Bid.updateMany(
+        { playerId: player._id, bidder: user._id, isActive: true },
+        { $set: { isActive: false, isBidOn: false } }
+      ).catch(() => {});
+      try {
+        const fresh = await User.findById(user._id);
+        if (fresh) {
+          const locked = (fresh.currentBids || []).find(
+            (cb) => cb.playerId && cb.playerId.toString() === String(player._id)
+          );
+          if (locked) {
+            const refunded = parseFloat(fresh.purse.toString()) + Number(locked.amount || 0);
+            fresh.purse = mongoose.Types.Decimal128.fromString(String(refunded));
+            fresh.currentBids = fresh.currentBids.filter(
+              (cb) => !cb.playerId || cb.playerId.toString() !== String(player._id)
+            );
+            await fresh.save();
+          }
+        }
+      } catch (_) {}
+      throw lockErr;
+    }
+
     res.status(201).json(pr);
   } catch (e) {
     console.error('Pick create error', e);

@@ -26,6 +26,16 @@ const PickRequestSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// One in-flight unsold pick per player so retries cannot lock purse twice.
+PickRequestSchema.index(
+  { player: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: { $in: ['pending', 'admin_pending'] } },
+    name: 'uniq_pending_pick_per_player',
+  }
+);
+
 module.exports = mongoose.model('PickRequest', PickRequestSchema);
 
 
