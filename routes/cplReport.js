@@ -46,7 +46,7 @@ async function getReportSnapshotOrCached() {
 
 const DEFAULT_CAREER_SOURCE_LABEL =
   process.env.CPL_CAREER_SOURCE_LABEL ||
-  'Data from cpl_15 to the current CPL (historical + live).';
+  'Same cumulative runs, wickets, and averages as Rankings.';
 
 function buildFallbackCplDatabases() {
   const currentDbName = mongoose.connection?.name || process.env.MONGO_DB_NAME || '';
@@ -61,15 +61,17 @@ function buildFallbackCplDatabases() {
   return dbs;
 }
 
-function applyPlayerTotalsFallback(careerRow, player) {
+/** Overlay Rankings Player totals so career stats match /rankings. Keep 50s/100s/highest from innings history. */
+function applyPlayerTotalsFromRankings(careerRow, player) {
   if (!careerRow || !player) return careerRow;
-  const totalRuns = Number(player.totalRuns) || Number(careerRow.totalRuns) || 0;
-  const totalWickets = Number(player.totalWickets) || Number(careerRow.totalWickets) || 0;
-  const innings = Number(player.matchesPlayed) || Number(careerRow.innings) || 0;
-  const notOutInnings = Number(player.totalNotOutInnings) || Number(careerRow.notOutInnings) || 0;
+  const totalRuns = Number(player.totalRuns) || 0;
+  const totalWickets = Number(player.totalWickets) || 0;
+  const innings = Number(player.matchesPlayed) || 0;
+  const notOutInnings = Number(player.totalNotOutInnings) || 0;
   const dismissals = Math.max(0, innings - notOutInnings);
   const totalBalls = Number(player.totalBalls) || 0;
   const totalRunsGiven = Number(player.totalRunsGiven) || 0;
+  const totalHattricks = Number(player.totalHattricks) || 0;
   return {
     ...careerRow,
     totalRuns,
@@ -77,14 +79,15 @@ function applyPlayerTotalsFallback(careerRow, player) {
     innings,
     notOutInnings,
     dismissals,
-    battingStrikeRate: totalBalls ? Number(((totalRuns * 100) / totalBalls).toFixed(2)) : careerRow.battingStrikeRate,
-    battingAverage: dismissals ? Number((totalRuns / dismissals).toFixed(2)) : careerRow.battingAverage,
+    totalHattricks,
+    battingStrikeRate: totalBalls ? Number(((totalRuns * 100) / totalBalls).toFixed(2)) : 0,
+    battingAverage: dismissals ? Number((totalRuns / dismissals).toFixed(2)) : 0,
     bowlingAverage: totalWickets ? Number((totalRunsGiven / totalWickets).toFixed(2)) : 0,
   };
 }
 
 async function getCareerSummaryOrCached({ refresh = false, includeInactive = true } = {}) {
-  const cacheKey = ['current-db-player-career-summary-v4-top-rankings', includeInactive ? 'all' : 'active'];
+  const cacheKey = ['current-db-player-career-summary-v5-match-rankings', includeInactive ? 'all' : 'active'];
   const hit = refresh ? null : getCachedCareerSummary(cacheKey);
   if (hit) return { data: hit, cacheHit: true };
   const match = includeInactive ? {} : { isActive: true };
@@ -92,7 +95,7 @@ async function getCareerSummaryOrCached({ refresh = false, includeInactive = tru
   let [summaries, allPlayers] = await Promise.all([
     PlayerCareerSummary.find({}).select(CAREER_SUMMARY_LIST_PROJECTION).lean(),
     Player.find(match)
-      .select('_id name role totalRuns totalWickets matchesPlayed totalNotOutInnings totalBalls totalRunsGiven totalBallsBowled')
+      .select('_id name role totalRuns totalWickets matchesPlayed totalNotOutInnings totalBalls totalRunsGiven totalBallsBowled totalHattricks')
       .lean(),
   ]);
 
@@ -125,9 +128,9 @@ async function getCareerSummaryOrCached({ refresh = false, includeInactive = tru
     const s = byPlayerId.get(idStr) || byKey.get(key);
     if (s) usedSummaryIds.add(String(s._id));
     if (s) {
-      players.push(mapCareerSummaryLeanToApiPlayer(s));
+      players.push(applyPlayerTotalsFromRankings(mapCareerSummaryLeanToApiPlayer(s), p));
     } else {
-      players.push(applyPlayerTotalsFallback(emptyCareerApiPlayerFromPlayer(p), p));
+      players.push(applyPlayerTotalsFromRankings(emptyCareerApiPlayerFromPlayer(p), p));
     }
   }
 
