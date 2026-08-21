@@ -4,6 +4,7 @@ const AppSettings = require('../models/AppSettings');
 const User = require('../models/User');
 const Player = require('../models/Player');
 const { RULE_MIN, RULE_MAX, getTradeRules } = require('../utils/tradeRules');
+const { getArmedCronFlags } = require('../utils/auctionNightPhase');
 
 async function getSettingsDoc() {
   let doc = await AppSettings.findOne();
@@ -163,7 +164,16 @@ router.post('/', async (req, res) => {
       const parsed = new Date(auctionStartAt);
       if (!isNaN(parsed.getTime())) doc.auctionStartAt = parsed;
     }
-    if (typeof auctionAutoModeEnabled === 'boolean') doc.auctionAutoModeEnabled = auctionAutoModeEnabled;
+    if (typeof auctionAutoModeEnabled === 'boolean') {
+      doc.auctionAutoModeEnabled = auctionAutoModeEnabled;
+      if (auctionAutoModeEnabled === true) {
+        const armed = getArmedCronFlags();
+        doc.cronBulkExitEnabled = armed.cronBulkExitEnabled;
+        doc.cronSingleBidEnabled = armed.cronSingleBidEnabled;
+        doc.cronSingleBidFinalizerEnabled = armed.cronSingleBidFinalizerEnabled;
+        doc.cronLockEnabled = armed.cronLockEnabled;
+      }
+    }
     if (typeof requiredGames === 'number' && requiredGames >= 1 && requiredGames <= 20) doc.requiredGames = requiredGames;
     if (tradeSeasonCap != null && tradeSeasonCap !== '') {
       const n = Number(tradeSeasonCap);

@@ -1149,6 +1149,23 @@ async function sellPlayer(playerId, io = null) {
     // Use findOneAndUpdate with upsert to atomically check if UserPlayer exists and create if not
     // The unique index on (playerId, userId, isActive: true) will prevent duplicates at DB level
     try {
+      // Last-second re-check: a second bid can arrive after the first count.
+      // Never mark sold if 2 unique active bidders exist right now.
+      const liveBids = await Bid.find({
+        playerId: playerId,
+        isActive: true,
+        isBidOn: true
+      }).select('bidder').lean();
+      const liveUnique = new Set(liveBids.map((b) => b.bidder?.toString()).filter(Boolean));
+      if (liveUnique.size > 1) {
+        console.warn(`🛑 BLOCKED SELL (final check): Player ${playerId} has ${liveUnique.size} active bidders`);
+        return {
+          playerID: playerId,
+          status: 'error',
+          message: 'Cannot sell: second bidder has not exited. Only sell when one bidder remains.'
+        };
+      }
+
       // First, atomically check if Player is still unsold and mark as sold in one operation
       const playerUpdateResult = await Player.findOneAndUpdate(
         {

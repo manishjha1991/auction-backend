@@ -25,6 +25,7 @@ const {
   exitSecondHighestForPlayerSingle,
   lockUnderLimitAll
 } = require('./routes/bidRoutes');
+const { getArmedCronFlags } = require('./utils/auctionNightPhase');
 
 // Settings are read directly from MongoDB so Auto Mode toggles apply immediately
 // (no HTTP round-trip to a remote host that may have different AppSettings).
@@ -145,13 +146,15 @@ async function processCounterBidWindow(pid, windowMs) {
   const result = await getBidderCount(pid);
   const count = result.count ?? 0;
 
-  if (count === 1) {
-    // 2+ active bidders: NEVER sell at sharp 11:30 or any run – only exit
-    await exitSecondHighestForPlayerSingle(pid, null);
+  if (count !== 0) {
+    // count=1 means 0 bids OR 2+ unique bidders. NEVER sell.
+    if (count === 1) {
+      await exitSecondHighestForPlayerSingle(pid, null);
+    }
     return;
   }
 
-  // count=0: one bidder only (second exited) → sell only if wait elapsed since last exit
+  // count=0: exactly one unique active bidder → sell only if wait elapsed since last exit
   if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
     await sellPlayer(pid, null);
   } else {
@@ -172,12 +175,14 @@ async function processPostWindow(pid) {
   const count = result.count ?? 0;
   const windowMs = 2 * 60 * 1000;
 
-  if (count === 1) {
-    await exitSecondHighestForPlayerSingle(pid, null);
+  if (count !== 0) {
+    if (count === 1) {
+      await exitSecondHighestForPlayerSingle(pid, null);
+    }
     return;
   }
 
-  // count=0: one bidder only (second exited) → sell only if 2 min elapsed
+  // count=0: exactly one unique active bidder → sell only if 2 min elapsed
   if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
     await sellPlayer(pid, null);
   }
@@ -207,7 +212,7 @@ async function sellingSingleBidSinceStarting() {
         try {
           const { count } = await getBidderCount(playerId);
           if (count !== 0) {
-            console.log(`   ⏭️ Skip ${playerId}: second bidder still active (count=${count})`);
+            console.log(`   ⏭️ Skip ${playerId}: not a single bidder (count=${count}) – NEVER sell with 2 active bids`);
             return;
           }
           const result = await sellPlayer(playerId, null);
@@ -357,7 +362,7 @@ async function oneTimeSellAfterExitSweep() {
         if (!player || player.isSold) return;
         const bidCountResult = await getBidderCount(playerId);
         const count = bidCountResult.count ?? 0;
-        if (count !== 0) return;
+        if (count !== 0) return; // 2+ active bidders → never sell
         await sellPlayer(playerId, null);
         sold += 1;
       }
@@ -435,6 +440,36 @@ async function runBulkExitJob() {
 }
 
 const VALID_PLAYER_TYPES = ['Sapphire', 'Emerald', 'Gold', 'Silver'];
+
+const AUTO_MODE_FLAG_KEYS = [
+  'cronBulkExitEnabled',
+  'cronSingleBidEnabled',
+  'cronSingleBidFinalizerEnabled',
+  'cronLockEnabled',
+];
+
+async function syncAutoModeCronFlags() {
+  try {
+    const doc = await AppSettings.findOne();
+    if (!doc || doc.auctionAutoModeEnabled !== true) return;
+    const armed = getArmedCronFlags();
+    let changed = false;
+    for (const key of AUTO_MODE_FLAG_KEYS) {
+      if (doc[key] !== armed[key]) {
+        doc[key] = armed[key];
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    await doc.save();
+    invalidateSettingsCache();
+    console.log(
+      `🤖 Auto Mode flags synced to ${armed.phaseId}: bulk=${armed.cronBulkExitEnabled} lock=${armed.cronLockEnabled} uncontested=${armed.cronSingleBidFinalizerEnabled} sell=${armed.cronSingleBidEnabled}`
+    );
+  } catch (err) {
+    console.error('   ❌ syncAutoModeCronFlags error:', err.message);
+  }
+}
 
 async function auctionAutoModeStartJob() {
   try {
@@ -612,5 +647,7 @@ cron.schedule('0 45 22 * * *', auctionAutoModeBulk1Off, { timezone: 'Asia/Kolkat
 cron.schedule('0 29 23 * * *', auctionAutoModeFinalizerOn, { timezone: 'Asia/Kolkata' });
 cron.schedule('0 31 0 * * *', auctionAutoModeBulk2Off, { timezone: 'Asia/Kolkata' });
 cron.schedule('0 44 0 * * *', auctionAutoModeSellAfterExitOn, { timezone: 'Asia/Kolkata' });
+cron.schedule('* * * * *', syncAutoModeCronFlags, { timezone: 'Asia/Kolkata' });
+syncAutoModeCronFlags();
 
 console.log('🕒 Auction scheduler running (9:00 PM start → 12:45 AM+ sell-after-exit, IST)…');
