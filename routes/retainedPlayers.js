@@ -18,6 +18,7 @@ const Schedule = require('../models/Schedule');
 const TradeRequest = require('../models/TradeRequest');
 const AppSettings = require('../models/AppSettings');
 const { invalidateCache } = require('../utils/cache');
+const { filterSoldPlayersExcludingRetained } = require('../utils/retentionRelease');
 
 // Helper function to get original base price based on player type
 const getOriginalBasePrice = (playerType) => {
@@ -328,12 +329,14 @@ router.post('/release-all-others', async (req, res) => {
 
     // Get all retained player IDs
     const retainedPlayers = await RetainedPlayer.find({ isActive: true });
-    const initialRetainedPlayerIds = retainedPlayers.map(rp => rp.playerId);
 
-    // Get all sold players that are NOT retained
+    // Get all sold players that are NOT retained.
+    // Compare string IDs: Array.includes uses reference equality, so ObjectIds
+    // loaded from separate queries never match and would release retained players.
     const allSoldPlayers = await Player.find({ isSold: true });
-    const playersToRelease = allSoldPlayers.filter(player => 
-      !initialRetainedPlayerIds.includes(player._id)
+    const playersToRelease = filterSoldPlayersExcludingRetained(
+      allSoldPlayers,
+      retainedPlayers
     );
 
     let releasedCount = 0;
