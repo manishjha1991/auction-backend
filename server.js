@@ -45,7 +45,7 @@ const cplReportRoutes = require('./routes/cplReport');
 const adminRosterOpsRoutes = require('./routes/adminRosterOps');
 const participatingTeamsRoutes = require('./routes/participatingTeams');
 const cacheRoutes = require('./routes/cache');
-// require('./scheduler');
+require('./scheduler');
 
 // Allow Express to trust proxy headers (needed to read real client IPs)
 app.set('trust proxy', true);

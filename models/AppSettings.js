@@ -28,7 +28,7 @@ const AppSettingsSchema = new mongoose.Schema(
     worldCupMode: { type: Boolean, default: false },
     // Auction start date/time (stored as UTC Date)
     auctionStartAt: { type: Date, default: null },
-    // Auto mode: at 10:30 PM enable categories + bulk; at 12:10 AM switch to single-bid windows
+    // Auto mode: 9:00 PM start; 10:45 bulk off; 11:00 lock; 11:30 single-bid sell + bulk2; 12:45 sell-after-exit
     auctionAutoModeEnabled: { type: Boolean, default: false },
     auctionAutoModeCategories: { type: [String], default: ['Gold', 'Silver', 'Sapphire', 'Emerald'] },
     /** Max completed+release "slots" per team per season (also caps concurrent outgoing trade proposals). */

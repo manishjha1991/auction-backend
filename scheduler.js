@@ -1,25 +1,19 @@
 /**
- * Auction Scheduler
+ * Auction Scheduler — all times IST.
  *
- * All times IST. Schedule shifted so Auto Mode starts at 10:30 PM (was 8:00 PM, +2h30m).
- *
- * Business rules:
- * 1. 01:30 IST – sell any player that has only ever received a single bid.
- * 2. 10:30 PM–12:10 AM & 1:05–1:35 AM – bulk exit second-highest every 10 min (admin toggle).
- * 3. 01:30–02:10 IST – every 5 minutes remove second-highest bidder only (no auto-sell).
- * 4. 02:20–03:15 IST – every 5 minutes remove second-highest; if no new bid
- *    since last exit for 5 minutes, sell.
- * 5. 03:16–04:30 IST – every 2 minutes, if no new bid since last exit for 2 minutes, sell;
- *    else remove second-highest.
- * 6. 01:00 IST nightly – lock users who are bidding without the minimum required
- *    Sapphire/Emerald/Gold/Silver holdings.
- *
- * Admins can toggle each cron in the Admin Control Panel. Bulk exit and the
- * single-bid sell windows are mutually exclusive by design—enabling one pauses the other.
+ * 9:00 PM     Auto start: categories ON + bulk ON
+ * 9:00–10:45  Bulk exit every 10 min (NO sell)
+ * 10:45 PM    Bulk OFF
+ * 11:00 PM    Lock under-limit (once)
+ * 11:30 PM    Sell players with no counter bid since start
+ * 11:30–12:30 Bulk exit every 10 min (NO sell)
+ * 12:30 AM    Bulk OFF
+ * 12:45 AM    Sell if 2nd bidder already exited; then every 5 min
+ *             exit 2nd-highest / sell if exited ≥ 2 min with no new bid
+ *             (runs until ~4:00 AM)
  */
 
 const cron = require('node-cron');
-const axios = require('axios');
 const Player = require('./models/Player');
 const AppSettings = require('./models/AppSettings');
 const { 
@@ -32,12 +26,8 @@ const {
   lockUnderLimitAll
 } = require('./routes/bidRoutes');
 
-// For local dev, set SCHEDULER_API=http://localhost:3000 in .env so settings fetch works
-const API_ENDPOINTS = process.env.SCHEDULER_API || 'https://cpl.in.net';
-
-// Settings endpoint still needs HTTP call (it's in a different route file)
-const SETTINGS_PATH = `${API_ENDPOINTS}/api/settings`;
-
+// Settings are read directly from MongoDB so Auto Mode toggles apply immediately
+// (no HTTP round-trip to a remote host that may have different AppSettings).
 let cachedSettings = null;
 let settingsFetchedAt = 0;
 const SETTINGS_TTL_MS = 0; // disable caching to reflect toggles immediately
@@ -48,17 +38,35 @@ const DEFAULT_ITEM_DELAY_MS = parseInt(process.env.SCHEDULER_ITEM_DELAY_MS, 10) 
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function schedulerRequest(method, url, data) {
-  const timeout = parseInt(process.env.SCHEDULER_TIMEOUT_MS, 10) || 300000; // 5 minutes default for bulk operations
-  try {
-    if (method === 'get') {
-      return await axios.get(url, { timeout });
-    }
-    return await axios.post(url, data, { timeout });
-  } catch (err) {
-    console.error(`⚠️ Scheduler request failed (${url}):`, err.message);
-    throw err;
+async function getCronSettings(force = false) {
+  const now = Date.now();
+  if (!force && cachedSettings && now - settingsFetchedAt < SETTINGS_TTL_MS) {
+    return cachedSettings;
   }
+  try {
+    const doc = await AppSettings.findOne().lean();
+    cachedSettings = doc || {};
+    settingsFetchedAt = now;
+  } catch (err) {
+    console.error('⚠️ Unable to load cron settings from AppSettings:', err.message);
+    if (!cachedSettings) {
+      cachedSettings = {};
+      console.error('   ⚠️ No cached settings available, using defaults');
+    } else {
+      console.error('   ℹ️ Using cached settings due to DB read failure');
+    }
+  }
+  return cachedSettings;
+}
+
+async function isCronEnabled(flag) {
+  const settings = await getCronSettings();
+  return settings[flag] !== false;
+}
+
+function invalidateSettingsCache() {
+  cachedSettings = null;
+  settingsFetchedAt = 0;
 }
 
 async function runInBatches(items, batchSize, handler, pauseMs = DEFAULT_BATCH_DELAY_MS, perItemDelay = DEFAULT_ITEM_DELAY_MS) {
@@ -74,43 +82,6 @@ async function runInBatches(items, batchSize, handler, pauseMs = DEFAULT_BATCH_D
     if (pauseMs > 0 && i + batchSize < items.length) {
       await delay(pauseMs);
     }
-  }
-}
-
-async function getCronSettings(force = false) {
-  const now = Date.now();
-  if (!force && cachedSettings && now - settingsFetchedAt < SETTINGS_TTL_MS) {
-    return cachedSettings;
-  }
-  try {
-    const { data } = await schedulerRequest('get', SETTINGS_PATH);
-    cachedSettings = data || {};
-    settingsFetchedAt = now;
-  } catch (err) {
-    console.error('⚠️ Unable to fetch cron settings:', err.message);
-    // If fetch fails, use cached settings if available, otherwise empty object
-    if (!cachedSettings) {
-      cachedSettings = {};
-      console.error('   ⚠️ No cached settings available, using defaults');
-    } else {
-      console.error('   ℹ️ Using cached settings due to fetch failure');
-    }
-  }
-  return cachedSettings;
-}
-
-async function isCronEnabled(flag) {
-  const settings = await getCronSettings();
-  return settings[flag] !== false;
-}
-
-async function fetchCronSettings() {
-  try {
-    const { data } = await schedulerRequest('get', SETTINGS_PATH);
-    return data || {};
-  } catch (err) {
-    console.error('⚠️ Unable to fetch cron settings:', err.message);
-    return {};
   }
 }
 
@@ -164,10 +135,9 @@ async function shouldSellNoNewBidSinceExit(player, windowMs) {
 }
 
 /**
- * 02:20–03:15 IST: Every 5 min
+ * 12:45 AM–4:00 AM IST: Every 5 min
  * - 2 active bidders → NEVER sell, only exit second-highest
- * - 1 active bidder (second exited) + lastExit >= 5 min + no new bid → sell
- * - Else → exit second-highest
+ * - 1 active bidder (second exited) + lastExit >= 2 min + no new bid → sell
  */
 async function processCounterBidWindow(pid, windowMs) {
   const player = await Player.findById(pid).lean();
@@ -181,7 +151,7 @@ async function processCounterBidWindow(pid, windowMs) {
     return;
   }
 
-  // count=0: one bidder only (second exited) → sell only if 5 min elapsed since last exit
+  // count=0: one bidder only (second exited) → sell only if wait elapsed since last exit
   if (await shouldSellNoNewBidSinceExit(player, windowMs)) {
     await sellPlayer(pid, null);
   } else {
@@ -190,7 +160,7 @@ async function processCounterBidWindow(pid, windowMs) {
 }
 
 /**
- * 03:16–04:30 IST: Every 2 min
+ * 12:16–1:00 AM IST: Every 2 min
  * Same logic as counter-bid window but with 2 min instead of 5 min:
  * - 2 active bidders → NEVER sell, only exit second-highest
  * - 1 active bidder + lastExit >= 2 min + no new bid → sell
@@ -215,11 +185,11 @@ async function processPostWindow(pid) {
 
 async function sellingSingleBidSinceStarting() {
   if (!(await isCronEnabled('cronSingleBidFinalizerEnabled'))) {
-    console.log('⏸️ 1:30 AM single-bid finalizer disabled via admin settings.');
+    console.log('⏸️ 11:30 PM single-bid finalizer disabled via admin settings.');
     return;
   }
 
-  console.log(`⏱️ [${new Date().toISOString()}] Running 1:30 AM single-bid finalizer`);
+  console.log(`⏱️ [${new Date().toISOString()}] Running 11:30 PM single-bid finalizer (no counter bid since start)`);
   try {
     const result = await getSingleBidPlayers();
     const ids = result.resultMain;
@@ -267,7 +237,7 @@ async function tenMinuteSingleBidJob() {
     return;
   }
 
-  // Only allow this job to run from 2:00 AM–4:30 AM IST (shifted +2h30m)
+  // Only allow this job to run from 11:25 PM–1:00 AM IST
   const nowParts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Kolkata',
     hour: '2-digit',
@@ -280,10 +250,10 @@ async function tenMinuteSingleBidJob() {
   });
   const hour = Number(timeBag.hour);
   const minute = Number(timeBag.minute);
-  const isAfter2 = hour > 2 || (hour === 2 && minute >= 0);
-  const isBefore430 = hour < 4 || (hour === 4 && minute <= 30);
-  if (!(isAfter2 && isBefore430)) {
-    console.log('⏸️ Ten-minute single-bid monitor skipped (outside 2:00–4:30 AM IST window).');
+  const isAfter1125 = hour > 23 || (hour === 23 && minute >= 25);
+  const isBefore1 = hour < 1 || (hour === 1 && minute === 0);
+  if (!(isAfter1125 || isBefore1)) {
+    console.log('⏸️ Ten-minute single-bid monitor skipped (outside 11:25 PM–1:00 AM IST window).');
     return;
   }
 
@@ -337,7 +307,7 @@ async function counterBidWindowJob(windowMinutes) {
 
 async function exitOnlyWindowJob(windowMinutes) {
   const settings = await getCronSettings();
-  // Note: cronBulkExitEnabled only affects bulk windows. Exit-only runs 1:30–2:10 AM.
+  // Note: cronBulkExitEnabled only affects bulk windows. Exit-only runs 11:00–11:20 PM.
   if (settings.cronSingleBidEnabled === false) {
     console.log('⏸️ Exit-only window disabled via admin settings (cronSingleBidEnabled=false).');
     return;
@@ -361,15 +331,13 @@ async function exitOnlyWindowJob(windowMinutes) {
 }
 
 /**
- * One-time 2:18 AM IST sweep:
- * Sell any unsold player that currently has exactly one active bidder.
- * (Same intent as single-bid-only sell; no second-highest required.)
- * Queue rows are cleared as part of sell flow.
+ * 12:45 AM IST one-time sweep:
+ * Sell any unsold player that currently has exactly one active bidder (2nd already exited).
  */
 async function oneTimeSellAfterExitSweep() {
   const settings = await getCronSettings();
   if (settings.cronSingleBidEnabled === false) {
-    console.log('⏸️ One-time 2:18 AM sell sweep disabled via admin settings (cronSingleBidEnabled=false).');
+    console.log('⏸️ One-time 12:45 AM sell sweep disabled via admin settings (cronSingleBidEnabled=false).');
     return;
   }
 
@@ -389,13 +357,13 @@ async function oneTimeSellAfterExitSweep() {
         if (!player || player.isSold) return;
         const bidCountResult = await getBidderCount(playerId);
         const count = bidCountResult.count ?? 0;
-        if (count !== 0) return; // only one active bidder remains
+        if (count !== 0) return;
         await sellPlayer(playerId, null);
         sold += 1;
       }
     );
 
-    console.log(`   ✅ One-time 2:18 AM sweep sold ${sold} player(s).`);
+    console.log(`   ✅ One-time 12:45 AM sweep sold ${sold} player(s).`);
   } catch (err) {
     console.error('⚠️ oneTimeSellAfterExitSweep error:', err.message);
   }
@@ -484,28 +452,28 @@ async function auctionAutoModeStartJob() {
     }
     doc.cronBulkExitEnabled = true;
     doc.cronSingleBidEnabled = false;
-    doc.cronSingleBidFinalizerEnabled = false; // enable at 1:25 AM
+    doc.cronSingleBidFinalizerEnabled = false;
     await doc.save();
-    cachedSettings = null; // force fresh fetch for next getCronSettings
-    console.log(`   → cronBulkExitEnabled=true, cronSingleBidEnabled=false, cronSingleBidFinalizerEnabled=false`);
+    invalidateSettingsCache();
+    console.log(`   → bulk=ON, single-bid=OFF, finalizer=OFF (exit only until 10:45)`);
   } catch (err) {
     console.error('   ❌ auctionAutoModeStartJob error:', err.message);
   }
 }
 
-async function auctionAutoModeSwitchJob() {
+async function auctionAutoModeBulk1Off() {
   try {
     const doc = await AppSettings.findOne();
     if (!doc || doc.auctionAutoModeEnabled !== true) return;
 
-    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 12:10 AM: bulk off, single-bid on (exit-only 1:30–2:10)`);
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 10:45 PM: bulk OFF`);
     doc.cronBulkExitEnabled = false;
-    doc.cronSingleBidEnabled = true;
+    doc.cronSingleBidEnabled = false;
     await doc.save();
-    cachedSettings = null;
-    console.log(`   → cronBulkExitEnabled=false, cronSingleBidEnabled=true`);
+    invalidateSettingsCache();
+    console.log(`   → bulk=OFF, single-bid=OFF (pause until 11:30)`);
   } catch (err) {
-    console.error('   ❌ auctionAutoModeSwitchJob error:', err.message);
+    console.error('   ❌ auctionAutoModeBulk1Off error:', err.message);
   }
 }
 
@@ -514,11 +482,13 @@ async function auctionAutoModeFinalizerOn() {
     const doc = await AppSettings.findOne();
     if (!doc || doc.auctionAutoModeEnabled !== true) return;
 
-    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 1:25 AM: finalizer ON`);
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 11:29 PM: finalizer ON`);
     doc.cronSingleBidFinalizerEnabled = true;
+    doc.cronBulkExitEnabled = false;
+    doc.cronSingleBidEnabled = false;
     await doc.save();
-    cachedSettings = null;
-    console.log(`   → cronSingleBidFinalizerEnabled=true (1:30 AM run will execute)`);
+    invalidateSettingsCache();
+    console.log(`   → finalizer=ON (11:30 sell: never-got-counter-bid players)`);
   } catch (err) {
     console.error('   ❌ auctionAutoModeFinalizerOn error:', err.message);
   }
@@ -529,12 +499,12 @@ async function auctionAutoModeBulk2On() {
     const doc = await AppSettings.findOne();
     if (!doc || doc.auctionAutoModeEnabled !== true) return;
 
-    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 1:05 AM: bulk exit ON (window 2)`);
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 11:30 PM: bulk window 2 ON`);
     doc.cronBulkExitEnabled = true;
     doc.cronSingleBidEnabled = false;
     await doc.save();
-    cachedSettings = null;
-    console.log(`   → cronBulkExitEnabled=true, cronSingleBidEnabled=false`);
+    invalidateSettingsCache();
+    console.log(`   → bulk=ON, single-bid=OFF (exit only until 12:30 AM)`);
   } catch (err) {
     console.error('   ❌ auctionAutoModeBulk2On error:', err.message);
   }
@@ -545,11 +515,12 @@ async function auctionAutoModeBulk2Off() {
     const doc = await AppSettings.findOne();
     if (!doc || doc.auctionAutoModeEnabled !== true) return;
 
-    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 1:50 AM: bulk exit OFF`);
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 12:30 AM: bulk OFF`);
     doc.cronBulkExitEnabled = false;
+    doc.cronSingleBidEnabled = false;
     await doc.save();
-    cachedSettings = null;
-    console.log(`   → cronBulkExitEnabled=false`);
+    invalidateSettingsCache();
+    console.log(`   → bulk=OFF (pause until 12:45 sell-after-exit)`);
   } catch (err) {
     console.error('   ❌ auctionAutoModeBulk2Off error:', err.message);
   }
@@ -560,11 +531,12 @@ async function auctionAutoModeSellAfterExitOn() {
     const doc = await AppSettings.findOne();
     if (!doc || doc.auctionAutoModeEnabled !== true) return;
 
-    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 2:20 AM: sell-after-exit ON`);
+    console.log(`🤖 [${new Date().toISOString()}] Auction Auto Mode @ 12:44 AM: sell-after-exit ON`);
+    doc.cronBulkExitEnabled = false;
     doc.cronSingleBidEnabled = true;
     await doc.save();
-    cachedSettings = null;
-    console.log(`   → cronSingleBidEnabled=true (2:20 AM–4:30 AM)`);
+    invalidateSettingsCache();
+    console.log(`   → single-bid=ON (12:45 AM+: sell if 2nd-highest exited ≥ 2 min)`);
   } catch (err) {
     console.error('   ❌ auctionAutoModeSellAfterExitOn error:', err.message);
   }
@@ -585,75 +557,60 @@ async function lockUnderLimitJob() {
   }
 }
 
-// tenMinuteSingleBidJob DISABLED – counterBidWindowJob handles 2:20 AM–4:30 AM windows
-// Requirement: 2:20–3:15 AM with 5-minute check; after 3:16 AM run same logic every 2 minutes till 4:30 AM
-
-// 1:30 AM IST nightly – sell players that never received a counter bid
-cron.schedule('0 30 1 * * *', sellingSingleBidSinceStarting, {
-  timezone: 'Asia/Kolkata',
-});
-
-// 1:30–2:10 AM IST – every 5 minutes exit-only window (no auto-sell)
-cron.schedule('0 30,35,40,45,50,55 1 * * *', () => exitOnlyWindowJob(5), {
-  timezone: 'Asia/Kolkata',
-});
-cron.schedule('0 0,5,10 2 * * *', () => exitOnlyWindowJob(5), {
-  timezone: 'Asia/Kolkata',
-});
-
-// 2:18 AM – one-time sell sweep for players where second-highest exited
-cron.schedule('0 18 2 * * *', () => oneTimeSellAfterExitSweep(), {
-  timezone: 'Asia/Kolkata',
-});
-
-// 2:20–3:15 AM IST – every 5 minutes counter-bid window
-cron.schedule('0 20,25,30,35,40,45,50,55 2 * * *', () => counterBidWindowJob(5), {
-  timezone: 'Asia/Kolkata',
-});
-cron.schedule('0 0,5,10,15 3 * * *', () => counterBidWindowJob(5), {
-  timezone: 'Asia/Kolkata',
-});
-
-// 3:16–4:30 AM IST – every 2 minutes counter-bid window with 2-minute exit check
-cron.schedule(
-  '0 16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58 3 * * *',
-  () => counterBidWindowJob(2),
-  { timezone: 'Asia/Kolkata' }
-);
-cron.schedule('0 0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30 4 * * *', () => counterBidWindowJob(2), {
-  timezone: 'Asia/Kolkata',
-});
-
-// Bulk exit: Window 1 = 10:30 PM–12:10 AM every 10 min; Window 2 = 1:05–1:35 AM every 10 min
-cron.schedule('0 30,40,50 22 * * *', () => {
-  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (10:30 PM–12:10 AM window)`);
+// 9:00–10:45 PM IST – bulk exit every 10 min (last tick 10:40). NO sell.
+cron.schedule('0 0,10,20,30,40,50 21 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (9:00–10:45 PM window)`);
   runBulkExitJob();
 }, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 0,10,20,30,40,50 23 * * *', () => {
-  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (10:30 PM–12:10 AM window)`);
-  runBulkExitJob();
-}, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 0,10 0 * * *', () => {
-  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (10:30 PM–12:10 AM window)`);
-  runBulkExitJob();
-}, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 5,15,25,35 1 * * *', () => {
-  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (1:05–1:35 AM window)`);
+cron.schedule('0 0,10,20,30,40 22 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (9:00–10:45 PM window)`);
   runBulkExitJob();
 }, { timezone: 'Asia/Kolkata' });
 
-// Lock users that violate roster requirements at 1:00 AM IST daily
-cron.schedule('0 0 1 * * *', lockUnderLimitJob, {
+// 11:00 PM IST sharp – lock under-limit (admin categories)
+cron.schedule('0 0 23 * * *', lockUnderLimitJob, {
   timezone: 'Asia/Kolkata',
 });
 
-// Auction Auto Mode (+2h30m from old 8 PM schedule):
-// 10:30 PM start; 12:10 AM bulk off; 1:04 AM bulk2 on; 1:25 AM finalizer on; 1:50 AM bulk off; 2:20 AM sell-after-exit on
-cron.schedule('0 30 22 * * *', auctionAutoModeStartJob, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 10 0 * * *', auctionAutoModeSwitchJob, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 4 1 * * *', auctionAutoModeBulk2On, { timezone: 'Asia/Kolkata' }); // 1:04 so bulk is ready for 1:05 run
-cron.schedule('0 25 1 * * *', auctionAutoModeFinalizerOn, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 50 1 * * *', auctionAutoModeBulk2Off, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 20 2 * * *', auctionAutoModeSellAfterExitOn, { timezone: 'Asia/Kolkata' });
+// 11:30 PM: sell never-got-counter-bid, then start bulk window 2
+cron.schedule('0 30 23 * * *', async () => {
+  console.log(`⏰ [${new Date().toISOString()}] 11:30 PM: single-bid-only sell, then bulk window 2`);
+  await sellingSingleBidSinceStarting();
+  await auctionAutoModeBulk2On();
+  await runBulkExitJob();
+}, { timezone: 'Asia/Kolkata' });
 
-console.log('🕒 Auction scheduler running…');
+// 11:40 PM–12:30 AM – bulk exit every 10 min (NO sell)
+cron.schedule('0 40,50 23 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (11:30 PM–12:30 AM window)`);
+  runBulkExitJob();
+}, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 0,10,20,30 0 * * *', () => {
+  console.log(`⏰ [${new Date().toISOString()}] Bulk exit (11:30 PM–12:30 AM window)`);
+  runBulkExitJob();
+}, { timezone: 'Asia/Kolkata' });
+
+// 12:45 AM – sell anyone already down to 1 bidder
+cron.schedule('0 45 0 * * *', () => oneTimeSellAfterExitSweep(), {
+  timezone: 'Asia/Kolkata',
+});
+
+// 12:45 AM–4:00 AM – every 5 min: exit 2nd-highest; sell if 2nd exited ≥ 2 min
+cron.schedule('0 45,50,55 0 * * *', () => counterBidWindowJob(2), {
+  timezone: 'Asia/Kolkata',
+});
+cron.schedule('0 */5 1-3 * * *', () => counterBidWindowJob(2), {
+  timezone: 'Asia/Kolkata',
+});
+cron.schedule('0 0 4 * * *', () => counterBidWindowJob(2), {
+  timezone: 'Asia/Kolkata',
+});
+
+// Auto Mode flag flips (jobs no-op unless auctionAutoModeEnabled=true)
+cron.schedule('0 0 21 * * *', auctionAutoModeStartJob, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 45 22 * * *', auctionAutoModeBulk1Off, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 29 23 * * *', auctionAutoModeFinalizerOn, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 31 0 * * *', auctionAutoModeBulk2Off, { timezone: 'Asia/Kolkata' });
+cron.schedule('0 44 0 * * *', auctionAutoModeSellAfterExitOn, { timezone: 'Asia/Kolkata' });
+
+console.log('🕒 Auction scheduler running (9:00 PM start → 12:45 AM+ sell-after-exit, IST)…');
