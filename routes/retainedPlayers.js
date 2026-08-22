@@ -18,6 +18,14 @@ const Schedule = require('../models/Schedule');
 const TradeRequest = require('../models/TradeRequest');
 const AppSettings = require('../models/AppSettings');
 const { invalidateCache } = require('../utils/cache');
+const {
+  RETENTION_VALUE,
+  getRetentionCreateBlocker,
+  getRetentionUndoBlocker,
+  getDuplicateRetentionMessage,
+  getActiveRetentionClaimFilter,
+  shouldBlockUndoAfterSeasonRelease,
+} = require('../utils/retentionGuard');
 
 // Helper function to get original base price based on player type
 const getOriginalBasePrice = (playerType) => {
@@ -131,93 +139,80 @@ router.post('/retain', async (req, res) => {
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
-    // Check if player retention is enabled
     const settings = await AppSettings.findOne();
-    if (!settings || !settings.enablePlayerRetention) {
-      return res.status(403).json({ message: 'Player retention feature is currently disabled by admin' });
-    }
-
-    // Check if user exists and is active
     const user = await User.findById(userId).includeInactive();
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    if (!user.isActive) {
-      return res.status(403).json({ message: 'User account is inactive. Cannot retain players.' });
-    }
-
-    // Check if user retention is locked
-    if (user.isRetentionLocked) {
-      return res.status(403).json({ message: 'Your team retention is locked by admin. You cannot retain players.' });
-    }
-
-    // Check if player exists and is sold to this user
     const player = await Player.findById(playerId);
-    if (!player) {
-      return res.status(404).json({ message: 'Player not found' });
-    }
 
-    // Check if user owns this player
-    const userPlayer = await UserPlayer.findOne({ 
-      userId, 
-      playerId, 
-      isActive: true 
-    });
-    if (!userPlayer) {
-      return res.status(400).json({ message: 'You do not own this player' });
-    }
+    const userPlayer = player
+      ? await UserPlayer.findOne({
+          userId,
+          playerId,
+          isActive: true
+        })
+      : null;
 
-    // Check if player is already retained
-    const existingRetained = await RetainedPlayer.findOne({ 
-      userId, 
-      playerId, 
-      isActive: true 
-    });
-    if (existingRetained) {
-      return res.status(400).json({ message: 'Player is already retained' });
-    }
+    const existingRetained = player
+      ? await RetainedPlayer.findOne({
+          userId,
+          playerId,
+          isActive: true
+        })
+      : null;
 
-    // Check maximum retention limit (4 players)
-    const currentRetainedCount = await RetainedPlayer.countDocuments({ 
-      userId, 
-      isActive: true 
-    });
-    if (currentRetainedCount >= 4) {
-      return res.status(400).json({ message: 'You can only retain a maximum of 4 players' });
-    }
-
-    // Check if user already has a player from this category
-    const existingCategoryRetained = await RetainedPlayer.findOne({ 
-      userId, 
-      playerType: player.type,
-      isActive: true 
-    });
-    if (existingCategoryRetained) {
-      return res.status(400).json({ 
-        message: `You already have a ${player.type} player retained. You can only retain one player from each category.` 
-      });
-    }
-
-    // All players cost 17 crores to retain
-    const retentionValue = 170000000; // 17 crores for all players
-    const currentPurse = Number(user.purse ? parseFloat(user.purse.toString()) : 0);
-    if (currentPurse < retentionValue) {
-      return res.status(400).json({ message: 'Insufficient purse balance to retain this player' });
-    }
-
-    // Create retained player record
-    const retainedPlayer = await RetainedPlayer.create({
-      playerId,
+    const currentRetainedCount = await RetainedPlayer.countDocuments({
       userId,
-      retainedValue: retentionValue,
-      playerType: player.type,
-      playerName: player.name,
-      playerRole: player.role
+      isActive: true
     });
 
-    // Deduct retention cost immediately
-    user.purse = currentPurse - retentionValue;
-    await user.save();
+    const existingCategoryRetained = player
+      ? await RetainedPlayer.findOne({
+          userId,
+          playerType: player.type,
+          isActive: true
+        })
+      : null;
+
+    const currentPurse = Number(user && user.purse ? parseFloat(user.purse.toString()) : 0);
+    const createBlocker = getRetentionCreateBlocker({
+      settings,
+      user,
+      player,
+      userPlayer,
+      existingRetained,
+      currentRetainedCount,
+      existingCategoryRetained,
+      currentPurse,
+    });
+    if (createBlocker) {
+      return res.status(createBlocker.status).json({ message: createBlocker.message });
+    }
+
+    let retainedPlayer;
+    try {
+      retainedPlayer = await RetainedPlayer.create({
+        playerId,
+        userId,
+        retainedValue: RETENTION_VALUE,
+        playerType: player.type,
+        playerName: player.name,
+        playerRole: player.role
+      });
+    } catch (createError) {
+      const duplicate = getDuplicateRetentionMessage(createError);
+      if (duplicate) {
+        return res.status(duplicate.status).json({ message: duplicate.message });
+      }
+      throw createError;
+    }
+
+    try {
+      user.purse = currentPurse - RETENTION_VALUE;
+      await user.save();
+    } catch (saveError) {
+      retainedPlayer.isActive = false;
+      await retainedPlayer.save();
+      throw saveError;
+    }
     invalidateCache(`user-details:${userId}`);
 
     res.status(201).json({
@@ -602,37 +597,32 @@ router.post('/undo/:retainedPlayerId', async (req, res) => {
       return res.status(400).json({ message: 'User ID is required' });
     }
 
-    // Check if admin has already released players
     const settings = await AppSettings.findOne();
-    if (settings && settings.adminReleasedPlayers && settings.enablePlayerRetention !== true) {
-      return res.status(403).json({ 
-        message: 'Cannot undo retained players after admin has released all other players. This action is no longer available.' 
-      });
-    }
-
-    const retainedPlayer = await RetainedPlayer.findById(retainedPlayerId);
-    if (!retainedPlayer) {
-      return res.status(404).json({ message: 'Retained player not found' });
-    }
-
-    // Check if user owns this retained player
-    if (retainedPlayer.userId.toString() !== userId) {
-      return res.status(403).json({ message: 'You can only undo your own retained players' });
-    }
-
-    // Check if user retention is locked
     const user = await User.findById(userId);
-    if (user && user.isRetentionLocked) {
-      return res.status(403).json({ message: 'Your team retention is locked by admin. You cannot undo retained players.' });
+    const retainedPlayer = await RetainedPlayer.findById(retainedPlayerId);
+
+    const undoBlocker = getRetentionUndoBlocker({
+      settings,
+      user,
+      retainedPlayer,
+      actingUserId: userId,
+    });
+    if (undoBlocker) {
+      return res.status(undoBlocker.status).json({ message: undoBlocker.message });
     }
 
-    // Deactivate the retained player
-    retainedPlayer.isActive = false;
-    await retainedPlayer.save();
+    // Atomically claim the active row so a retry/double-click cannot refund twice.
+    const claimed = await RetainedPlayer.findOneAndUpdate(
+      getActiveRetentionClaimFilter({ retainedPlayerId, userId }),
+      { $set: { isActive: false } },
+      { new: true }
+    );
+    if (!claimed) {
+      return res.status(409).json({ message: 'This retention has already been undone' });
+    }
 
-    // Refund retention cost immediately
-    if (retainedPlayer.retainedValue) {
-      await User.findByIdAndUpdate(userId, { $inc: { purse: retainedPlayer.retainedValue } });
+    if (claimed.retainedValue) {
+      await User.findByIdAndUpdate(userId, { $inc: { purse: claimed.retainedValue } });
       invalidateCache(`user-details:${userId}`);
     }
 
@@ -669,9 +659,9 @@ router.post('/withdraw/:retainedPlayerId', async (req, res) => {
       return res.status(400).json({ message: 'This player has already been withdrawn' });
     }
 
-    // Check if admin has already released players
     const settings = await AppSettings.findOne();
-    if (settings && settings.adminReleasedPlayers && settings.enablePlayerRetention !== true) {
+    const actingUser = await User.findById(userId);
+    if (shouldBlockUndoAfterSeasonRelease(settings, actingUser)) {
       return res.status(400).json({ message: 'Cannot withdraw after admin has released all other players' });
     }
 

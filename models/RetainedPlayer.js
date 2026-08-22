@@ -53,5 +53,24 @@ RetainedPlayerSchema.index({ userId: 1, isActive: 1 });
 RetainedPlayerSchema.index({ playerId: 1, isActive: 1 });
 RetainedPlayerSchema.index({ userId: 1, playerType: 1 });
 
+// One active retention per player and per category. Double-submit / retry
+// used to insert a second row and deduct 17 Cr again.
+RetainedPlayerSchema.index(
+  { userId: 1, playerId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { isActive: true },
+    name: 'uniq_active_retention_per_player',
+  }
+);
+RetainedPlayerSchema.index(
+  { userId: 1, playerType: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { isActive: true },
+    name: 'uniq_active_retention_per_type',
+  }
+);
+
 module.exports = mongoose.model('RetainedPlayer', RetainedPlayerSchema);
 

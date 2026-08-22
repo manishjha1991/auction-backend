@@ -930,6 +930,34 @@ async function createRetainedPlayerIndexes() {
       results.push({ index, status: 'error', error: error.message });
     }
   }
+
+  const uniquePartials = [
+    {
+      keys: { userId: 1, playerId: 1 },
+      options: {
+        unique: true,
+        partialFilterExpression: { isActive: true },
+        name: 'uniq_active_retention_per_player',
+      },
+    },
+    {
+      keys: { userId: 1, playerType: 1 },
+      options: {
+        unique: true,
+        partialFilterExpression: { isActive: true },
+        name: 'uniq_active_retention_per_type',
+      },
+    },
+  ];
+  for (const { keys, options } of uniquePartials) {
+    try {
+      await RetainedPlayer.collection.createIndex(keys, options);
+      results.push({ index: { ...keys, unique: true, partialFilter: options.partialFilterExpression }, status: 'created' });
+    } catch (error) {
+      results.push({ index: keys, status: 'error', error: error.message });
+    }
+  }
+
   return results;
 }
 
