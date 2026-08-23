@@ -9,6 +9,7 @@ const { invalidateCache } = require("../utils/cache");
 const { computeNextBidAmount } = require("../utils/bidIncrement");
 const { getSocketIdsForUsers } = require("../utils/socketUserMap");
 const { reconcileUsersPurse } = require("./purseReconcileService");
+const { isInPreSoloSellFreeze } = require("../utils/auctionNightPhase");
 
 const TYPE_LIMIT = {
   Sapphire: 2,
@@ -207,6 +208,22 @@ async function placeBidCore({
       .lean();
 
     const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
+
+    // Pre-solo-sell minute (e.g. 12:44–12:45): no new bids if 2nd bidder already exited.
+    if (isInPreSoloSellFreeze() && activeBidders.length === 1) {
+      const topBid = [...activeBids].sort((a, b) => (b.bidAmount || 0) - (a.bidAmount || 0))[0];
+      const leader = topBid?.bidder
+        ? await User.findById(topBid.bidder).select("teamName abbreviation name").lean()
+        : null;
+      const teamName = (leader?.teamName || leader?.name || "that team").trim();
+      const abbr = (leader?.abbreviation || "").trim();
+      const teamLabel = abbr ? `${teamName} (${abbr})` : teamName;
+      return {
+        ok: false,
+        status: 400,
+        message: `Nice try, genius. Bid on time next time — ${player.name} is locked for the pre-sell minute. The 2nd bidder already bounced, so ${teamLabel} is walking away with him. Wave goodbye.`,
+      };
+    }
 
     if (activeBidders.length >= 2 && !activeBidders.includes(bidderId.toString())) {
       return {

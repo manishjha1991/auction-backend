@@ -8,9 +8,10 @@
  * 11:30 PM    Sell players with no counter bid since start
  * 11:30–12:30 Bulk exit every 10 min (NO sell)
  * 12:30 AM    Bulk OFF
- * 12:45 AM    Sell ONLY if 2nd bidder already exited (no new exits)
- * 12:50 AM+   Every 5 min: exit 2nd-highest / sell if exited ≥ 2 min
- *             with no new bid (runs until ~4:00 AM)
+ * Pre-sell freeze + solo sell:
+ *   Cron expression strings below are the source of truth.
+ *   Freeze = last full minute before the solo-sell cron (parsed automatically).
+ *   Night "minutes from start" uses the auction-start cron hour/minute (not a hardcoded 9 PM).
  */
 
 const cron = require('node-cron');
@@ -25,7 +26,12 @@ const {
   exitSecondHighestForPlayerSingle,
   lockUnderLimitAll
 } = require('./routes/bidRoutes');
-const { getArmedCronFlags } = require('./utils/auctionNightPhase');
+const {
+  getArmedCronFlags,
+  registerNightTimingFromCrons,
+  getSoloSellClockIst,
+  addMinutesToClock,
+} = require('./utils/auctionNightPhase');
 
 // Settings are read directly from MongoDB so Auto Mode toggles apply immediately
 // (no HTTP round-trip to a remote host that may have different AppSettings).
@@ -626,16 +632,36 @@ cron.schedule('0 0,10,20,30 0 * * *', () => {
   runBulkExitJob();
 }, { timezone: 'Asia/Kolkata' });
 
-// 12:45 AM – sell anyone already down to 1 bidder (NO exits this minute)
-cron.schedule('0 45 0 * * *', () => oneTimeSellAfterExitSweep(), {
+// ── Cron signatures (change these strings when night timing moves; freeze/math follow)
+const CRON_AUCTION_AUTO_START = '0 0 21 * * *'; // e.g. 6 PM start → '0 0 18 * * *'
+const CRON_SOLO_SELL = '0 45 0 * * *'; // e.g. 11:45 PM sell → '0 45 23 * * *'
+
+registerNightTimingFromCrons({
+  auctionStartCron: CRON_AUCTION_AUTO_START,
+  soloSellCron: CRON_SOLO_SELL,
+});
+
+const soloSell = getSoloSellClockIst();
+const counterBid1 = addMinutesToClock(soloSell.hour, soloSell.minute, 5);
+const counterBid2 = addMinutesToClock(soloSell.hour, soloSell.minute, 10);
+const sellArm = addMinutesToClock(soloSell.hour, soloSell.minute, -1);
+
+// Solo-sell minute – sell anyone already down to 1 bidder (NO exits this minute)
+cron.schedule(CRON_SOLO_SELL, () => oneTimeSellAfterExitSweep(), {
   timezone: 'Asia/Kolkata',
 });
 
-// 12:50 AM–4:00 AM – every 5 min: exit 2nd-highest; sell if 2nd exited ≥ 2 min
-// Starts at :50 (not :45) so 12:45 cannot exit+instant-sell contested lots.
-cron.schedule('0 50,55 0 * * *', () => counterBidWindowJob(2), {
-  timezone: 'Asia/Kolkata',
-});
+// +5 / +10 min after solo sell – exit 2nd-highest; sell if 2nd exited ≥ 2 min
+cron.schedule(
+  `0 ${counterBid1.minute} ${counterBid1.hour} * * *`,
+  () => counterBidWindowJob(2),
+  { timezone: 'Asia/Kolkata' }
+);
+cron.schedule(
+  `0 ${counterBid2.minute} ${counterBid2.hour} * * *`,
+  () => counterBidWindowJob(2),
+  { timezone: 'Asia/Kolkata' }
+);
 cron.schedule('0 */5 1-3 * * *', () => counterBidWindowJob(2), {
   timezone: 'Asia/Kolkata',
 });
@@ -644,12 +670,18 @@ cron.schedule('0 0 4 * * *', () => counterBidWindowJob(2), {
 });
 
 // Auto Mode flag flips (jobs no-op unless auctionAutoModeEnabled=true)
-cron.schedule('0 0 21 * * *', auctionAutoModeStartJob, { timezone: 'Asia/Kolkata' });
+cron.schedule(CRON_AUCTION_AUTO_START, auctionAutoModeStartJob, { timezone: 'Asia/Kolkata' });
 cron.schedule('0 45 22 * * *', auctionAutoModeBulk1Off, { timezone: 'Asia/Kolkata' });
 cron.schedule('0 29 23 * * *', auctionAutoModeFinalizerOn, { timezone: 'Asia/Kolkata' });
 cron.schedule('0 31 0 * * *', auctionAutoModeBulk2Off, { timezone: 'Asia/Kolkata' });
-cron.schedule('0 44 0 * * *', auctionAutoModeSellAfterExitOn, { timezone: 'Asia/Kolkata' });
+cron.schedule(
+  `0 ${sellArm.minute} ${sellArm.hour} * * *`,
+  auctionAutoModeSellAfterExitOn,
+  { timezone: 'Asia/Kolkata' }
+);
 cron.schedule('* * * * *', syncAutoModeCronFlags, { timezone: 'Asia/Kolkata' });
 syncAutoModeCronFlags();
 
-console.log('🕒 Auction scheduler running (9:00 PM start → 12:45 solo sell, 12:50+ exit/sell-after-exit, IST)…');
+console.log(
+  `🕒 Auction scheduler running (start cron ${CRON_AUCTION_AUTO_START} → solo sell ${CRON_SOLO_SELL}; freeze = prior minute, IST)…`
+);
