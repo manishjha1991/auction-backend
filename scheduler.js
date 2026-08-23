@@ -8,9 +8,9 @@
  * 11:30 PM    Sell players with no counter bid since start
  * 11:30–12:30 Bulk exit every 10 min (NO sell)
  * 12:30 AM    Bulk OFF
- * 12:45 AM    Sell if 2nd bidder already exited; then every 5 min
- *             exit 2nd-highest / sell if exited ≥ 2 min with no new bid
- *             (runs until ~4:00 AM)
+ * 12:45 AM    Sell ONLY if 2nd bidder already exited (no new exits)
+ * 12:50 AM+   Every 5 min: exit 2nd-highest / sell if exited ≥ 2 min
+ *             with no new bid (runs until ~4:00 AM)
  */
 
 const cron = require('node-cron');
@@ -136,9 +136,10 @@ async function shouldSellNoNewBidSinceExit(player, windowMs) {
 }
 
 /**
- * 12:45 AM–4:00 AM IST: Every 5 min
+ * 12:50 AM–4:00 AM IST: Every 5 min
  * - 2 active bidders → NEVER sell, only exit second-highest
  * - 1 active bidder (second exited) + lastExit >= 2 min + no new bid → sell
+ * (Must NOT run at 12:45 — that minute is sell-only for already-solo lots.)
  */
 async function processCounterBidWindow(pid, windowMs) {
   const player = await Player.findById(pid).lean();
@@ -571,7 +572,7 @@ async function auctionAutoModeSellAfterExitOn() {
     doc.cronSingleBidEnabled = true;
     await doc.save();
     invalidateSettingsCache();
-    console.log(`   → single-bid=ON (12:45 AM+: sell if 2nd-highest exited ≥ 2 min)`);
+    console.log(`   → single-bid=ON (12:45 sell already-solo; 12:50+ exit / sell if exited ≥ 2 min)`);
   } catch (err) {
     console.error('   ❌ auctionAutoModeSellAfterExitOn error:', err.message);
   }
@@ -625,13 +626,14 @@ cron.schedule('0 0,10,20,30 0 * * *', () => {
   runBulkExitJob();
 }, { timezone: 'Asia/Kolkata' });
 
-// 12:45 AM – sell anyone already down to 1 bidder
+// 12:45 AM – sell anyone already down to 1 bidder (NO exits this minute)
 cron.schedule('0 45 0 * * *', () => oneTimeSellAfterExitSweep(), {
   timezone: 'Asia/Kolkata',
 });
 
-// 12:45 AM–4:00 AM – every 5 min: exit 2nd-highest; sell if 2nd exited ≥ 2 min
-cron.schedule('0 45,50,55 0 * * *', () => counterBidWindowJob(2), {
+// 12:50 AM–4:00 AM – every 5 min: exit 2nd-highest; sell if 2nd exited ≥ 2 min
+// Starts at :50 (not :45) so 12:45 cannot exit+instant-sell contested lots.
+cron.schedule('0 50,55 0 * * *', () => counterBidWindowJob(2), {
   timezone: 'Asia/Kolkata',
 });
 cron.schedule('0 */5 1-3 * * *', () => counterBidWindowJob(2), {
@@ -650,4 +652,4 @@ cron.schedule('0 44 0 * * *', auctionAutoModeSellAfterExitOn, { timezone: 'Asia/
 cron.schedule('* * * * *', syncAutoModeCronFlags, { timezone: 'Asia/Kolkata' });
 syncAutoModeCronFlags();
 
-console.log('🕒 Auction scheduler running (9:00 PM start → 12:45 AM+ sell-after-exit, IST)…');
+console.log('🕒 Auction scheduler running (9:00 PM start → 12:45 solo sell, 12:50+ exit/sell-after-exit, IST)…');
