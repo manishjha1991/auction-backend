@@ -12,7 +12,10 @@ const User = require('../models/User');
 const Player = require('../models/Player');
 const UserPlayer = require('../models/UserPlayer');
 const Bid = require('../models/Bid');
+const RetainedPlayer = require('../models/RetainedPlayer');
+const TradeRequest = require('../models/TradeRequest');
 const { invalidateCache } = require('../utils/cache');
+const { reconcileUsersPurse } = require('../services/purseReconcileService');
 const {
   isTradeLocked,
   setTradeLockOnPlayers,
@@ -50,7 +53,7 @@ router.get('/teams', async (req, res) => {
   try {
     await requireAdmin(req.query.adminUserId);
     const teams = await User.find({ isAdmin: { $ne: true }, isActive: { $ne: false } })
-      .select('_id teamName abbreviation purse')
+      .select('_id name teamName abbreviation purse isParticipating')
       .sort({ teamName: 1 })
       .lean();
     const withPurse = teams.map((t) => ({
@@ -482,6 +485,303 @@ router.post('/release/execute', async (req, res) => {
       message: 'Player released',
       team: { name: user.teamName, purseAfterCr: toCr(purseNum(user)) },
       refundedCr: toCr(bidValue),
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ message: e.message || 'Error' });
+  }
+});
+
+const ACTIVE_TRADE_STATUSES = ['pending', 'counter', 'admin_pending'];
+
+function countByType(players) {
+  const byType = { Sapphire: 0, Gold: 0, Emerald: 0, Silver: 0 };
+  for (const p of players) {
+    if (p?.type && Object.prototype.hasOwnProperty.call(byType, p.type)) byType[p.type] += 1;
+  }
+  return byType;
+}
+
+async function buildSquadSwapPreview(teamAId, teamBId) {
+  const [teamA, teamB] = await Promise.all([
+    User.findById(teamAId).select(
+      'name teamName abbreviation purse boughtPlayers currentBids captainPlayerId isParticipating isAdmin',
+    ),
+    User.findById(teamBId).select(
+      'name teamName abbreviation purse boughtPlayers currentBids captainPlayerId isParticipating isAdmin',
+    ),
+  ]);
+  if (!teamA || !teamB) {
+    const e = new Error('One or both teams not found');
+    e.status = 404;
+    throw e;
+  }
+  if (teamA.isAdmin || teamB.isAdmin) {
+    const e = new Error('Cannot swap with an admin account');
+    e.status = 400;
+    throw e;
+  }
+
+  const [upsA, upsB, retainedA, retainedB] = await Promise.all([
+    UserPlayer.find({ userId: teamAId, isActive: true }).populate('playerId', 'name type role').lean(),
+    UserPlayer.find({ userId: teamBId, isActive: true }).populate('playerId', 'name type role').lean(),
+    RetainedPlayer.find({ userId: teamAId, isActive: true }).select('playerName playerType').lean(),
+    RetainedPlayer.find({ userId: teamBId, isActive: true }).select('playerName playerType').lean(),
+  ]);
+
+  const playerIdsA = upsA.map((u) => u.playerId?._id || u.playerId).filter(Boolean);
+  const playerIdsB = upsB.map((u) => u.playerId?._id || u.playerId).filter(Boolean);
+  const allPlayerIds = [...playerIdsA, ...playerIdsB];
+  const overlapping = playerIdsA.map(String).filter((id) => new Set(playerIdsB.map(String)).has(id));
+
+  const pendingTrades = await TradeRequest.find({
+    status: { $in: ACTIVE_TRADE_STATUSES },
+    $or: [
+      ...(allPlayerIds.length
+        ? [{ offeredPlayer: { $in: allPlayerIds } }, { requestedPlayer: { $in: allPlayerIds } }]
+        : []),
+      { fromUser: { $in: [teamAId, teamBId] } },
+      { toUser: { $in: [teamAId, teamBId] } },
+    ],
+  })
+    .select('_id status fromUser toUser')
+    .lean();
+
+  const spentA = upsA.reduce((s, u) => s + Number(u.bidValue || 0), 0);
+  const spentB = upsB.reduce((s, u) => s + Number(u.bidValue || 0), 0);
+  const locksA = (teamA.currentBids || []).reduce((s, b) => s + Number(b.amount || 0), 0);
+  const locksB = (teamB.currentBids || []).reduce((s, b) => s + Number(b.amount || 0), 0);
+  const purseA = purseNum(teamA);
+  const purseB = purseNum(teamB);
+  const BASELINE = 1_000_000_000;
+  const expectedA = BASELINE - spentB - locksA;
+  const expectedB = BASELINE - spentA - locksB;
+
+  const playersA = upsA
+    .filter((u) => u.playerId)
+    .map((u) => ({
+      id: u.playerId._id,
+      name: u.playerId.name,
+      type: u.playerId.type,
+      bidValueCr: toCr(u.bidValue),
+    }));
+  const playersB = upsB
+    .filter((u) => u.playerId)
+    .map((u) => ({
+      id: u.playerId._id,
+      name: u.playerId.name,
+      type: u.playerId.type,
+      bidValueCr: toCr(u.bidValue),
+    }));
+
+  const errors = [];
+  const warnings = [];
+  if (String(teamAId) === String(teamBId)) errors.push('Pick two different teams');
+  if (playersA.length === 0 && playersB.length === 0) errors.push('Both teams have empty rosters — nothing to swap');
+  if (overlapping.length) errors.push('Data issue: both teams appear to own the same player(s)');
+  if ((teamA.currentBids || []).length) {
+    warnings.push(
+      `${teamA.teamName || teamA.name} has ${teamA.currentBids.length} live bid lock(s) — those stay on this login, not the swapped squad`,
+    );
+  }
+  if ((teamB.currentBids || []).length) {
+    warnings.push(
+      `${teamB.teamName || teamB.name} has ${teamB.currentBids.length} live bid lock(s) — those stay on this login, not the swapped squad`,
+    );
+  }
+  if (pendingTrades.length) {
+    warnings.push(`${pendingTrades.length} pending trade request(s) involving these teams/players will be rejected`);
+  }
+  if (teamA.isParticipating === false) warnings.push(`${teamA.teamName || teamA.name} is marked not participating`);
+  if (teamB.isParticipating === false) warnings.push(`${teamB.teamName || teamB.name} is marked not participating`);
+
+  const summarize = (team, players, retained, purseNow, purseAfter, spentInCr) => ({
+    id: team._id,
+    name: team.teamName,
+    ownerName: team.name,
+    abbreviation: team.abbreviation,
+    participating: team.isParticipating !== false,
+    playerCount: players.length,
+    byType: countByType(players),
+    spentCr: spentInCr,
+    purseBeforeCr: toCr(purseNow),
+    purseAfterCr: toCr(purseAfter),
+    retained: retained.map((r) => r.playerName),
+    players,
+  });
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    pendingTradeCount: pendingTrades.length,
+    teamA: summarize(teamA, playersA, retainedA, purseA, expectedA, toCr(spentA)),
+    teamB: summarize(teamB, playersB, retainedB, purseB, expectedB, toCr(spentB)),
+    teamAAfter: {
+      playerCount: playersB.length,
+      spentCr: toCr(spentB),
+      retained: retainedB.map((r) => r.playerName),
+    },
+    teamBAfter: {
+      playerCount: playersA.length,
+      spentCr: toCr(spentA),
+      retained: retainedA.map((r) => r.playerName),
+    },
+  };
+}
+
+router.post('/squad-swap/preview', async (req, res) => {
+  try {
+    const { adminUserId, teamAUserId, teamBUserId } = req.body;
+    await requireAdmin(adminUserId);
+    if (!teamAUserId || !teamBUserId) {
+      return res.status(400).json({ message: 'teamAUserId and teamBUserId required' });
+    }
+    const preview = await buildSquadSwapPreview(teamAUserId, teamBUserId);
+    res.json(preview);
+  } catch (e) {
+    res.status(e.status || 500).json({ message: e.message || 'Error' });
+  }
+});
+
+router.post('/squad-swap/execute', async (req, res) => {
+  try {
+    const { adminUserId, teamAUserId, teamBUserId } = req.body;
+    await requireAdmin(adminUserId);
+    if (!teamAUserId || !teamBUserId) {
+      return res.status(400).json({ message: 'teamAUserId and teamBUserId required' });
+    }
+    if (String(teamAUserId) === String(teamBUserId)) {
+      return res.status(400).json({ message: 'Pick two different teams' });
+    }
+
+    const preview = await buildSquadSwapPreview(teamAUserId, teamBUserId);
+    if (!preview.ok) {
+      return res.status(400).json({ message: preview.errors.join('; '), errors: preview.errors });
+    }
+
+    const [teamA, teamB] = await Promise.all([
+      User.findById(teamAUserId),
+      User.findById(teamBUserId),
+    ]);
+    if (!teamA || !teamB) return res.status(404).json({ message: 'Team not found' });
+
+    const [upsA, upsB] = await Promise.all([
+      UserPlayer.find({ userId: teamAUserId, isActive: true }).select('_id playerId').lean(),
+      UserPlayer.find({ userId: teamBUserId, isActive: true }).select('_id playerId').lean(),
+    ]);
+    const upIdsA = upsA.map((u) => u._id);
+    const upIdsB = upsB.map((u) => u._id);
+    const playerIdsA = upsA.map((u) => u.playerId).filter(Boolean);
+    const playerIdsB = upsB.map((u) => u.playerId).filter(Boolean);
+    const allPlayerIds = [...playerIdsA, ...playerIdsB];
+
+    const [retA, retB] = await Promise.all([
+      RetainedPlayer.find({ userId: teamAUserId, isActive: true }).select('_id').lean(),
+      RetainedPlayer.find({ userId: teamBUserId, isActive: true }).select('_id').lean(),
+    ]);
+
+    const now = new Date();
+    const ops = [];
+    if (upIdsA.length) {
+      ops.push(
+        UserPlayer.updateMany(
+          { _id: { $in: upIdsA } },
+          { $set: { userId: teamB._id, updatedAt: now } },
+        ),
+      );
+    }
+    if (upIdsB.length) {
+      ops.push(
+        UserPlayer.updateMany(
+          { _id: { $in: upIdsB } },
+          { $set: { userId: teamA._id, updatedAt: now } },
+        ),
+      );
+    }
+    if (retA.length) {
+      ops.push(RetainedPlayer.updateMany({ _id: { $in: retA.map((r) => r._id) } }, { $set: { userId: teamB._id } }));
+    }
+    if (retB.length) {
+      ops.push(RetainedPlayer.updateMany({ _id: { $in: retB.map((r) => r._id) } }, { $set: { userId: teamA._id } }));
+    }
+    if (playerIdsA.length) {
+      ops.push(Player.updateMany({ _id: { $in: playerIdsA } }, { $set: { currentBidder: teamB._id } }));
+    }
+    if (playerIdsB.length) {
+      ops.push(Player.updateMany({ _id: { $in: playerIdsB } }, { $set: { currentBidder: teamA._id } }));
+    }
+    await Promise.all(ops);
+
+    const boughtA = [...(teamA.boughtPlayers || [])];
+    const boughtB = [...(teamB.boughtPlayers || [])];
+    teamA.boughtPlayers = boughtB;
+    teamB.boughtPlayers = boughtA;
+
+    const capA = teamA.captainPlayerId ? String(teamA.captainPlayerId) : null;
+    const capB = teamB.captainPlayerId ? String(teamB.captainPlayerId) : null;
+    const newAOwned = new Set(playerIdsB.map(String));
+    const newBOwned = new Set(playerIdsA.map(String));
+    if (capA && !newAOwned.has(capA)) teamA.captainPlayerId = null;
+    if (capB && !newBOwned.has(capB)) teamB.captainPlayerId = null;
+    await Promise.all([teamA.save(), teamB.save()]);
+
+    let rejectedTrades = 0;
+    if (allPlayerIds.length) {
+      rejectedTrades += await autoRejectTradesInvolvingPlayers(
+        adminUserId,
+        allPlayerIds,
+        null,
+        'Auto-rejected: full squad transferred to another team',
+      );
+    }
+    const leftoverTrades = await TradeRequest.find({
+      status: { $in: ACTIVE_TRADE_STATUSES },
+      $or: [{ fromUser: { $in: [teamAUserId, teamBUserId] } }, { toUser: { $in: [teamAUserId, teamBUserId] } }],
+    });
+    for (const t of leftoverTrades) {
+      t.status = 'rejected';
+      t.history.push({
+        byUser: adminUserId,
+        action: 'reject',
+        message: 'Auto-rejected: full squad transferred to another team',
+      });
+      await t.save();
+      rejectedTrades += 1;
+    }
+
+    const purseResult = await reconcileUsersPurse({
+      userIds: [teamA._id, teamB._id],
+      logTag: 'squad-swap',
+    });
+
+    try {
+      invalidateCache('players:data');
+      invalidateCache('user-purses');
+    } catch (_) {}
+
+    const [afterA, afterB] = await Promise.all([
+      User.findById(teamAUserId).select('teamName purse').lean(),
+      User.findById(teamBUserId).select('teamName purse').lean(),
+    ]);
+
+    res.json({
+      ok: true,
+      message: 'Squads swapped',
+      teamA: {
+        name: afterA.teamName,
+        playerCount: preview.teamB.playerCount,
+        purseAfterCr: toCr(purseNum(afterA)),
+      },
+      teamB: {
+        name: afterB.teamName,
+        playerCount: preview.teamA.playerCount,
+        purseAfterCr: toCr(purseNum(afterB)),
+      },
+      pendingTradesRejected: rejectedTrades,
+      purseReconcile: {
+        updated: purseResult.updated,
+        changes: purseResult.changes,
+      },
     });
   } catch (e) {
     res.status(e.status || 500).json({ message: e.message || 'Error' });
