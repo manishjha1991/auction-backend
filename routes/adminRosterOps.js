@@ -19,6 +19,7 @@ const {
   autoRejectTradesInvolvingPlayers,
   TRADE_LOCK_HOURS,
 } = require('../utils/tradeApprovalShared');
+const { executeCommissionerPick } = require('../utils/adminRosterPick');
 
 const CRORE = 10_000_000;
 
@@ -323,56 +324,16 @@ router.post('/pick/execute', async (req, res) => {
       return res.status(400).json({ message: 'teamUserId and playerId required' });
     }
 
-    const existing = await UserPlayer.findOne({ playerId, isActive: true });
-    if (existing) {
-      return res.status(400).json({ message: 'Player already assigned to a team' });
+    const result = await executeCommissionerPick({ adminUserId, teamUserId, playerId });
+    if (!result.ok) {
+      return res.status(result.status).json({ message: result.message });
     }
-
-    const [user, player] = await Promise.all([User.findById(teamUserId), Player.findById(playerId)]);
-    if (!user || !player) return res.status(404).json({ message: 'Team or player not found' });
-    if (player.isSold) return res.status(400).json({ message: 'Player already sold' });
-
-    const basePrice = Number(player.basePrice || 0);
-    const purse = purseNum(user);
-    if (purse < basePrice) return res.status(400).json({ message: 'Insufficient purse' });
-
-    const newPurse = purse - basePrice;
-    user.purse = mongoose.Types.Decimal128.fromString(String(newPurse));
-    user.currentBids = (user.currentBids || []).filter((cb) => !cb.playerId.equals(playerId));
-    if (!user.boughtPlayers.some((id) => id.equals(playerId))) {
-      user.boughtPlayers.push(playerId);
-    }
-    await user.save();
-
-    await UserPlayer.create({
-      playerId,
-      userId: teamUserId,
-      bidValue: basePrice,
-      isActive: true,
-    });
-
-    // Persist bid fields even if not on strict Player schema (matches bid/sold behaviour)
-    await Player.collection.updateOne(
-      { _id: new mongoose.Types.ObjectId(String(playerId)) },
-      {
-        $set: {
-          isSold: true,
-          isActive: true,
-          currentBid: basePrice,
-          currentBidder: new mongoose.Types.ObjectId(String(teamUserId)),
-        },
-      },
-    );
-
-    await Bid.deleteMany({ playerId });
-
-    await setTradeLockOnPlayers([playerId]);
 
     res.json({
       ok: true,
       message: 'Pick completed',
-      team: { name: user.teamName, purseAfterCr: toCr(newPurse) },
-      player: { name: player.name, costCr: toCr(basePrice) },
+      team: { name: result.teamName, purseAfterCr: toCr(result.purseAfter) },
+      player: { name: result.playerName, costCr: toCr(result.cost) },
     });
   } catch (e) {
     if (e.code === 11000) {
