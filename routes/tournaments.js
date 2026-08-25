@@ -1275,11 +1275,24 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
             return res.json({ message: 'Fixture updated successfully', fixture: tournament.tournamentFixtures[fixtureIndex] });
           }
           
-          // Find the final fixture placeholder
-          const finalIndex = updatedTournament.tournamentFixtures.findIndex(f => 
-            (f.team1 === 'Winner of Semi-Final 1' && f.team2 === 'Winner of Semi-Final 2') ||
-            (f.team1 === 'Winner of Semi-Final 2' && f.team2 === 'Winner of Semi-Final 1')
+          // Find final even if one side was already filled from the other semi
+          // (BUGFIX: old logic required BOTH placeholders, so SF2 never filled after SF1).
+          const isSemiPlaceholder = (name) => {
+            const s = String(name || '').trim();
+            return (
+              s === 'Winner of Semi-Final 1' ||
+              s === 'Winner of Semi-Final 2' ||
+              s.includes('Winner of Semi-Final')
+            );
+          };
+          let finalIndex = updatedTournament.tournamentFixtures.findIndex(
+            (f) => isSemiPlaceholder(f.team1) || isSemiPlaceholder(f.team2)
           );
+          // Fallback: last fixture if it still needs a slot (or is the known final position)
+          if (finalIndex === -1) {
+            const lastIdx = updatedTournament.tournamentFixtures.length - 1;
+            if (lastIdx >= 2) finalIndex = lastIdx;
+          }
           
           if (finalIndex !== -1) {
             // Semi-finals are the 2 fixtures before the final
@@ -1293,11 +1306,22 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
               const finalFixture = updatedTournament.tournamentFixtures[finalIndex];
 
               const getUserIdFromTeamName = (teamName) => {
-                const want = teamName ? String(teamName).trim() : '';
-                const subscribedTeam = updatedTournament.subscribedTeams.find(
-                  (team) => String(team.teamName || '').trim() === want
-                );
+                const want = teamName ? String(teamName).trim().toLowerCase() : '';
+                if (!want) return null;
+                const subscribedTeam = updatedTournament.subscribedTeams.find((team) => {
+                  const name = String(team.teamName || '').trim().toLowerCase();
+                  return name === want;
+                });
                 return subscribedTeam?.userId || null;
+              };
+
+              const fillIfPlaceholder = (side, placeholderLabel, winnerName) => {
+                if (!winnerName) return false;
+                if (String(finalFixture[side] || '').trim() !== placeholderLabel) return false;
+                finalFixture[side] = winnerName;
+                finalFixture[side === 'team1' ? 'team1UserId' : 'team2UserId'] =
+                  getUserIdFromTeamName(winnerName);
+                return true;
               };
 
               let changed = false;
@@ -1309,28 +1333,20 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
               
               // Fill whichever final slot still shows the placeholder (supports normal and swapped sides)
               if (semiFinal1.winner) {
-                if (finalFixture.team1 === 'Winner of Semi-Final 1') {
+                if (fillIfPlaceholder('team1', 'Winner of Semi-Final 1', semiFinal1.winner)) {
                   console.log(`   ✏️  Updating team1 from SF1`);
-                  finalFixture.team1 = semiFinal1.winner;
-                  finalFixture.team1UserId = getUserIdFromTeamName(semiFinal1.winner);
                   changed = true;
-                } else if (finalFixture.team2 === 'Winner of Semi-Final 1') {
+                } else if (fillIfPlaceholder('team2', 'Winner of Semi-Final 1', semiFinal1.winner)) {
                   console.log(`   ✏️  Updating team2 from SF1`);
-                  finalFixture.team2 = semiFinal1.winner;
-                  finalFixture.team2UserId = getUserIdFromTeamName(semiFinal1.winner);
                   changed = true;
                 }
               }
               if (semiFinal2.winner) {
-                if (finalFixture.team2 === 'Winner of Semi-Final 2') {
+                if (fillIfPlaceholder('team2', 'Winner of Semi-Final 2', semiFinal2.winner)) {
                   console.log(`   ✏️  Updating team2 from SF2`);
-                  finalFixture.team2 = semiFinal2.winner;
-                  finalFixture.team2UserId = getUserIdFromTeamName(semiFinal2.winner);
                   changed = true;
-                } else if (finalFixture.team1 === 'Winner of Semi-Final 2') {
+                } else if (fillIfPlaceholder('team1', 'Winner of Semi-Final 2', semiFinal2.winner)) {
                   console.log(`   ✏️  Updating team1 from SF2`);
-                  finalFixture.team1 = semiFinal2.winner;
-                  finalFixture.team1UserId = getUserIdFromTeamName(semiFinal2.winner);
                   changed = true;
                 }
               }
