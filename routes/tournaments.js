@@ -355,7 +355,7 @@ router.get('/', async (req, res) => {
       tournaments = await Tournament.find(query)
         .populate({
           path: 'subscribedTeams.userId',
-          select: 'name teamName teamImage',
+          select: 'name teamName teamImage abbreviation themePrimary themeSecondary',
           model: 'User'
         })
         .populate({
@@ -405,7 +405,10 @@ router.get('/', async (req, res) => {
         ...team,
         userId: team.userId?._id || team.userId,
         teamName: team.userId?.teamName || team.teamName,
-        teamImage: team.userId?.teamImage || team.teamImage
+        teamImage: team.userId?.teamImage || team.teamImage,
+        abbreviation: team.userId?.abbreviation || team.abbreviation || null,
+        themePrimary: team.userId?.themePrimary || null,
+        themeSecondary: team.userId?.themeSecondary || null,
       })),
       // Ensure winner field is included and properly formatted
       winner: tournament.winner || null
@@ -462,7 +465,7 @@ router.get('/subscription-count', isAuthenticated, async (req, res) => {
 router.get('/:id', isAuthenticated, async (req, res) => {
   try {
     const tournament = await Tournament.findById(req.params.id)
-      .populate('subscribedTeams.userId', 'name teamName teamImage')
+      .populate('subscribedTeams.userId', 'name teamName teamImage abbreviation themePrimary themeSecondary')
       .populate('createdBy', 'name teamName')
       .lean();
 
@@ -488,6 +491,9 @@ router.get('/:id', isAuthenticated, async (req, res) => {
           userId: populated?._id || team.userId,
           teamName: populated?.teamName || team.teamName,
           teamImage: populated?.teamImage || team.teamImage,
+          abbreviation: populated?.abbreviation || team.abbreviation || null,
+          themePrimary: populated?.themePrimary || null,
+          themeSecondary: populated?.themeSecondary || null,
         };
       }),
     };
