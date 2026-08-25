@@ -313,6 +313,156 @@ router.get('/', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/fixtures/recent-results
+ * Public — main Fixture collection: played + upcoming.
+ * Hides scorecards where either side has 0 runs.
+ */
+router.get('/recent-results', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 40);
+    const upcomingLimit = Math.min(Math.max(parseInt(req.query.upcomingLimit, 10) || limit, 1), 40);
+
+    const parseRuns = (score) => {
+      if (score == null || score === '') return null;
+      const m = String(score).trim().match(/^(\d+)/);
+      if (!m) return null;
+      const n = parseInt(m[1], 10);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const hasZeroRuns = (fixture) => {
+      const r1 = parseRuns(fixture?.team1Score);
+      const r2 = parseRuns(fixture?.team2Score);
+      return r1 === 0 || r2 === 0;
+    };
+
+    const isPlaceholderTeam = (name) => {
+      const s = String(name || '').trim();
+      if (!s || /^tba$/i.test(s) || s === 'NA') return true;
+      if (/Winner of|Loser of|^Top \d+$/i.test(s)) return true;
+      return false;
+    };
+
+    const teams = await User.find({
+      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isActive: true,
+      isAdmin: { $ne: true },
+    })
+      .select('_id teamName teamImage abbreviation themePrimary themeSecondary')
+      .lean();
+
+    const byId = new Map(teams.map((t) => [String(t._id), t]));
+    const byName = new Map(
+      teams.map((t) => [String(t.teamName || '').trim().toLowerCase(), t])
+    );
+
+    const resolveTeam = (userId, teamName) => {
+      let row = null;
+      if (userId) row = byId.get(String(userId));
+      if (!row && teamName) {
+        row = byName.get(String(teamName).trim().toLowerCase()) || null;
+      }
+      if (!row) {
+        return {
+          teamName: teamName || null,
+          teamImage: null,
+          abbreviation: null,
+          themePrimary: null,
+          themeSecondary: null,
+        };
+      }
+      return {
+        teamName: row.teamName || teamName || null,
+        teamImage: row.teamImage || null,
+        abbreviation: row.abbreviation || null,
+        themePrimary: row.themePrimary || null,
+        themeSecondary: row.themeSecondary || null,
+      };
+    };
+
+    const fixtures = await Fixture.find({ isActive: true })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const toMatch = (fixture, kind) => {
+      const team1Meta = resolveTeam(fixture.team1UserId, fixture.team1);
+      const team2Meta = resolveTeam(fixture.team2UserId, fixture.team2);
+      const winnerMeta = fixture.winner
+        ? resolveTeam(fixture.winnerUserId, fixture.winner)
+        : null;
+      return {
+        id: String(fixture._id),
+        kind,
+        tournamentId: null,
+        tournamentName: fixture.matchType === 'group'
+          ? `Group ${fixture.group || ''}`.trim()
+          : 'League Fixture',
+        tournamentStatus: kind === 'played' ? 'completed' : 'running',
+        fixtureIndex: null,
+        team1: team1Meta.teamName || fixture.team1,
+        team2: team2Meta.teamName || fixture.team2,
+        winner: fixture.winner
+          ? (winnerMeta?.teamName || fixture.winner)
+          : null,
+        margin: fixture.margin || null,
+        team1Score: fixture.team1Score || null,
+        team2Score: fixture.team2Score || null,
+        team1Overs: fixture.team1Overs || null,
+        team2Overs: fixture.team2Overs || null,
+        mom: fixture.mom || null,
+        createdAt: fixture.createdAt || null,
+        team1Meta,
+        team2Meta,
+        winnerMeta,
+      };
+    };
+
+    const played = [];
+    const upcoming = [];
+
+    for (const fixture of fixtures) {
+      if (!fixture?.team1 || !fixture?.team2) continue;
+      if (isPlaceholderTeam(fixture.team1) || isPlaceholderTeam(fixture.team2)) continue;
+
+      if (fixture.winner) {
+        if (hasZeroRuns(fixture)) continue;
+        if (parseRuns(fixture.team1Score) == null || parseRuns(fixture.team2Score) == null) continue;
+        played.push(toMatch(fixture, 'played'));
+      } else {
+        if (hasZeroRuns(fixture)) continue;
+        upcoming.push(toMatch(fixture, 'upcoming'));
+      }
+    }
+
+    // played already newest-first from query order; keep stable
+    played.sort((a, b) => {
+      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return tb - ta;
+    });
+
+    // upcoming: oldest scheduled first (createdAt ascending among open fixtures)
+    upcoming.sort((a, b) => {
+      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return ta - tb;
+    });
+
+    const playedSlice = played.slice(0, limit);
+    const upcomingSlice = upcoming.slice(0, upcomingLimit);
+
+    res.json({
+      matches: [...playedSlice, ...upcomingSlice],
+      played: playedSlice,
+      upcoming: upcomingSlice,
+    });
+  } catch (error) {
+    console.error('Get main fixture recent-results error:', error);
+    res.status(500).json({ error: 'Failed to fetch recent fixtures' });
+  }
+});
+
 // Middleware to check if user is admin
 const isAdmin = async (req, res, next) => {
   try {

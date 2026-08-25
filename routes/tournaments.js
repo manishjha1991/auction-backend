@@ -446,6 +446,154 @@ router.get('/', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/tournaments/recent-results
+ * Public — no login required.
+ * Returns current played fixtures + upcoming fixtures.
+ * Excludes played matches where either side has 0 runs (e.g. 0/0).
+ */
+router.get('/recent-results', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 40);
+    const upcomingLimit = Math.min(Math.max(parseInt(req.query.upcomingLimit, 10) || limit, 1), 40);
+
+    const parseRuns = (score) => {
+      if (score == null || score === '') return null;
+      const m = String(score).trim().match(/^(\d+)/);
+      if (!m) return null;
+      const n = parseInt(m[1], 10);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    /** Drop bogus / incomplete scorecards: any side with 0 runs. */
+    const hasZeroRuns = (fixture) => {
+      const r1 = parseRuns(fixture?.team1Score);
+      const r2 = parseRuns(fixture?.team2Score);
+      return r1 === 0 || r2 === 0;
+    };
+
+    const isPlaceholderTeam = (name) => {
+      const s = String(name || '').trim();
+      if (!s || /^tba$/i.test(s)) return true;
+      if (/Winner of|Loser of|^Top \d+$/i.test(s)) return true;
+      return false;
+    };
+
+    const tournaments = await Tournament.find({
+      isActive: true,
+      status: { $in: ['running', 'upcoming', 'completed'] },
+    })
+      .select('name status startDate tournamentFixtures subscribedTeams')
+      .populate({
+        path: 'subscribedTeams.userId',
+        select: 'teamName teamImage abbreviation themePrimary themeSecondary',
+        model: 'User',
+      })
+      .sort({ status: 1, startDate: -1 })
+      .lean();
+
+    const statusRank = { running: 0, upcoming: 1, completed: 2 };
+
+    const resolveTeam = (tournament, teamName) => {
+      const want = String(teamName || '').trim().toLowerCase();
+      if (!want) return null;
+      const row = (tournament.subscribedTeams || []).find((t) => {
+        const populated = t.userId && typeof t.userId === 'object' ? t.userId : null;
+        const name = String(populated?.teamName || t.teamName || '')
+          .trim()
+          .toLowerCase();
+        return name === want || name.includes(want) || want.includes(name);
+      });
+      if (!row) return null;
+      const populated = row.userId && typeof row.userId === 'object' ? row.userId : null;
+      return {
+        teamName: populated?.teamName || row.teamName || teamName,
+        teamImage: populated?.teamImage || row.teamImage || null,
+        abbreviation: populated?.abbreviation || row.abbreviation || null,
+        themePrimary: populated?.themePrimary || null,
+        themeSecondary: populated?.themeSecondary || null,
+      };
+    };
+
+    const toMatch = (tournament, fixture, fixtureIndex, kind) => ({
+      id: `${tournament._id}-${fixtureIndex}`,
+      kind,
+      tournamentId: String(tournament._id),
+      tournamentName: tournament.name,
+      tournamentStatus: tournament.status,
+      fixtureIndex,
+      team1: fixture.team1,
+      team2: fixture.team2,
+      winner: fixture.winner || null,
+      margin: fixture.margin || null,
+      team1Score: fixture.team1Score || null,
+      team2Score: fixture.team2Score || null,
+      team1Overs: fixture.team1Overs || null,
+      team2Overs: fixture.team2Overs || null,
+      mom: fixture.mom || null,
+      createdAt: fixture.createdAt || null,
+      team1Meta: resolveTeam(tournament, fixture.team1),
+      team2Meta: resolveTeam(tournament, fixture.team2),
+      winnerMeta: fixture.winner ? resolveTeam(tournament, fixture.winner) : null,
+    });
+
+    const played = [];
+    const upcoming = [];
+
+    // Prefer running tournaments first for "current" fixtures
+    const ordered = [...tournaments].sort(
+      (a, b) => (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9)
+    );
+
+    for (const tournament of ordered) {
+      const fixtures = tournament.tournamentFixtures || [];
+      fixtures.forEach((fixture, fixtureIndex) => {
+        if (!fixture?.team1 || !fixture?.team2) return;
+        if (isPlaceholderTeam(fixture.team1) || isPlaceholderTeam(fixture.team2)) return;
+
+        if (fixture.winner) {
+          // Played — skip zero-run / 0-0 scorecards
+          if (hasZeroRuns(fixture)) return;
+          // Also require real scores present for played board
+          if (parseRuns(fixture.team1Score) == null || parseRuns(fixture.team2Score) == null) return;
+          played.push(toMatch(tournament, fixture, fixtureIndex, 'played'));
+          return;
+        }
+
+        // Upcoming — no winner yet; ignore placeholder 0/0 drafts
+        if (hasZeroRuns(fixture)) return;
+        upcoming.push(toMatch(tournament, fixture, fixtureIndex, 'upcoming'));
+      });
+    }
+
+    played.sort((a, b) => {
+      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return tb - ta;
+    });
+
+    // Upcoming: running tournaments first, then by fixture order
+    upcoming.sort((a, b) => {
+      const ra = statusRank[a.tournamentStatus] ?? 9;
+      const rb = statusRank[b.tournamentStatus] ?? 9;
+      if (ra !== rb) return ra - rb;
+      return (a.fixtureIndex || 0) - (b.fixtureIndex || 0);
+    });
+
+    const playedSlice = played.slice(0, limit);
+    const upcomingSlice = upcoming.slice(0, upcomingLimit);
+
+    res.json({
+      matches: [...playedSlice, ...upcomingSlice],
+      played: playedSlice,
+      upcoming: upcomingSlice,
+    });
+  } catch (error) {
+    console.error('Get recent tournament results error:', error);
+    res.status(500).json({ error: 'Failed to fetch recent results' });
+  }
+});
+
 // GET /api/tournaments/subscription-count - Get user's subscription count
 router.get('/subscription-count', isAuthenticated, async (req, res) => {
   try {
