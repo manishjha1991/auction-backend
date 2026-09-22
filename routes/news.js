@@ -28,18 +28,24 @@ function pickVariant(seed, options) {
   }
 }
 
+function socialKey(id) {
+  return id == null ? '' : String(id);
+}
+
 // Function to get social data for news items
 async function getSocialData(newsItems) {
   try {
-    const newsIds = newsItems.map(item => item.id);
+    const newsIds = newsItems.map(item => item.id).filter(Boolean);
     
-    // Get likes and comments for all news items
+    // Lean so Express/cache never call Mongoose toJSON (breaks on nested reply populate:
+    // Cannot read properties of undefined (reading '_defaultToObjectOptions'))
     const [likes, comments] = await Promise.all([
-      PostLike.find({ newsId: { $in: newsIds } }).populate('userId', 'name avatar'),
+      PostLike.find({ newsId: { $in: newsIds } }).populate('userId', 'name avatar').lean(),
       Comment.find({ newsId: { $in: newsIds } })
         .populate('userId', 'name avatar')
         .populate('replies.userId', 'name avatar')
         .sort({ createdAt: -1 })
+        .lean()
     ]);
     
     // Group likes and comments by newsId
@@ -47,23 +53,25 @@ async function getSocialData(newsItems) {
     const commentsByNewsId = {};
     
     likes.forEach(like => {
-      if (!likesByNewsId[like.newsId]) {
-        likesByNewsId[like.newsId] = [];
+      const key = socialKey(like.newsId);
+      if (!likesByNewsId[key]) {
+        likesByNewsId[key] = [];
       }
-      likesByNewsId[like.newsId].push(like);
+      likesByNewsId[key].push(like);
     });
     
     comments.forEach(comment => {
-      if (!commentsByNewsId[comment.newsId]) {
-        commentsByNewsId[comment.newsId] = [];
+      const key = socialKey(comment.newsId);
+      if (!commentsByNewsId[key]) {
+        commentsByNewsId[key] = [];
       }
-      commentsByNewsId[comment.newsId].push(comment);
+      commentsByNewsId[key].push(comment);
     });
     
     // Add social data to news items
     return newsItems.map(item => {
-      const itemLikes = likesByNewsId[item.id] || [];
-      const itemComments = commentsByNewsId[item.id] || [];
+      const itemLikes = likesByNewsId[socialKey(item.id)] || [];
+      const itemComments = commentsByNewsId[socialKey(item.id)] || [];
       
       // Calculate like counts by type
       const likeCounts = {
@@ -116,7 +124,8 @@ router.get('/feed', async (_req, res) => {
         .populate('offeredPlayer', 'name type role')
         .populate('requestedPlayer', 'name type role')
         .sort({ updatedAt: -1 })
-        .limit(50), // Increased limit to show more trades
+        .limit(50) // Increased limit to show more trades
+        .lean(),
       ReleaseRequest.find({})
         .populate({
           path: 'user',
@@ -130,7 +139,8 @@ router.get('/feed', async (_req, res) => {
           model: 'Player'
         })
         .sort({ updatedAt: -1 })
-        .limit(30),
+        .limit(30)
+        .lean(),
       PickRequest.find({})
         .populate({
           path: 'user',
@@ -139,7 +149,8 @@ router.get('/feed', async (_req, res) => {
         })
         .populate('player', 'name type basePrice')
         .sort({ updatedAt: -1 })
-        .limit(30),
+        .limit(30)
+        .lean(),
       PlayerStats.find({}).populate({
         path: 'userId',
         select: 'isTournamentReady',
@@ -1231,7 +1242,7 @@ router.get('/feed', async (_req, res) => {
       schedules: scheduleCount
     });
     
-    const response = { items: newsWithSocialData };
+    const response = JSON.parse(JSON.stringify({ items: newsWithSocialData }));
     
     // 🚀 PERFORMANCE: Cache the response (30 second cache - frequently changing)
     cacheConfig.short.set(cacheKey, response);
