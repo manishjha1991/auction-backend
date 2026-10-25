@@ -10,8 +10,7 @@ const {
 const { getEffectiveTradesUsed } = require('./tradeSlotReservation');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('./tradeApprovalShared');
 
-const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
-const COMBINED_ES_LIMIT = 5;
+const { getRosterCaps, wouldExceedTypeLimits } = require('./rosterCaps');
 
 async function getUserTypeCounts(userId) {
   const ups = await UserPlayer.find({ userId, isActive: true }).populate('playerId', 'type').lean();
@@ -23,14 +22,6 @@ async function getUserTypeCounts(userId) {
   return counts;
 }
 
-function wouldExceedTypeLimits(counts) {
-  for (const [k, v] of Object.entries(TYPE_LIMITS)) {
-    if ((counts[k] || 0) > v) return true;
-  }
-  const es = (counts.Emerald || 0) + (counts.Sapphire || 0);
-  if (es > COMBINED_ES_LIMIT) return true;
-  return false;
-}
 
 function toCr(n) {
   return (Number(n) / 10000000).toFixed(2);
@@ -132,6 +123,7 @@ async function loadBundleTrades(bundleId) {
 async function computeBundleTradeApproval(bundleId, focusTrade) {
   const blockers = [];
   const rules = await getTradeRules();
+  const rosterCaps = await getRosterCaps();
   const trades = await loadBundleTrades(bundleId);
   if (!trades.length) {
     return { blockers: ['Bundle has no trade legs.'], execution: null };
@@ -243,7 +235,7 @@ async function computeBundleTradeApproval(bundleId, focusTrade) {
         `${name} would end with a negative purse after all bundle legs (shortfall about ₹${toCr(Math.abs(state.purse))} Cr).`
       );
     }
-    if (wouldExceedTypeLimits(state.typeCounts)) {
+    if (wouldExceedTypeLimits(state.typeCounts, rosterCaps)) {
       blockers.push(
         `After all bundle legs, ${name} would break player-type limits (Sapphire/Emerald/Gold/Silver caps).`
       );
@@ -290,6 +282,7 @@ async function computeSingleTradeApproval(tradeDoc, options = {}) {
   const { skipPairCheck = false, skipSlotCheck = false } = options;
   const blockers = [];
   const rules = await getTradeRules();
+  const rosterCaps = await getRosterCaps();
 
   if (!skipPairCheck) {
     try {
@@ -374,12 +367,12 @@ async function computeSingleTradeApproval(tradeDoc, options = {}) {
   if (requestedPlayer?.type) t2c[requestedPlayer.type] = Math.max(0, (t2c[requestedPlayer.type] || 0) - 1);
   if (offeredPlayer?.type) t2c[offeredPlayer.type] = (t2c[offeredPlayer.type] || 0) + 1;
 
-  if (wouldExceedTypeLimits(t1c)) {
+  if (wouldExceedTypeLimits(t1c, rosterCaps)) {
     blockers.push(
       `After the swap, ${team1.teamName || 'One team'} would break player-type limits (Sapphire/Emerald/Gold/Silver caps).`
     );
   }
-  if (wouldExceedTypeLimits(t2c)) {
+  if (wouldExceedTypeLimits(t2c, rosterCaps)) {
     blockers.push(
       `After the swap, ${team2.teamName || 'The other team'} would break player-type limits (Sapphire/Emerald/Gold/Silver caps).`
     );

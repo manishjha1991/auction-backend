@@ -94,11 +94,8 @@ router.get('/unsold', async (req, res) => {
   try {
     await requireAdmin(req.query.adminUserId);
     const search = (req.query.search || '').trim();
-    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const filter = {
-      isSold: false,
-      isActive: false,
-      $or: [{ releasedAt: null }, { releasedAt: { $lt: fortyEightHoursAgo } }],
+      isSold: { $ne: true },
     };
     if (search) filter.name = { $regex: search, $options: 'i' };
     const items = await Player.find(filter)

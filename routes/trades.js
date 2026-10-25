@@ -39,8 +39,7 @@ const tradeBundleRoutes = require('./tradeBundles');
 
 router.use('/bundles', tradeBundleRoutes);
 // Limits similar to bidding constraints
-const TYPE_LIMITS = { Sapphire: 2, Gold: 8, Emerald: 4, Silver: 6 };
-const COMBINED_ES_LIMIT = 5; // Emerald + Sapphire combined
+const { getRosterCaps, wouldExceedTypeLimits: wouldExceedRosterCaps } = require('../utils/rosterCaps');
 
 async function getUserTypeCounts(userId) {
   // 🚀 PERFORMANCE: Use .lean() for read-only query
@@ -53,13 +52,9 @@ async function getUserTypeCounts(userId) {
   return counts;
 }
 
-function wouldExceedTypeLimits(counts) {
-  for (const [k, v] of Object.entries(TYPE_LIMITS)) {
-    if ((counts[k] || 0) > v) return true;
-  }
-  const es = (counts['Emerald'] || 0) + (counts['Sapphire'] || 0);
-  if (es > COMBINED_ES_LIMIT) return true;
-  return false;
+async function wouldExceedTypeLimits(counts) {
+  const caps = await getRosterCaps();
+  return wouldExceedRosterCaps(counts, caps);
 }
 
 // Helper: ensure player ownership

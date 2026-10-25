@@ -10,13 +10,9 @@ const { computeNextBidAmount } = require("../utils/bidIncrement");
 const { getSocketIdsForUsers } = require("../utils/socketUserMap");
 const { reconcileUsersPurse } = require("./purseReconcileService");
 const { isInPreSoloSellFreeze } = require("../utils/auctionNightPhase");
+const { DEFAULT_ROSTER_CAPS, getRosterCaps, typeLimitMap } = require("../utils/rosterCaps");
 
-const TYPE_LIMIT = {
-  Sapphire: 2,
-  Gold: 8,
-  Emerald: 4,
-  Silver: 6,
-};
+const TYPE_LIMIT = typeLimitMap(DEFAULT_ROSTER_CAPS);
 
 /** Per-user queued rows (status queued) for slot limits — one row per player lot. */
 async function countQueuedSlotsForUser(userId, excludePlayerId = null) {
@@ -60,7 +56,9 @@ async function assertQueueJoinSlotLimits(userId, playerId) {
 
   const { totalQueued, byType, esQueued } = await countQueuedSlotsForUser(userId, null);
   const queuedOfThisType = byType[player.type] || 0;
-  const combinedESLimit = 5;
+  const caps = await getRosterCaps();
+  const TYPE_LIMIT = typeLimitMap(caps);
+  const combinedESLimit = caps.sapphireEmeraldMax;
 
   const [boughtPlayersOfThisType, currentBidPlayersOfThisType] = await Promise.all([
     Player.countDocuments({
@@ -153,7 +151,8 @@ async function placeBidCore({
       };
     }
 
-    const typeLimit = TYPE_LIMIT;
+    const caps = await getRosterCaps();
+    const typeLimit = typeLimitMap(caps);
 
     const [boughtPlayersOfThisType, retainedPlayersOfThisType, currentBidPlayersOfThisType] =
       await Promise.all([
@@ -185,7 +184,7 @@ async function placeBidCore({
       };
     }
 
-    const combinedESLimit = 5;
+    const combinedESLimit = caps.sapphireEmeraldMax;
     const combinedESCount = await Player.countDocuments({
       _id: [...user.boughtPlayers, ...user.currentBids.map((bid) => bid.playerId)],
       type: { $in: ["Emerald", "Sapphire"] },

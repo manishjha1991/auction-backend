@@ -42,6 +42,18 @@ const AppSettingsSchema = new mongoose.Schema(
     bundleAutoApprove: { type: Boolean, default: true },
     /** Starting database for CPL composite report (e.g., 'cpl_21'). If not set, uses current DB and goes back 2 seasons. */
     cplReportStartDb: { type: String, default: '' },
+    rosterCaps: {
+      sapphireMax: { type: Number, default: 2 },
+      emeraldMax: { type: Number, default: 4 },
+      goldMax: { type: Number, default: 8 },
+      silverMax: { type: Number, default: 6 },
+      sapphireEmeraldMax: { type: Number, default: 4 },
+      sapphireMin: { type: Number, default: 0 },
+      emeraldMin: { type: Number, default: 2 },
+      sapphireEmeraldMin: { type: Number, default: 4 },
+      goldMin: { type: Number, default: 8 },
+      silverMin: { type: Number, default: 6 },
+    },
   },
   { timestamps: true }
 );

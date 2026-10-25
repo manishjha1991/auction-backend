@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Player = require('../models/Player');
 const { RULE_MIN, RULE_MAX, getTradeRules } = require('../utils/tradeRules');
 const { getArmedCronFlags } = require('../utils/auctionNightPhase');
+const { getRosterCaps, normalizeRosterCaps } = require('../utils/rosterCaps');
 
 async function getSettingsDoc() {
   let doc = await AppSettings.findOne();
@@ -16,6 +17,7 @@ router.get('/', async (_req, res) => {
   try {
     const doc = await getSettingsDoc();
     const tradeRules = await getTradeRules();
+    const rosterCaps = await getRosterCaps();
     res.json({ 
       enableTradeCenter: doc.enableTradeCenter, 
       enableUnsoldPlayers: doc.enableUnsoldPlayers, 
@@ -37,6 +39,7 @@ router.get('/', async (_req, res) => {
       tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
       enableTradeBundles: doc.enableTradeBundles !== false,
       bundleAutoApprove: doc.bundleAutoApprove !== false,
+      rosterCaps,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });
@@ -140,7 +143,7 @@ router.post('/revoke-team-owner-admins', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories, requiredGames, tradeSeasonCap, maxTradesPerOpponentPair, tradeApprovalMode, enableTradeBundles, bundleAutoApprove } = req.body;
+    const { adminUserId, enableTradeCenter, enableUnsoldPlayers, enablePickButton, enablePlayerRetention, pointsMode, cronSingleBidEnabled, cronSingleBidFinalizerEnabled, cronBulkExitEnabled, cronLockEnabled, lockCheckCategories, worldCupMode, auctionStartAt, auctionAutoModeEnabled, auctionAutoModeCategories, requiredGames, tradeSeasonCap, maxTradesPerOpponentPair, tradeApprovalMode, enableTradeBundles, bundleAutoApprove, rosterCaps } = req.body;
     const admin = await User.findById(adminUserId);
     if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update settings' });
     const doc = await getSettingsDoc();
@@ -192,6 +195,12 @@ router.post('/', async (req, res) => {
     if (typeof bundleAutoApprove === 'boolean') {
       doc.bundleAutoApprove = bundleAutoApprove;
     }
+    if (rosterCaps && typeof rosterCaps === 'object') {
+      const existing = doc.rosterCaps && typeof doc.rosterCaps.toObject === 'function'
+        ? doc.rosterCaps.toObject()
+        : (doc.rosterCaps || {});
+      doc.rosterCaps = normalizeRosterCaps({ ...existing, ...rosterCaps });
+    }
     if (Array.isArray(auctionAutoModeCategories)) {
       const valid = ['Gold', 'Silver', 'Sapphire', 'Emerald'];
       doc.auctionAutoModeCategories = auctionAutoModeCategories.filter((c) => valid.includes(String(c).trim()));
@@ -210,6 +219,7 @@ router.post('/', async (req, res) => {
     }
     await doc.save();
     const tradeRules = await getTradeRules();
+    const savedRosterCaps = await getRosterCaps();
     res.json({ 
       enableTradeCenter: doc.enableTradeCenter, 
       enableUnsoldPlayers: doc.enableUnsoldPlayers, 
@@ -231,6 +241,7 @@ router.post('/', async (req, res) => {
       tradeApprovalMode: doc.tradeApprovalMode || 'any_admin',
       enableTradeBundles: doc.enableTradeBundles !== false,
       bundleAutoApprove: doc.bundleAutoApprove !== false,
+      rosterCaps: savedRosterCaps,
     });
   } catch (e) { res.status(500).json({ message: 'Internal server error' }); }
 });

@@ -14,22 +14,17 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
+const { getRosterCaps, typeLimitMap } = require('../utils/rosterCaps');
 
-// Get unsold players list (isSold:false and isActive:false) with pagination, type filter, and search
+// Get unsold players list (isSold: false only)
 router.get('/unsold', async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 10));
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 50));
     const type = req.query.type; // optional: Sapphire|Gold|Emerald|Silver
     const search = req.query.search; // optional: search by player name
 
-    const filter = { isSold: false, isActive: false };
-    // Exclude players released in last 48h (pick-from-unsold only; normal bidding unaffected)
-    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
-    filter.$or = [
-      { releasedAt: null },
-      { releasedAt: { $lt: fortyEightHoursAgo } }
-    ];
+    const filter = { isSold: { $ne: true } };
     if (type) {
       filter.type = type;
     }
@@ -45,7 +40,7 @@ router.get('/unsold', async (req, res) => {
 
     // First, get all players that match the filter
     const allItems = await Player.find(filter)
-      .select('name type role basePrice')
+      .select('name type role basePrice isActive')
       .sort({ name: 1 })
       .lean();
 
@@ -187,13 +182,8 @@ router.post('/admin/:pickId/decide', async (req, res) => {
         return res.status(404).json({ message: 'User or player not found' });
       }
       
-      // Check type limits
-      const typeLimit = {
-        Sapphire: 2,
-        Gold: 8,
-        Emerald: 4,
-        Silver: 6,
-      };
+      const caps = await getRosterCaps();
+      const typeLimit = typeLimitMap(caps);
       
       // Count bought players of this type (including retained)
       const boughtPlayersOfThisType = await Player.countDocuments({
@@ -206,6 +196,18 @@ router.post('/admin/:pickId/decide', async (req, res) => {
         return res.status(400).json({ 
           message: `Cannot approve: User already has ${boughtPlayersOfThisType} ${player.type} player(s). Maximum allowed is ${typeLimit[player.type]}.` 
         });
+      }
+
+      if (player.type === 'Emerald' || player.type === 'Sapphire') {
+        const combinedESCount = await Player.countDocuments({
+          _id: { $in: user.boughtPlayers },
+          type: { $in: ['Emerald', 'Sapphire'] },
+        });
+        if (combinedESCount >= caps.sapphireEmeraldMax) {
+          return res.status(400).json({
+            message: `Cannot approve: User already has ${combinedESCount} Emerald + Sapphire player(s). Combined maximum is ${caps.sapphireEmeraldMax}.`,
+          });
+        }
       }
 
       // Same-tier release + same-tier unsold pick = one tradesUsed total (paired on ReleaseRequest).

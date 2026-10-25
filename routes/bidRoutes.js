@@ -14,7 +14,8 @@ const { generateDeviceFingerprint } = require('../utils/deviceFingerprint');
 const { getClientIp } = require('../utils/network');
 const RetainedPlayer = require('../models/RetainedPlayer');
 const { invalidateCache } = require('../utils/cache');
-const { placeBidCore, countQueuedSlotsForUser, TYPE_LIMIT } = require('../services/bidPlacement');
+const { placeBidCore, countQueuedSlotsForUser } = require('../services/bidPlacement');
+const { getRosterCaps, typeLimitMap } = require('../utils/rosterCaps');
 const bidQueueService = require('../services/bidQueueService');
 const { reconcileUsersPurse } = require('../services/purseReconcileService');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
@@ -195,8 +196,9 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
           }),
         ]);
 
+        const typeLimit = typeLimitMap(await getRosterCaps());
         if (playerForCapacity.type === 'Gold' || playerForCapacity.type === 'Silver') {
-          const maxConcurrentBids = TYPE_LIMIT[playerForCapacity.type] - boughtPlayersOfThisType;
+          const maxConcurrentBids = typeLimit[playerForCapacity.type] - boughtPlayersOfThisType;
           const queuedOfThisType = byType[playerForCapacity.type] || 0;
           if (playersOfThisTypeInCurrentBids + queuedOfThisType >= maxConcurrentBids) {
             return res.status(400).json({
@@ -205,7 +207,7 @@ router.put("/:playerId/bid", authenticateJWT, async (req, res) => {
           }
         } else if (playerForCapacity.type === 'Emerald' || playerForCapacity.type === 'Sapphire') {
           const queuedOfThisType = byType[playerForCapacity.type] || 0;
-          const maxConcurrentTypeBids = TYPE_LIMIT[playerForCapacity.type] - boughtPlayersOfThisType;
+          const maxConcurrentTypeBids = typeLimit[playerForCapacity.type] - boughtPlayersOfThisType;
           if (playersOfThisTypeInCurrentBids + queuedOfThisType >= maxConcurrentTypeBids) {
             return res.status(400).json({
               message: `Manual bid blocked: your ${playerForCapacity.type} slots are already occupied by active bids + queue entries. Exit a ${playerForCapacity.type} bid/queue slot first.`,
@@ -1663,25 +1665,12 @@ async function lockUnderLimitAll(options = {}) {
     // Gold type minimum requirement:
     // - Users must have MINIMUM 8 Gold players total (bought + bidding)
     // - If they have less than 8, they will be locked
-    const GOLD_MINIMUM_TOTAL = 8; // Minimum 8 Gold players total (bought + bidding)
-    
-    // Silver type minimum requirement:
-    // - Users must have MINIMUM 6 Silver players total (bought + bidding)
-    // - If they have 1 retained Silver (in boughtPlayers), they need 5 bidding
-    // - If they have 0 retained, they need 6 bidding
-    // - Total must be 6 Silver players at any cost
-    const SILVER_MINIMUM_TOTAL = 6; // Minimum 6 Silver players total (bought + bidding)
-
-    // Sapphire + Emerald combined requirement:
-    // Valid combinations:
-    // ✅ 2 Sapphire + 2 Emerald
-    // ✅ 2 Sapphire + 3 Emerald
-    // ✅ 1 Sapphire + 3 Emerald
-    // ✅ 1 Sapphire + 4 Emerald
-    // Rule: Sapphire >= 1 AND Emerald >= 2 AND (Sapphire + Emerald) >= 4
-    const SAPPHIRE_MINIMUM_TOTAL = 1;
-    const EMERALD_MINIMUM_TOTAL = 2;
-    const SAPPHIRE_EMERALD_MINIMUM_TOTAL = 4;
+    const rosterCaps = await getRosterCaps();
+    const GOLD_MINIMUM_TOTAL = rosterCaps.goldMin;
+    const SILVER_MINIMUM_TOTAL = rosterCaps.silverMin;
+    const SAPPHIRE_MINIMUM_TOTAL = rosterCaps.sapphireMin;
+    const EMERALD_MINIMUM_TOTAL = rosterCaps.emeraldMin;
+    const SAPPHIRE_EMERALD_MINIMUM_TOTAL = rosterCaps.sapphireEmeraldMin;
 
     // ── 2. SCAN EVERY USER ───────────────────────────────────────────────────
     const users = await User.find({}, { boughtPlayers: 1, currentBids: 1, isAdmin: 1 }).lean();

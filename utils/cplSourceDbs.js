@@ -25,18 +25,18 @@ function readFirstInt(keys = [], fallback = null) {
 
 function detectCurrentCplNumber() {
   const currentDb = process.env.MONGO_DB_NAME || mongoose.connection?.name || '';
-  const match = String(currentDb).match(/^cpl_(\d+)$/i);
+  const match = String(currentDb).match(/^(?:cpl|gpl)_(\d+)$/i);
   if (!match) return null;
   const n = parseInt(match[1], 10);
   return Number.isNaN(n) ? null : n;
 }
 
-function buildDbRange({ from, to }) {
+function buildDbRange({ from, to, prefix = 'cpl' }) {
   const safeFrom = Math.max(1, parseInt(from, 10) || 1);
   const safeTo = Math.max(safeFrom, parseInt(to, 10) || safeFrom);
   const dbs = [];
   for (let i = safeFrom; i <= safeTo; i += 1) {
-    dbs.push(`cpl_${i}`);
+    dbs.push(`${prefix}_${i}`);
   }
   return dbs;
 }

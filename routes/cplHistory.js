@@ -21,7 +21,7 @@ function getBaseMongoUri() {
  * Or auto: all cpl_N from 15 up to (currentSeason - 1) e.g. cpl_19 → cpl_15..cpl_18
  */
 function seasonNumFromDbName(name) {
-  const m = String(name).match(/^cpl_(\d+)$/i);
+  const m = String(name).match(/^(?:cpl|gpl)_(\d+)$/i);
   return m ? parseInt(m[1], 10) : 0;
 }
 
@@ -33,17 +33,16 @@ function resolveHistoryDbNames() {
     return arr;
   }
 
-  const currentName = mongoose.connection?.name || process.env.MONGO_DB_NAME || 'cpl_19';
-  const m = String(currentName).match(/^cpl_(\d+)$/i);
-  const num = m ? parseInt(m[1], 10) : 19;
+  const currentName = mongoose.connection?.name || process.env.MONGO_DB_NAME || 'Gpl_1';
+  const m = String(currentName).match(/^(cpl|gpl)_(\d+)$/i);
+  if (!m) return [currentName].filter(Boolean);
+  const prefix = m[1];
+  const num = parseInt(m[2], 10);
   const out = [];
-  for (let i = 15; i < num; i++) {
-    out.push(`cpl_${i}`);
+  for (let i = num; i >= 1; i--) {
+    out.push(`${prefix}_${i}`);
   }
-  if (out.length === 0) {
-    return ['cpl_18', 'cpl_17', 'cpl_16', 'cpl_15'];
-  }
-  return out.reverse();
+  return out;
 }
 
 /** Parallel season loads; cap simultaneous DB connections (Atlas-friendly). */
@@ -66,7 +65,7 @@ async function loadOneHistorySeason(_base, dbName) {
       fetchSeasonPlayerHighlights(conn),
     ]);
 
-    const seasonNum = dbName.replace(/^cpl_/i, '');
+    const seasonNum = dbName.replace(/^(?:cpl|gpl)_/i, '');
     const insights = buildSeasonInsights(table);
     const leagueLeader = table[0] || null;
     const playoffChampion = playoffFinal ? enrichChampionFromTable(playoffFinal, table) : null;
@@ -84,7 +83,7 @@ async function loadOneHistorySeason(_base, dbName) {
       ok: true,
       season: {
         dbName,
-        label: `CPL ${seasonNum}`,
+        label: `${String(dbName).toLowerCase().startsWith('gpl') ? 'GPL' : 'CPL'} ${seasonNum}`,
         seasonNumber: Number(seasonNum) || seasonNum,
         teamCount: table.length,
         completedFixtures: fixtureCount,
@@ -133,7 +132,7 @@ router.get('/summary', async (req, res) => {
     const seasons = [];
     const errors = [];
     for (const r of results) {
-      if (r.ok) seasons.push(r.season);
+      if (r.ok && (r.season.completedFixtures || 0) > 0) seasons.push(r.season);
       else errors.push({ dbName: r.dbName, message: r.message });
     }
     seasons.sort((a, b) => seasonNumFromDbName(b.dbName) - seasonNumFromDbName(a.dbName));

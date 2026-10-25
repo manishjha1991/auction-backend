@@ -34,8 +34,13 @@ function getReportBaseUri() {
 }
 
 function seasonNumFromDbName(name) {
-  const m = String(name || '').match(/^cpl_(\d+)$/i);
+  const m = String(name || '').match(/^(?:cpl|gpl)_(\d+)$/i);
   return m ? parseInt(m[1], 10) : null;
+}
+
+function leaguePrefixFromDbName(name) {
+  const m = String(name || '').match(/^(cpl|gpl)_(\d+)$/i);
+  return m ? m[1] : 'Gpl';
 }
 
 /** Newest CPL DB the app (or CLI) is using — for “current + previous 2” report windows. */
@@ -78,7 +83,7 @@ async function parseReportDbs(startDbOverride = null) {
       // Try up to 10 databases forward (reasonable limit)
       const candidates = [];
       for (let i = 0; i < 10; i++) {
-        candidates.push(`cpl_${n + i}`);
+        candidates.push(`${leaguePrefixFromDbName(startName)}_${n + i}`);
       }
       
       // Check which databases actually exist
@@ -100,20 +105,21 @@ async function parseReportDbs(startDbOverride = null) {
         console.error('Failed to list databases, using default range:', err);
         // Fallback: include up to 3 databases
         for (let i = 0; i < 3; i++) {
-          out.push(`cpl_${n + i}`);
+          out.push(`${leaguePrefixFromDbName(startName)}_${n + i}`);
         }
       }
     } else {
       // When using current DB: go backward (N, N-1, N-2)
       for (let i = 0; i < 3; i++) {
         const sn = n - i;
-        if (sn >= 1) out.push(`cpl_${sn}`);
+        if (sn >= 1) out.push(`${leaguePrefixFromDbName(startName)}_${sn}`);
       }
     }
     return out;
   }
 
-  return ['cpl_21'];
+  const hint = getRunningCplDbNameHint();
+  return hint ? [hint] : ['Gpl_1'];
 }
 
 function parseMilestoneDbs() {
@@ -124,7 +130,8 @@ function parseMilestoneDbs() {
       .map((s) => s.trim())
       .filter(Boolean);
   }
-  return ['cpl_12', 'cpl_13', 'cpl_14', 'cpl_15', 'cpl_16', 'cpl_17', 'cpl_18', 'cpl_19'];
+  const current = getRunningCplDbNameHint();
+  return current ? [current] : ['Gpl_1'];
 }
 
 function parseCareerSummaryDbs() {

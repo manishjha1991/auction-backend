@@ -3,6 +3,7 @@ const router = express.Router();
 const MatchResult = require('../models/MatchResult');
 const User = require('../models/User');
 const Player = require('../models/Player');
+const Fixture = require('../models/Fixture');
 const headToHeadModule = require('./headToHead');
 
 // Middleware to check if user is authenticated
@@ -34,6 +35,13 @@ const isAdmin = async (req, res, next) => {
 // GET /api/match-results/public - Get all match results (public for trophy hall)
 router.get('/public', async (req, res) => {
   try {
+    const playedFixtures = await Fixture.countDocuments({
+      winner: { $exists: true, $nin: [null, '', 'TBD'] },
+    });
+    if (playedFixtures === 0) {
+      return res.json({ matchResults: [], total: 0 });
+    }
+
     const matchResults = await MatchResult.find({})
       .populate('manOfTheMatch.playerId', 'name role')
       .sort({ matchDate: -1, createdAt: -1 });
