@@ -1208,11 +1208,14 @@ router.get('/all', async (req, res) => {
 router.get('/teams', async (req, res) => {
   try {
     const includeInactive = req.query.includeInactive === 'true';
+    const includeNotReady = req.query.includeNotReady === 'true';
     const baseFilter = {
-      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      teamName: { $exists: true, $nin: [null, '', 'NA'] },
       isAdmin: false,
-      isTournamentReady: true,
     };
+    if (!includeNotReady) {
+      baseFilter.isTournamentReady = true;
+    }
     if (!includeInactive) {
       baseFilter.isActive = true;
     }
