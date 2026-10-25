@@ -231,7 +231,7 @@ router.get("/:userId/details", async (req, res) => {
     // 2) Fetch sold players for the user
     // 🚀 PERFORMANCE: Use .lean() for faster queries
     const soldPlayers = await UserPlayer.find({ userId, isActive: true })
-      .populate("playerId", "name type role basePrice over overallScore totalRuns totalWickets profilePicture")
+      .populate("playerId", "name type role basePrice over overallScore totalRuns totalWickets profilePicture country bowlingStyle style")
       .lean()
       .exec();
 
@@ -482,11 +482,11 @@ router.get("/purses", async (req, res) => {
       User.find({ isAdmin: { $ne: true } }).select("name teamName purse _id currentBids").lean(),
       UserPlayer.find({ isActive: true })
         .select('userId playerId bidValue')
-        .populate("playerId", "name type role profilePicture")
+        .populate("playerId", "name type role profilePicture country")
         .lean(),
       Bid.find({ isActive: true, isBidOn: true })
         .select('playerId bidder bidAmount timestamp isActive isBidOn')
-        .populate("playerId", "name type role profilePicture")
+        .populate("playerId", "name type role profilePicture country")
         .populate("bidder", "name _id")
         .sort({ bidAmount: -1 })
         .lean(),
@@ -605,6 +605,7 @@ router.get("/purses", async (req, res) => {
           type: entry.playerId.type,
           role: entry.playerId.role,
           profilePicture: entry.playerId.profilePicture || null,
+          country: entry.playerId.country || null,
           isBidOn: false, // Sold players are not actively being bid on
           biddingPrice: null,
           biddingBy: null,
@@ -621,6 +622,7 @@ router.get("/purses", async (req, res) => {
           type: player?.type || null,
           role: player?.role || null,
           profilePicture: player?.profilePicture || null,
+          country: player?.country || null,
           isBidOn: true, // Actively being bid on
           biddingPrice: Number(currentBid?.amount || 0),
           biddingBy: user.name, // User placing the bid
@@ -1878,7 +1880,7 @@ router.get('/:userId/roster', async (req, res) => {
   try {
     const { userId } = req.params;
     const roster = await UserPlayer.find({ userId, isActive: true })
-      .populate('playerId', 'name type role profilePicture')
+      .populate('playerId', 'name type role profilePicture country')
       .lean();
     const players = roster
       .filter((r) => r.playerId)
@@ -1888,6 +1890,7 @@ router.get('/:userId/roster', async (req, res) => {
         type: r.playerId.type,
         role: r.playerId.role,
         profilePicture: r.playerId.profilePicture || null,
+        country: r.playerId.country || null,
       }));
 
     const teamOwner = await User.findById(userId).select('captainPlayerId').lean();

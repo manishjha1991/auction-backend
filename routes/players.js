@@ -23,7 +23,7 @@ const formatPrice = (value) => {
 // Insert Player
 router.post('/player', upload.single('profilePicture'), async (req, res) => {
   try {
-    const { name, type, role, basePrice, basePriceUnit, overallScore, style } = req.body;
+    const { name, type, role, basePrice, basePriceUnit, overallScore, style, bowlingStyle, country } = req.body;
 
     const profilePicture = req.file ? req.file.path : null;
 
@@ -46,9 +46,12 @@ router.post('/player', upload.single('profilePicture'), async (req, res) => {
       overallScore,
       profilePicture,
       style,
+      bowlingStyle: bowlingStyle || null,
+      country: country || null,
     });
 
     await newPlayer.save();
+    invalidateCache('players:data');
 
     res.status(201).json({ message: 'Player created successfully', player: newPlayer });
   } catch (error) {
@@ -169,6 +172,8 @@ router.get("/:playerId/bids", async (req, res) => {
         type: player.type,
         role: player.role,
         battingStyle: player.style || null,
+        bowlingStyle: player.bowlingStyle || null,
+        country: player.country || null,
         score: player.overallScore || null,
         status: player.isSold,
         isActive: player.isActive,
@@ -387,6 +392,9 @@ router.get("/players/data", async (req, res) => {
           name: 1,
           type: 1,
           role: 1,
+          style: 1,
+          bowlingStyle: 1,
+          country: 1,
           basePrice: {
             $cond: {
               if: { $gt: [{ $size: '$userPlayer' }, 0] },

@@ -962,7 +962,7 @@ router.get('/list', async (req, res) => {
 
     // 🚀 PERFORMANCE: Run queries in parallel for faster execution
     const playerSelect =
-      '_id name type role basePrice style overallScore profilePicture isSold isActive';
+      '_id name type role basePrice style bowlingStyle country overallScore profilePicture isSold isActive';
 
     const [playersResult, playoffTeamsResult] = await Promise.all([
       // Admin: all sold players. Team owners: active roster only (UserPlayer, not stale boughtPlayers).

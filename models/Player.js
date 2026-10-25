@@ -7,6 +7,8 @@ const PlayerSchema = new mongoose.Schema({
     role: { type: String, enum: ["Batsman", "Bowler", "Allrounder", "WicketKeeper"], required: true },
     basePrice: { type: Number, required: true },
     style:{ type: String, required: true },
+    bowlingStyle: { type: String, default: null },
+    country: { type: String, default: null },
     overallScore: { type: Number, required: true },
     profilePicture: { type: String },
     createdAt: { type: Date, default: Date.now },
