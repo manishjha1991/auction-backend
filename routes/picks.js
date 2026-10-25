@@ -40,7 +40,7 @@ router.get('/unsold', async (req, res) => {
 
     // First, get all players that match the filter
     const allItems = await Player.find(filter)
-      .select('name type role basePrice isActive')
+      .select('name type role basePrice isActive country overallScore')
       .sort({ name: 1 })
       .lean();
 

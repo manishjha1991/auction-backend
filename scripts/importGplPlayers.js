@@ -1,7 +1,11 @@
 /**
- * Import GPL players from scripts/data/gpl-cricket-26.json
+ * Import GPL players from scripts/data/gpl-cricket-26.xlsx
+ * (falls back to gpl-cricket-26.json if the xlsx is missing).
  *
- * Same sheet for all types: append Gold/Silver rows later and re-run.
+ * Excel layout: type heading (Sapphire/Emerald/Gold/Silver), then
+ * PLAYER NAME / ROLE / COUNTRY / BATTING STYLE / BOWLING STYLE / OVERALL.
+ * Names may be numbered like "1. STEVE SMITH".
+ *
  * Never creates a second document for the same player name.
  * New names insert. Existing names with changed fields ask y/N before update.
  *
@@ -15,11 +19,13 @@ const path = require('path');
 const readline = require('readline');
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
+const XLSX = require('xlsx');
 
 const Player = require('../models/Player');
 const { invalidateCache } = require('../utils/cache');
 
-const DATA_PATH = path.join(__dirname, 'data', 'gpl-cricket-26.json');
+const XLSX_PATH = path.join(__dirname, 'data', 'gpl-cricket-26.xlsx');
+const JSON_PATH = path.join(__dirname, 'data', 'gpl-cricket-26.json');
 const execute = process.argv.includes('--execute');
 const autoYes = process.argv.includes('--yes');
 
@@ -36,11 +42,14 @@ const BASE_PRICE = {
 
 const ROLE_MAP = {
   batsman: 'Batsman',
+  batsmen: 'Batsman',
   bowler: 'Bowler',
+  bowlers: 'Bowler',
   wk: 'WicketKeeper',
   wicketkeeper: 'WicketKeeper',
   'wicket keeper': 'WicketKeeper',
   allrounder: 'Allrounder',
+  allrounders: 'Allrounder',
   'all-rounder': 'Allrounder',
   'bat ar': 'Allrounder',
   'bowl ar': 'Allrounder',
@@ -136,13 +145,81 @@ const connect = async () => {
   });
 };
 
-const loadSheet = () => {
-  if (!fs.existsSync(DATA_PATH)) {
-    throw new Error(`Sheet not found: ${DATA_PATH}`);
-  }
-  const parsed = JSON.parse(fs.readFileSync(DATA_PATH, 'utf8'));
+const stripPlayerNumber = (value) =>
+  String(value || '')
+    .trim()
+    .replace(/^\d+\.\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const isTypeHeading = (value) => {
+  const raw = String(value || '').trim().toLowerCase();
+  return TYPES.some((t) => t.toLowerCase() === raw);
+};
+
+const isColumnHeaderRow = (cells) => {
+  const joined = cells.map((c) => String(c || '').trim().toLowerCase()).join(' ');
+  return joined.includes('player name') && joined.includes('role');
+};
+
+const isSummaryRow = (cells) => {
+  const first = String(cells[0] || '').trim().toLowerCase();
+  const second = String(cells[1] || '').trim();
+  if (first === 'total') return true;
+  if (isTypeHeading(first) && /^\d+$/.test(second)) return true;
+  return false;
+};
+
+const loadXlsxSheet = (filePath) => {
+  const wb = XLSX.readFile(filePath);
+  const sheetName = wb.SheetNames[0];
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {
+    header: 1,
+    defval: '',
+    raw: true,
+  });
+
+  const players = [];
+  let currentType = '';
+
+  rows.forEach((rawRow) => {
+    const cells = Array.isArray(rawRow) ? rawRow.slice(0, 6) : [];
+    const first = String(cells[0] || '').trim();
+    if (!first) return;
+    if (isColumnHeaderRow(cells)) return;
+    if (isSummaryRow(cells)) return;
+
+    if (isTypeHeading(first) && !String(cells[1] || '').trim()) {
+      currentType = mapType(first);
+      return;
+    }
+
+    if (!currentType) return;
+
+    players.push({
+      name: stripPlayerNumber(first),
+      type: currentType,
+      role: cells[1],
+      country: cells[2],
+      battingStyle: cells[3],
+      bowlingStyle: cells[4],
+      overall: cells[5],
+    });
+  });
+
+  return { filePath, players };
+};
+
+const loadJsonSheet = (filePath) => {
+  const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
   if (!Array.isArray(parsed)) throw new Error('Sheet must be a JSON array');
-  return parsed;
+  return { filePath, players: parsed };
+};
+
+const loadSheet = () => {
+  if (fs.existsSync(XLSX_PATH)) return loadXlsxSheet(XLSX_PATH);
+  if (fs.existsSync(JSON_PATH)) return loadJsonSheet(JSON_PATH);
+  throw new Error(`Sheet not found. Expected ${XLSX_PATH} or ${JSON_PATH}`);
 };
 
 const validateRow = (row, index) => {
@@ -198,7 +275,7 @@ const formatChanges = (changes) =>
   changes.map((c) => `${c.field} ${c.from}→${c.to}`).join(', ');
 
 const main = async () => {
-  const sheet = loadSheet();
+  const { filePath, players: sheet } = loadSheet();
   const validated = sheet.map((row, index) => validateRow(row, index));
 
   const invalid = validated.filter((row) => row.errors.length > 0);
@@ -221,7 +298,7 @@ const main = async () => {
     byType[row.payload.type] += 1;
   });
 
-  console.log(`Sheet: ${DATA_PATH}`);
+  console.log(`Sheet: ${filePath}`);
   console.log(`Mode: ${execute ? 'EXECUTE' : 'DRY RUN'}${autoYes ? ' (--yes)' : ''}`);
   console.log(`Rows in sheet: ${sheet.length}`);
   console.log(`Valid unique: ${uniqueValid.length}`);
