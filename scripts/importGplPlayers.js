@@ -72,6 +72,15 @@ const COUNTRY_MAP = {
   bangladesh: 'Bangladesh',
   afghanistan: 'Afghanistan',
   ireland: 'Ireland',
+  netherland: 'Netherlands',
+  netherlands: 'Netherlands',
+  holland: 'Netherlands',
+  scotland: 'Scotland',
+  italy: 'Italy',
+  canada: 'Canada',
+  namibia: 'Namibia',
+  usa: 'USA',
+  us: 'USA',
 };
 
 const COMPARE_FIELDS = [

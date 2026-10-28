@@ -15,6 +15,7 @@ const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
 const { getRosterCaps, typeLimitMap } = require('../utils/rosterCaps');
+const { assertIndiaCap } = require('../utils/indiaCap');
 
 // Get unsold players list (isSold: false only)
 router.get('/unsold', async (req, res) => {
@@ -96,6 +97,17 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'This player was recently released and cannot be picked from unsold for 48 hours' });
     }
     if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const indiaCheck = await assertIndiaCap({
+      user,
+      player,
+      caps: await getRosterCaps(),
+      alreadyEngaged: false,
+      includeQueue: true,
+    });
+    if (!indiaCheck.ok) {
+      return res.status(indiaCheck.status || 400).json({ message: indiaCheck.message });
+    }
 
     const rules = await getTradeRules();
     try {
@@ -208,6 +220,17 @@ router.post('/admin/:pickId/decide', async (req, res) => {
             message: `Cannot approve: User already has ${combinedESCount} Emerald + Sapphire player(s). Combined maximum is ${caps.sapphireEmeraldMax}.`,
           });
         }
+      }
+
+      const indiaCheck = await assertIndiaCap({
+        user,
+        player,
+        caps,
+        alreadyEngaged: false,
+        includeQueue: false,
+      });
+      if (!indiaCheck.ok) {
+        return res.status(indiaCheck.status || 400).json({ message: indiaCheck.message });
       }
 
       // Same-tier release + same-tier unsold pick = one tradesUsed total (paired on ReleaseRequest).

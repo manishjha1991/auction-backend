@@ -53,6 +53,7 @@ const AppSettingsSchema = new mongoose.Schema(
       sapphireEmeraldMin: { type: Number, default: 4 },
       goldMin: { type: Number, default: 8 },
       silverMin: { type: Number, default: 6 },
+      indiaMax: { type: Number, default: 3 },
     },
   },
   { timestamps: true }

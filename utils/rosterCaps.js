@@ -11,6 +11,7 @@ const DEFAULT_ROSTER_CAPS = {
   sapphireEmeraldMin: 4,
   goldMin: 8,
   silverMin: 6,
+  indiaMax: 3,
 };
 
 const clampInt = (value, min, max, fallback) => {
@@ -40,6 +41,7 @@ const normalizeRosterCaps = (raw = {}) => ({
   ),
   goldMin: clampInt(raw.goldMin, 0, 20, DEFAULT_ROSTER_CAPS.goldMin),
   silverMin: clampInt(raw.silverMin, 0, 20, DEFAULT_ROSTER_CAPS.silverMin),
+  indiaMax: clampInt(raw.indiaMax, 0, 20, DEFAULT_ROSTER_CAPS.indiaMax),
 });
 
 async function getRosterCaps() {

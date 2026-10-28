@@ -11,6 +11,7 @@ const { getSocketIdsForUsers } = require("../utils/socketUserMap");
 const { reconcileUsersPurse } = require("./purseReconcileService");
 const { isInPreSoloSellFreeze } = require("../utils/auctionNightPhase");
 const { DEFAULT_ROSTER_CAPS, getRosterCaps, typeLimitMap } = require("../utils/rosterCaps");
+const { assertIndiaCap } = require("../utils/indiaCap");
 
 const TYPE_LIMIT = typeLimitMap(DEFAULT_ROSTER_CAPS);
 
@@ -111,6 +112,20 @@ async function assertQueueJoinSlotLimits(userId, playerId) {
     };
   }
 
+  const alreadyBiddingThisPlayer = (user.currentBids || []).some(
+    (bid) => bid.playerId && bid.playerId.toString() === playerId.toString()
+  );
+  const indiaCheck = await assertIndiaCap({
+    user,
+    player,
+    caps,
+    alreadyEngaged: alreadyBiddingThisPlayer,
+    includeQueue: true,
+  });
+  if (!indiaCheck.ok) {
+    return { ok: false, message: indiaCheck.message };
+  }
+
   return { ok: true };
 }
 
@@ -200,6 +215,17 @@ async function placeBidCore({
         status: 400,
         message: `You have reached the maximum combined limit (${combinedESLimit}) for Emerald + Sapphire players.`,
       };
+    }
+
+    const indiaCheck = await assertIndiaCap({
+      user,
+      player,
+      caps,
+      alreadyEngaged: alreadyBiddingThisPlayer,
+      includeQueue: true,
+    });
+    if (!indiaCheck.ok) {
+      return indiaCheck;
     }
 
     const activeBids = await Bid.find({ playerId, isActive: true, isBidOn: true })
