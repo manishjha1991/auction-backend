@@ -307,7 +307,7 @@ router.post(
 router.get("/players/data", async (req, res) => {
   // 🚀 PERFORMANCE: Check cache first (2 minute cache for players data)
   const includeInactive = req.query.includeInactive === 'true';
-  const cacheKey = includeInactive ? 'players:data:all' : 'players:data';
+  const cacheKey = includeInactive ? 'players:data:all:ovr' : 'players:data:ovr';
   const skipCache =
     req.query.nocache === '1' ||
     req.query.nocache === 'true' ||
@@ -487,7 +487,7 @@ router.get("/players/data", async (req, res) => {
           }
         }
       },
-      { $sort: { sortOrder: 1 } }
+      { $sort: { overallScore: -1, name: 1, sortOrder: 1 } }
     ]);
 
     // 🚀 PERFORMANCE: Cache the response (2 minute cache)

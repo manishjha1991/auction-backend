@@ -42,7 +42,7 @@ router.get('/unsold', async (req, res) => {
     // First, get all players that match the filter
     const allItems = await Player.find(filter)
       .select('name type role basePrice isActive country overallScore')
-      .sort({ name: 1 })
+      .sort({ overallScore: -1, name: 1 })
       .lean();
 
     // Check which players have active bids (like in user section)
@@ -63,12 +63,12 @@ router.get('/unsold', async (req, res) => {
 
     // Sort items to show "Request Raised" players first
     const sortedItems = itemsWithStatus.sort((a, b) => {
-      // If both have or both don't have pending requests, sort by name
-      if (a.hasPendingRequest === b.hasPendingRequest) {
-        return a.name.localeCompare(b.name);
+      if (a.hasPendingRequest !== b.hasPendingRequest) {
+        return b.hasPendingRequest - a.hasPendingRequest;
       }
-      // If only one has pending request, prioritize it
-      return b.hasPendingRequest - a.hasPendingRequest;
+      const scoreDiff = (Number(b.overallScore) || 0) - (Number(a.overallScore) || 0);
+      if (scoreDiff !== 0) return scoreDiff;
+      return String(a.name || '').localeCompare(String(b.name || ''));
     });
 
     // Apply pagination to sorted items
