@@ -536,11 +536,47 @@ router.get("/purses", async (req, res) => {
     const missingPlayerIds = [...currentBidPlayerIds].filter((id) => !playerDetailsById.has(id));
     if (missingPlayerIds.length > 0) {
       const missingPlayers = await Player.find({ _id: { $in: missingPlayerIds } })
-        .select("name type role profilePicture")
+        .select("name type role profilePicture country isSold")
         .lean();
       missingPlayers.forEach((p) => {
         if (p?._id) playerDetailsById.set(p._id.toString(), p);
       });
+    }
+
+    const soldCurrentBidIds = new Set(
+      (
+        await Player.find({
+          _id: { $in: [...currentBidPlayerIds] },
+          isSold: true,
+        })
+          .select('_id')
+          .lean()
+      ).map((p) => p._id.toString())
+    );
+
+    const stalePulls = [];
+    users.forEach((u) => {
+      const ownedIds = new Set(
+        (userPlayersMap.get(u._id.toString()) || [])
+          .map((up) => up.playerId?._id?.toString())
+          .filter(Boolean)
+      );
+      const staleIds = (u.currentBids || [])
+        .map((b) => b?.playerId?.toString?.() || String(b?.playerId || ''))
+        .filter((id) => id && (ownedIds.has(id) || soldCurrentBidIds.has(id)));
+      if (staleIds.length) {
+        stalePulls.push({
+          updateOne: {
+            filter: { _id: u._id },
+            update: { $pull: { currentBids: { playerId: { $in: staleIds } } } },
+          },
+        });
+      }
+    });
+    if (stalePulls.length) {
+      User.bulkWrite(stalePulls).catch((err) =>
+        console.error('Failed to prune sold players from currentBids', err.message)
+      );
     }
 
     // Precompute team-level win/loss counts once (avoid filtering full match list per user)
@@ -611,23 +647,36 @@ router.get("/purses", async (req, res) => {
           biddingBy: null,
         }));
 
-        // Map all actively locked bids from user.currentBids (source of truth for purse locks)
-        const biddingPlayers = (user.currentBids || []).map((currentBid) => {
-          const playerId = currentBid?.playerId?.toString?.() || currentBid?.playerId;
-          const player = playerDetailsById.get(playerId?.toString?.() || "");
-          return {
-          id: playerId || null,
-          name: player?.name || "Unknown Player",
-          boughtValue: null, // Not yet sold, so no bought value
-          type: player?.type || null,
-          role: player?.role || null,
-          profilePicture: player?.profilePicture || null,
-          country: player?.country || null,
-          isBidOn: true, // Actively being bid on
-          biddingPrice: Number(currentBid?.amount || 0),
-          biddingBy: user.name, // User placing the bid
-        };
-      });
+        const ownedPlayerIds = new Set(
+          soldPlayers.map((p) => p.id && p.id.toString()).filter(Boolean)
+        );
+
+        // Map actively locked bids. Skip players already sold (including sold to this user).
+        const biddingPlayers = (user.currentBids || [])
+          .map((currentBid) => {
+            const playerId = currentBid?.playerId?.toString?.() || currentBid?.playerId;
+            const player = playerDetailsById.get(playerId?.toString?.() || '');
+            return { currentBid, playerId, player };
+          })
+          .filter(({ playerId, player }) => {
+            const id = playerId?.toString?.() || '';
+            if (!id) return false;
+            if (ownedPlayerIds.has(id)) return false;
+            if (soldCurrentBidIds.has(id) || player?.isSold === true) return false;
+            return true;
+          })
+          .map(({ currentBid, playerId, player }) => ({
+            id: playerId || null,
+            name: player?.name || 'Unknown Player',
+            boughtValue: null,
+            type: player?.type || null,
+            role: player?.role || null,
+            profilePicture: player?.profilePicture || null,
+            country: player?.country || null,
+            isBidOn: true,
+            biddingPrice: Number(currentBid?.amount || 0),
+            biddingBy: user.name,
+          }));
 
         const normalizedUserTeam = normalizeTeamName(user.teamName);
         const teamOutcome = teamOutcomeMap.get(user.teamName) || { wins: 0, losses: 0 };

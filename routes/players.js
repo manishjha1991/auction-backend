@@ -464,6 +464,7 @@ router.get("/players/data", async (req, res) => {
           totalHattricks: { $ifNull: ['$totalHattricks', 0] },
           matchesPlayed: { $ifNull: ['$matchesPlayed', 0] },
           overallScore: { $ifNull: ['$overallScore', 0] },
+          isSold: { $ifNull: ['$isSold', false] },
           teamLogo: {
             $cond: {
               if: { $gt: [{ $size: '$user' }, 0] },

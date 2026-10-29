@@ -24,6 +24,8 @@ router.get('/unsold', async (req, res) => {
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 50));
     const type = req.query.type; // optional: Sapphire|Gold|Emerald|Silver
     const search = req.query.search; // optional: search by player name
+    const role = (req.query.role || '').trim();
+    const country = (req.query.country || '').trim();
 
     const filter = { isSold: { $ne: true } };
     if (type) {
@@ -34,37 +36,56 @@ router.get('/unsold', async (req, res) => {
     if (search && search.trim()) {
       filter.name = { $regex: search.trim(), $options: 'i' }; // Case-insensitive search
     }
+    if (role) {
+      filter.role = { $regex: new RegExp(`^${role}$`, 'i') };
+    }
+    if (country) {
+      filter.country = { $regex: new RegExp(`^${country}$`, 'i') };
+    }
 
     const total = await Player.countDocuments(filter);
     const totalPages = Math.max(1, Math.ceil(total / limit));
     const skip = (page - 1) * limit;
 
-    // First, get all players that match the filter
-    const allItems = await Player.find(filter)
-      .select('name type role basePrice isActive country overallScore')
-      .sort({ overallScore: -1, name: 1 })
-      .lean();
+    const [allItems, countryValues, liveBidCount] = await Promise.all([
+      Player.find(filter)
+        .select('name type role basePrice isActive country overallScore')
+        .lean(),
+      Player.distinct('country', { isSold: { $ne: true } }),
+      Bid.countDocuments({ isActive: true, isBidOn: true }),
+    ]);
 
-    // Check which players have active bids (like in user section)
-    const playerIds = allItems.map(item => item._id);
+    const playerIds = allItems.map((item) => item._id);
     const activeBids = await Bid.find({
       playerId: { $in: playerIds },
       isActive: true,
-      isBidOn: true
-    }).select('playerId');
+      isBidOn: true,
+    }).select('playerId bidAmount');
 
-    const playersWithActiveBids = new Set(activeBids.map(bid => bid.playerId.toString()));
+    const playersWithActiveBids = new Set();
+    const bidAmountByPlayer = new Map();
+    activeBids.forEach((bid) => {
+      const id = bid.playerId.toString();
+      playersWithActiveBids.add(id);
+      const amount = Number(bid.bidAmount) || 0;
+      bidAmountByPlayer.set(id, Math.max(bidAmountByPlayer.get(id) || 0, amount));
+    });
 
-    // Add bidding status indicator to items
-    const itemsWithStatus = allItems.map(item => ({
-      ...item,
-      hasPendingRequest: playersWithActiveBids.has(item._id.toString()) // Player is under bidding if has active bids
-    }));
+    const auctionRunning = liveBidCount > 0 || allItems.some((p) => p.isActive === true);
 
-    // Sort items to show "Request Raised" players first
+    const itemsWithStatus = allItems.map((item) => {
+      const id = item._id.toString();
+      return {
+        ...item,
+        hasPendingRequest: playersWithActiveBids.has(id),
+        currentBidAmount: bidAmountByPlayer.get(id) || 0,
+      };
+    });
+
     const sortedItems = itemsWithStatus.sort((a, b) => {
-      if (a.hasPendingRequest !== b.hasPendingRequest) {
-        return b.hasPendingRequest - a.hasPendingRequest;
+      if (auctionRunning) {
+        const bidDiff = (Number(b.currentBidAmount) || 0) - (Number(a.currentBidAmount) || 0);
+        if (bidDiff !== 0) return bidDiff;
       }
       const scoreDiff = (Number(b.overallScore) || 0) - (Number(a.overallScore) || 0);
       if (scoreDiff !== 0) return scoreDiff;
@@ -74,7 +95,21 @@ router.get('/unsold', async (req, res) => {
     // Apply pagination to sorted items
     const items = sortedItems.slice(skip, skip + limit);
 
-    res.json({ items, page, totalPages, total });
+    const countries = (countryValues || [])
+      .map((c) => String(c || '').trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+
+    res.json({
+      items,
+      page,
+      totalPages,
+      total,
+      auctionRunning,
+      sortBy: auctionRunning ? 'bid' : 'overall',
+      countries,
+      roles: ['Batsman', 'Bowler', 'Allrounder', 'WicketKeeper'],
+    });
   } catch (e) {
     console.error('Unsold list error', e);
     res.status(500).json({ message: 'Internal server error' });
