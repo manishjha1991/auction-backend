@@ -464,6 +464,14 @@ router.get("/players/data", async (req, res) => {
           totalHattricks: { $ifNull: ['$totalHattricks', 0] },
           matchesPlayed: { $ifNull: ['$matchesPlayed', 0] },
           overallScore: { $ifNull: ['$overallScore', 0] },
+          currentBid: {
+            $cond: {
+              if: { $gt: [{ $size: '$highestBid' }, 0] },
+              then: { $arrayElemAt: ['$highestBid.bidAmount', 0] },
+              else: 0
+            }
+          },
+          isBidOn: { $gt: [{ $size: '$highestBid' }, 0] },
           isSold: { $ifNull: ['$isSold', false] },
           teamLogo: {
             $cond: {
@@ -488,7 +496,7 @@ router.get("/players/data", async (req, res) => {
           }
         }
       },
-      { $sort: { overallScore: -1, name: 1, sortOrder: 1 } }
+      { $sort: { sortOrder: 1, currentBid: -1, overallScore: -1, name: 1 } }
     ]);
 
     // 🚀 PERFORMANCE: Cache the response (2 minute cache)
