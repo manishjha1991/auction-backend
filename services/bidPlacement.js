@@ -234,7 +234,7 @@ async function placeBidCore({
 
     const activeBidders = [...new Set(activeBids.map((bid) => bid.bidder.toString()))];
 
-    // Pre-solo-sell minute (e.g. 12:44–12:45): no new bids if 2nd bidder already exited.
+    // Pre-solo-sell minute (e.g. 1:59–2:00 AM): no new bids if 2nd bidder already exited.
     if (isInPreSoloSellFreeze() && activeBidders.length === 1) {
       const topBid = [...activeBids].sort((a, b) => (b.bidAmount || 0) - (a.bidAmount || 0))[0];
       const leader = topBid?.bidder
