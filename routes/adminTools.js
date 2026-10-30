@@ -1198,6 +1198,154 @@ function normalizePower(power) {
   }
 }
 
+const PLAYER_EDIT_FIELDS = ['name', 'type', 'role', 'style', 'bowlingStyle', 'country', 'overallScore', 'basePrice'];
+const PLAYER_TYPES = ['Sapphire', 'Emerald', 'Gold', 'Silver'];
+const PLAYER_ROLES = ['Batsman', 'Bowler', 'Allrounder', 'WicketKeeper'];
+
+router.get('/helper/accounts', async (req, res) => {
+  try {
+    const { adminUserId } = req.query;
+    await requireAdmin(adminUserId);
+    const users = await User.find({ isAdmin: { $ne: true } })
+      .select('name email teamName abbreviation isLocked isActive isParticipating')
+      .sort({ isLocked: -1, teamName: 1, name: 1 })
+      .lean();
+    const locked = users.filter((u) => u.isLocked === true);
+    const unlocked = users.filter((u) => u.isLocked !== true);
+    res.json({
+      lockedCount: locked.length,
+      unlockedCount: unlocked.length,
+      locked,
+      unlocked,
+      accounts: users,
+    });
+  } catch (error) {
+    console.error('helper/accounts error', error);
+    res.status(error.status || 500).json({ message: error.message || 'Failed to load accounts' });
+  }
+});
+
+router.post('/helper/accounts/:userId/lock-state', async (req, res) => {
+  try {
+    const { adminUserId, isLocked } = req.body || {};
+    await requireAdmin(adminUserId);
+    if (typeof isLocked !== 'boolean') {
+      return res.status(400).json({ message: 'isLocked boolean is required' });
+    }
+    const user = await User.findByIdAndUpdate(
+      req.params.userId,
+      { $set: { isLocked } },
+      { new: true }
+    ).select('name teamName abbreviation isLocked');
+    if (!user) return res.status(404).json({ message: 'Account not found' });
+    res.json({
+      message: `${user.teamName || user.name} is now ${isLocked ? 'LOCKED' : 'UNLOCKED'}`,
+      account: user,
+    });
+  } catch (error) {
+    console.error('helper/accounts lock-state error', error);
+    res.status(error.status || 500).json({ message: error.message || 'Failed to update lock' });
+  }
+});
+
+router.get('/helper/players', async (req, res) => {
+  try {
+    const { adminUserId, search } = req.query;
+    await requireAdmin(adminUserId);
+    const q = String(search || '').trim();
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const filter = escaped
+      ? {
+          $or: [
+            { name: { $regex: escaped, $options: 'i' } },
+            { country: { $regex: escaped, $options: 'i' } },
+            { type: { $regex: `^${escaped}$`, $options: 'i' } },
+            { role: { $regex: escaped, $options: 'i' } },
+          ],
+        }
+      : {};
+    const players = await Player.find(filter)
+      .select('name type role style bowlingStyle country overallScore basePrice isSold isActive playerID')
+      .sort({ name: 1 })
+      .limit(q ? 80 : 60)
+      .lean();
+
+    const ids = players.map((p) => p._id);
+    const owned = await UserPlayer.find({ playerId: { $in: ids }, isActive: true })
+      .select('playerId userId')
+      .populate('userId', 'teamName name abbreviation')
+      .lean();
+    const ownerByPlayer = new Map();
+    owned.forEach((row) => {
+      ownerByPlayer.set(String(row.playerId), row.userId || null);
+    });
+
+    res.json({
+      players: players.map((p) => ({
+        ...p,
+        owner: ownerByPlayer.get(String(p._id)) || null,
+      })),
+    });
+  } catch (error) {
+    console.error('helper/players error', error);
+    res.status(error.status || 500).json({ message: error.message || 'Failed to load players' });
+  }
+});
+
+router.put('/helper/players/:playerId', async (req, res) => {
+  try {
+    const { adminUserId, ...rest } = req.body || {};
+    await requireAdmin(adminUserId);
+    if (!mongoose.isValidObjectId(req.params.playerId)) {
+      return res.status(400).json({ message: 'Invalid player id' });
+    }
+
+    const $set = { updatedAt: new Date() };
+    for (const field of PLAYER_EDIT_FIELDS) {
+      if (rest[field] === undefined) continue;
+      if (field === 'type') {
+        const type = String(rest.type || '').trim();
+        if (!PLAYER_TYPES.includes(type)) {
+          return res.status(400).json({ message: `Invalid type "${rest.type}"` });
+        }
+        $set.type = type;
+        continue;
+      }
+      if (field === 'role') {
+        const role = String(rest.role || '').trim();
+        if (!PLAYER_ROLES.includes(role)) {
+          return res.status(400).json({ message: `Invalid role "${rest.role}"` });
+        }
+        $set.role = role;
+        continue;
+      }
+      if (field === 'overallScore' || field === 'basePrice') {
+        const n = Number(rest[field]);
+        if (!Number.isFinite(n)) {
+          return res.status(400).json({ message: `Invalid ${field}` });
+        }
+        $set[field] = n;
+        continue;
+      }
+      $set[field] = String(rest[field] ?? '').trim() || null;
+    }
+
+    const player = await Player.findByIdAndUpdate(req.params.playerId, { $set }, { new: true })
+      .select('name type role style bowlingStyle country overallScore basePrice isSold isActive playerID')
+      .lean();
+    if (!player) return res.status(404).json({ message: 'Player not found' });
+
+    try {
+      invalidateCache('players:data');
+    } catch (_) {}
+
+    res.json({ message: `Updated ${player.name}`, player });
+  } catch (error) {
+    console.error('helper/players update error', error);
+    res.status(error.status || 500).json({ message: error.message || 'Failed to update player' });
+  }
+});
+
 // Helper function to calculate expected runs from a player based on power rating
 function calculatePlayerRuns(power, overs, groundSize, isOnStrike, allPlayersSamePower = false) {
   // Normalize power rating
