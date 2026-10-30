@@ -26,6 +26,7 @@ router.get('/unsold', async (req, res) => {
     const search = req.query.search; // optional: search by player name
     const role = (req.query.role || '').trim();
     const country = (req.query.country || '').trim();
+    const bowlingStyle = (req.query.bowlingStyle || '').trim();
 
     const filter = { isSold: { $ne: true } };
     if (type) {
@@ -42,6 +43,10 @@ router.get('/unsold', async (req, res) => {
     if (country) {
       filter.country = { $regex: new RegExp(`^${country}$`, 'i') };
     }
+    if (bowlingStyle) {
+      const escapedStyle = bowlingStyle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.bowlingStyle = { $regex: new RegExp(`^${escapedStyle}$`, 'i') };
+    }
 
     const total = await Player.countDocuments(filter);
     const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -49,7 +54,7 @@ router.get('/unsold', async (req, res) => {
 
     const [allItems, countryValues, liveBidCount] = await Promise.all([
       Player.find(filter)
-        .select('name type role basePrice isActive country overallScore')
+        .select('name type role basePrice isActive country overallScore bowlingStyle style')
         .lean(),
       Player.distinct('country', { isSold: { $ne: true } }),
       Bid.countDocuments({ isActive: true, isBidOn: true }),
@@ -109,6 +114,7 @@ router.get('/unsold', async (req, res) => {
       sortBy: auctionRunning ? 'bid' : 'overall',
       countries,
       roles: ['Batsman', 'Bowler', 'Allrounder', 'WicketKeeper'],
+      bowlingStyles: ['RF', 'LF', 'RFM', 'LFM', 'OS', 'SLU', 'LS'],
     });
   } catch (e) {
     console.error('Unsold list error', e);
