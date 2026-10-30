@@ -9,8 +9,8 @@
 /** Defaults until scheduler registers real crons. */
 let auctionStartHourIst = 21;
 let auctionStartMinuteIst = 0;
-let soloSellHourIst = 2;
-let soloSellMinuteIst = 0;
+let soloSellHourIst = 0;
+let soloSellMinuteIst = 45;
 
 /**
  * Parse node-cron expr to a single IST hour+minute.
@@ -136,10 +136,10 @@ function getPhases() {
   return [
     { id: 'waiting', until: 0 },
     { id: 'bulk1', until: 105 },
-    { id: 'pauseAfterBulk1', until: 150 },
+    { id: 'pauseAfterBulk1', until: 120 },
+    { id: 'lock', until: 150 },
     { id: 'bulk2', until: 210 },
-    { id: 'pauseBeforeLock', until: 270 },
-    { id: 'lock', until: sell },
+    { id: 'pauseBeforeSell', until: sell },
     { id: 'sellAfterExit', until: 420 },
     { id: 'ended', until: Infinity },
   ];
@@ -200,7 +200,7 @@ function getArmedCronFlags(now = new Date()) {
   const flags = getExpectedCronFlags(id);
   const sell = getSoloSellMinutesFromAuctionStart();
   if (typeof m === 'number' && m >= 0) {
-    if (m >= 268 && m < sell) flags.cronLockEnabled = true;
+    if (m >= 118 && m < 150) flags.cronLockEnabled = true;
     if (m >= 148 && m < 155) flags.cronSingleBidFinalizerEnabled = true;
     if (m >= sell - 2 && m < 420) flags.cronSingleBidEnabled = true;
   }
