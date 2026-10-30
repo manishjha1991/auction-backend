@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Player = require('../models/Player');
 const BidPlayerQueue = require('../models/BidPlayerQueue');
 
@@ -6,8 +7,32 @@ const isIndiaCountry = (country) =>
     .trim()
     .toLowerCase() === 'india';
 
+function extractObjectId(value) {
+  if (!value) return null;
+  if (typeof value === 'object') {
+    const raw = value._id ?? value.id ?? value.playerId;
+    if (raw) return extractObjectId(raw);
+  }
+  const s = String(value).trim();
+  if (mongoose.isValidObjectId(s) && /^[a-fA-F0-9]{24}$/.test(s)) return s;
+  const match = s.match(/ObjectId\(['"]([a-fA-F0-9]{24})['"]\)/);
+  return match ? match[1] : null;
+}
+
+function normalizeObjectIds(ids) {
+  const unique = [];
+  const seen = new Set();
+  for (const value of ids || []) {
+    const id = extractObjectId(value);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    unique.push(id);
+  }
+  return unique;
+}
+
 async function countIndianByIds(ids) {
-  const unique = [...new Set((ids || []).filter(Boolean).map((id) => String(id)))];
+  const unique = normalizeObjectIds(ids);
   if (!unique.length) return 0;
   return Player.countDocuments({
     _id: { $in: unique },
@@ -73,4 +98,6 @@ async function assertIndiaCap({
 module.exports = {
   isIndiaCountry,
   assertIndiaCap,
+  extractObjectId,
+  normalizeObjectIds,
 };

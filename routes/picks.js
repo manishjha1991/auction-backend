@@ -15,7 +15,7 @@ const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
 const { getRosterCaps, typeLimitMap } = require('../utils/rosterCaps');
-const { assertIndiaCap } = require('../utils/indiaCap');
+const { assertIndiaCap, normalizeObjectIds } = require('../utils/indiaCap');
 
 // Get unsold players list (isSold: false only)
 router.get('/unsold', async (req, res) => {
@@ -228,7 +228,7 @@ router.post('/admin/:pickId/decide', async (req, res) => {
 
     if (decision === 'approve') {
       // VALIDATION: Check type limits before approving
-      const user = await User.findById(item.user).populate('boughtPlayers');
+      const user = await User.findById(item.user);
       const player = await Player.findById(item.player);
       
       if (!user || !player) {
@@ -237,12 +237,15 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       
       const caps = await getRosterCaps();
       const typeLimit = typeLimitMap(caps);
+      const boughtIds = normalizeObjectIds(user.boughtPlayers);
       
       // Count bought players of this type (including retained)
-      const boughtPlayersOfThisType = await Player.countDocuments({
-        _id: { $in: user.boughtPlayers },
-        type: player.type,
-      });
+      const boughtPlayersOfThisType = boughtIds.length
+        ? await Player.countDocuments({
+            _id: { $in: boughtIds },
+            type: player.type,
+          })
+        : 0;
       
       // Check if approving would exceed limit
       if (boughtPlayersOfThisType >= typeLimit[player.type]) {
@@ -252,10 +255,12 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       }
 
       if (player.type === 'Emerald' || player.type === 'Sapphire') {
-        const combinedESCount = await Player.countDocuments({
-          _id: { $in: user.boughtPlayers },
-          type: { $in: ['Emerald', 'Sapphire'] },
-        });
+        const combinedESCount = boughtIds.length
+          ? await Player.countDocuments({
+              _id: { $in: boughtIds },
+              type: { $in: ['Emerald', 'Sapphire'] },
+            })
+          : 0;
         if (combinedESCount >= caps.sapphireEmeraldMax) {
           return res.status(400).json({
             message: `Cannot approve: User already has ${combinedESCount} Emerald + Sapphire player(s). Combined maximum is ${caps.sapphireEmeraldMax}.`,
