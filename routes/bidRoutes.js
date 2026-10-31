@@ -16,6 +16,7 @@ const RetainedPlayer = require('../models/RetainedPlayer');
 const { invalidateCache } = require('../utils/cache');
 const { placeBidCore, countQueuedSlotsForUser } = require('../services/bidPlacement');
 const { getRosterCaps, typeLimitMap } = require('../utils/rosterCaps');
+const { sanitizeUserPlayerRefs, extractObjectId } = require('../utils/indiaCap');
 const bidQueueService = require('../services/bidQueueService');
 const { reconcileUsersPurse } = require('../services/purseReconcileService');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
@@ -649,8 +650,9 @@ router.post("/bid/sold", async (req, res) => {
         }
 
         // 10. Ensure user has enough balance
-        const winningBid = winningUser.currentBids.find(
-          (bid) => bid.playerId.toString() === pid
+        const pidStr = extractObjectId(pid) || String(pid);
+        const winningBid = (winningUser.currentBids || []).find(
+          (bid) => extractObjectId(bid?.playerId) === pidStr
         );
         const lockedAmount = winningBid ? winningBid.amount : 0;
         const totalPurse = parseFloat(winningUser.purse.toString());
@@ -668,10 +670,13 @@ router.post("/bid/sold", async (req, res) => {
         winningUser.purse = mongoose.Types.Decimal128.fromString(
           (totalPurse + lockedAmount - highestBid.bidAmount).toString()
         );
-        winningUser.currentBids = winningUser.currentBids.filter(
-          (bid) => bid.playerId.toString() !== pid
+        winningUser.currentBids = (winningUser.currentBids || []).filter(
+          (bid) => extractObjectId(bid?.playerId) !== pidStr
         );
-        winningUser.boughtPlayers.push(pid);
+        sanitizeUserPlayerRefs(winningUser);
+        if (!winningUser.boughtPlayers.map(String).includes(pidStr)) {
+          winningUser.boughtPlayers.push(pidStr);
+        }
         await winningUser.save();
 
         // 12. Refund other bidders and clean up currentBids (excluding the winner)
@@ -1277,13 +1282,21 @@ async function sellPlayer(playerId, io = null) {
 
     // g) Adjust winner's purse & currentBids
     const winner = await User.findById(highestBid.bidder);
-    const locked = winner.currentBids.find(cb => cb.playerId.equals(playerId))?.amount || 0;
+    const winnerPid = extractObjectId(playerId) || String(playerId);
+    const locked = (winner.currentBids || []).find(
+      (cb) => extractObjectId(cb?.playerId) === winnerPid
+    )?.amount || 0;
     const purse = parseFloat(winner.purse.toString());
     winner.purse = mongoose.Types.Decimal128.fromString(
       (purse + locked - highestBid.bidAmount).toString()
     );
-    winner.currentBids = winner.currentBids.filter(cb => !cb.playerId.equals(playerId));
-    winner.boughtPlayers.push(playerId);
+    winner.currentBids = (winner.currentBids || []).filter(
+      (cb) => extractObjectId(cb?.playerId) !== winnerPid
+    );
+    sanitizeUserPlayerRefs(winner);
+    if (!(winner.boughtPlayers || []).map(String).includes(winnerPid)) {
+      winner.boughtPlayers.push(winnerPid);
+    }
     await winner.save();
 
     // h) Refund other bidders and clean up currentBids (excluding the winner)

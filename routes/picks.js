@@ -7,7 +7,6 @@ const User = require('../models/User');
 const Bid = require('../models/Bid');
 const BidHistory = require('../models/BidHistory');
 const mongoose = require('mongoose');
-const axios = require('axios');
 const Notification = require('../models/Notification');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const { clampTradesUsed } = require('../utils/tradeConstants');
@@ -15,7 +14,8 @@ const { getTradeRules } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
 const { getRosterCaps, typeLimitMap } = require('../utils/rosterCaps');
-const { assertIndiaCap, normalizeObjectIds } = require('../utils/indiaCap');
+const { assertIndiaCap, normalizeObjectIds, sanitizeUserPlayerRefs, extractObjectId } = require('../utils/indiaCap');
+const { sellPlayer } = require('./bidRoutes');
 
 // Get unsold players list (isSold: false only)
 router.get('/unsold', async (req, res) => {
@@ -167,12 +167,15 @@ router.post('/', async (req, res) => {
     const updatedPurse = purse - basePrice;
     user.purse = mongoose.Types.Decimal128.fromString(updatedPurse.toString());
     user.currentBids = user.currentBids || [];
-    const existingCB = user.currentBids.find(cb => cb.playerId && cb.playerId.toString() === String(player._id));
+    const existingCB = user.currentBids.find(
+      (cb) => extractObjectId(cb?.playerId) === String(player._id)
+    );
     if (existingCB) {
       existingCB.amount = basePrice;
     } else {
       user.currentBids.push({ playerId: player._id, amount: basePrice });
     }
+    sanitizeUserPlayerRefs(user);
     await user.save();
 
     // Create a live bid
@@ -301,10 +304,11 @@ router.post('/admin/:pickId/decide', async (req, res) => {
         });
       }
 
-      const base = process.env.SELF_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
-      const soldResp = await axios.post(`${base}/api/bids/bid/sold`, { playerID: item.player });
-      if (soldResp.status >= 400) {
-        return res.status(400).json({ message: 'Failed to finalize sale via sold API' });
+      const soldResult = await sellPlayer(item.player, req.app.get('io'));
+      if (!soldResult || soldResult.status !== 'success') {
+        return res.status(400).json({
+          message: soldResult?.message || 'Failed to finalize sale via sold API',
+        });
       }
 
       if (usePair && releasePairDoc) {
@@ -325,14 +329,20 @@ router.post('/admin/:pickId/decide', async (req, res) => {
       const user = await User.findById(item.user);
       if (user) {
         // Find the locked amount for this player
-        const userBid = user.currentBids.find(bid => bid.playerId.toString() === item.player.toString());
+        const pickPlayerId = extractObjectId(item.player);
+        const userBid = (user.currentBids || []).find(
+          (bid) => extractObjectId(bid?.playerId) === pickPlayerId
+        );
         if (userBid) {
           const lockedAmount = userBid.amount;
           const purse = parseFloat(user.purse.toString());
           user.purse = mongoose.Types.Decimal128.fromString((purse + lockedAmount).toString());
           
           // Remove the bid from user's current bids
-          user.currentBids = user.currentBids.filter(bid => bid.playerId.toString() !== item.player.toString());
+          user.currentBids = user.currentBids.filter(
+            (bid) => extractObjectId(bid?.playerId) !== pickPlayerId
+          );
+          sanitizeUserPlayerRefs(user);
           await user.save();
         }
       }

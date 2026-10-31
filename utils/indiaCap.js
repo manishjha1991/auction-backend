@@ -9,12 +9,14 @@ const isIndiaCountry = (country) =>
 
 function extractObjectId(value) {
   if (!value) return null;
+  if (value instanceof mongoose.Types.ObjectId) return String(value);
   if (typeof value === 'object') {
+    if (value._bsontype === 'ObjectId') return String(value);
     const raw = value._id ?? value.id ?? value.playerId;
-    if (raw) return extractObjectId(raw);
+    if (raw && raw !== value) return extractObjectId(raw);
   }
   const s = String(value).trim();
-  if (mongoose.isValidObjectId(s) && /^[a-fA-F0-9]{24}$/.test(s)) return s;
+  if (/^[a-fA-F0-9]{24}$/.test(s)) return s;
   const match = s.match(/ObjectId\(['"]([a-fA-F0-9]{24})['"]\)/);
   return match ? match[1] : null;
 }
@@ -29,6 +31,19 @@ function normalizeObjectIds(ids) {
     unique.push(id);
   }
   return unique;
+}
+
+function sanitizeUserPlayerRefs(user) {
+  if (!user) return user;
+  user.boughtPlayers = normalizeObjectIds(user.boughtPlayers || []);
+  user.currentBids = (user.currentBids || [])
+    .map((bid) => {
+      const playerId = extractObjectId(bid?.playerId);
+      if (!playerId) return null;
+      return { playerId, amount: bid.amount };
+    })
+    .filter(Boolean);
+  return user;
 }
 
 async function countIndianByIds(ids) {
@@ -100,4 +115,5 @@ module.exports = {
   assertIndiaCap,
   extractObjectId,
   normalizeObjectIds,
+  sanitizeUserPlayerRefs,
 };
