@@ -15,6 +15,7 @@ const Bid = require('../models/Bid');
 const RetainedPlayer = require('../models/RetainedPlayer');
 const TradeRequest = require('../models/TradeRequest');
 const { invalidateCache } = require('../utils/cache');
+const { sanitizeUserPlayerRefs, extractObjectId, removeReleasedPlayerRefs } = require('../utils/indiaCap');
 const { reconcileUsersPurse } = require('../services/purseReconcileService');
 const {
   isTradeLocked,
@@ -284,9 +285,7 @@ router.post('/pick/preview', async (req, res) => {
     if (player.isSold) return res.status(400).json({ message: 'Player is already sold' });
 
     const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
-    if (player.releasedAt && new Date(player.releasedAt) > fortyEightHoursAgo) {
-      return res.status(400).json({ message: 'Player was released in the last 48h — pick blocked' });
-    }
+    const recentlyReleased = player.releasedAt && new Date(player.releasedAt) > fortyEightHoursAgo;
 
     const basePrice = Number(player.basePrice || 0);
     const purse = purseNum(user);
@@ -298,6 +297,9 @@ router.post('/pick/preview', async (req, res) => {
     res.json({
       ok: errors.length === 0,
       errors,
+      warnings: recentlyReleased
+        ? ['Player was released in the last 48h. Admin assign is allowed and will clear that cooldown.']
+        : [],
       team: { id: user._id, name: user.teamName, abbreviation: user.abbreviation },
       player: {
         id: player._id,
@@ -338,9 +340,13 @@ router.post('/pick/execute', async (req, res) => {
 
     const newPurse = purse - basePrice;
     user.purse = mongoose.Types.Decimal128.fromString(String(newPurse));
-    user.currentBids = (user.currentBids || []).filter((cb) => !cb.playerId.equals(playerId));
-    if (!user.boughtPlayers.some((id) => id.equals(playerId))) {
-      user.boughtPlayers.push(playerId);
+    const pidStr = extractObjectId(playerId) || String(playerId);
+    user.currentBids = (user.currentBids || []).filter(
+      (cb) => extractObjectId(cb?.playerId) !== pidStr
+    );
+    sanitizeUserPlayerRefs(user);
+    if (!(user.boughtPlayers || []).map(String).includes(pidStr)) {
+      user.boughtPlayers.push(pidStr);
     }
     await user.save();
 
@@ -360,6 +366,7 @@ router.post('/pick/execute', async (req, res) => {
           isActive: true,
           currentBid: basePrice,
           currentBidder: new mongoose.Types.ObjectId(String(teamUserId)),
+          releasedAt: null,
         },
       },
     );
@@ -473,7 +480,7 @@ router.post('/release/execute', async (req, res) => {
       },
     });
 
-    await User.findByIdAndUpdate(teamUserId, { $pull: { boughtPlayers: playerId } });
+    await removeReleasedPlayerRefs(teamUserId, playerId);
     await Bid.deleteMany({ playerId });
 
     const user = await User.findById(teamUserId);

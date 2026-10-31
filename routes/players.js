@@ -615,11 +615,9 @@ router.post('/release-player', async (req, res) => {
       },
     });
 
-    // CRITICAL FIX: Remove player from user's boughtPlayers array
     try {
-      await User.findByIdAndUpdate(userId, {
-        $pull: { boughtPlayers: playerId }
-      });
+      const { removeReleasedPlayerRefs } = require('../utils/indiaCap');
+      await removeReleasedPlayerRefs(userId, playerId);
     } catch (userUpdateError) {
       console.error('Error removing player from boughtPlayers:', userUpdateError);
     }

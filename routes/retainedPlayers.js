@@ -18,6 +18,7 @@ const Schedule = require('../models/Schedule');
 const TradeRequest = require('../models/TradeRequest');
 const AppSettings = require('../models/AppSettings');
 const { invalidateCache } = require('../utils/cache');
+const { removeReleasedPlayerRefs } = require('../utils/indiaCap');
 
 /* ──────────────────────────────────────────────────────────────────────
  * ⚠️  DO NOT WIPE `VenueMatchEntry` IN ANY RESET FLOW BELOW.
@@ -863,10 +864,7 @@ router.post('/release-team-players', async (req, res) => {
         team.purse = currentPurse + bidValue;
         totalRefunded += bidValue;
 
-        // Remove from team's boughtPlayers
-        await User.findByIdAndUpdate(teamId, {
-          $pull: { boughtPlayers: player._id }
-        });
+        await removeReleasedPlayerRefs(teamId, player._id);
 
         // Deactivate UserPlayer entry
         userPlayer.isActive = false;

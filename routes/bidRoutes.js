@@ -862,14 +862,14 @@ router.post("/release-player", async (req, res) => {
 
     user.purse = mongoose.Types.Decimal128.fromString((purse + spentAmount).toString());
 
-    // Remove the player from the user's boughtPlayers
-    const playerIndex = user.boughtPlayers.findIndex(
-      (pId) => pId.toString() === playerId.toString()
+    const releasedPid = extractObjectId(playerId);
+    user.boughtPlayers = (user.boughtPlayers || []).filter(
+      (pId) => String(pId) !== releasedPid
     );
-    if (playerIndex !== -1) {
-      user.boughtPlayers.splice(playerIndex, 1);
-    }
-
+    user.currentBids = (user.currentBids || []).filter(
+      (cb) => extractObjectId(cb?.playerId) !== releasedPid
+    );
+    sanitizeUserPlayerRefs(user);
     await user.save();
 
     // Update the player's status

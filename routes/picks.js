@@ -139,11 +139,14 @@ router.post('/', async (req, res) => {
     }
     if (!user) return res.status(404).json({ message: 'User not found' });
 
+    const alreadyOnThisPlayer = (user.currentBids || []).some(
+      (bid) => extractObjectId(bid?.playerId) === String(player._id)
+    );
     const indiaCheck = await assertIndiaCap({
       user,
       player,
       caps: await getRosterCaps(),
-      alreadyEngaged: false,
+      alreadyEngaged: alreadyOnThisPlayer,
       includeQueue: true,
     });
     if (!indiaCheck.ok) {
@@ -271,11 +274,14 @@ router.post('/admin/:pickId/decide', async (req, res) => {
         }
       }
 
+      const alreadyOnThisPlayer = (user.currentBids || []).some(
+        (bid) => extractObjectId(bid?.playerId) === String(player._id)
+      );
       const indiaCheck = await assertIndiaCap({
         user,
         player,
         caps,
-        alreadyEngaged: false,
+        alreadyEngaged: alreadyOnThisPlayer,
         includeQueue: false,
       });
       if (!indiaCheck.ok) {

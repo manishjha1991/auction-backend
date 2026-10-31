@@ -1,5 +1,9 @@
 const mongoose = require('mongoose');
 const Player = require('../models/Player');
+const Bid = require('../models/Bid');
+const User = require('../models/User');
+const UserPlayer = require('../models/UserPlayer');
+const PickRequest = require('../models/PickRequest');
 const BidPlayerQueue = require('../models/BidPlayerQueue');
 
 const isIndiaCountry = (country) =>
@@ -46,12 +50,13 @@ function sanitizeUserPlayerRefs(user) {
   return user;
 }
 
-async function countIndianByIds(ids) {
+async function countIndianByIds(ids, extraFilter = {}) {
   const unique = normalizeObjectIds(ids);
   if (!unique.length) return 0;
   return Player.countDocuments({
     _id: { $in: unique },
     country: { $regex: /^india$/i },
+    ...extraFilter,
   });
 }
 
@@ -75,11 +80,49 @@ async function queuedIndianCount(userId, excludePlayerId = null) {
 }
 
 function indiaCapMessage({ max, bought, bidding, queued }) {
-  const bits = [`${bought} bought`];
-  if (bidding) bits.push(`${bidding} currently bidding`);
+  const bits = [`${bought} on roster`];
+  if (bidding) bits.push(`${bidding} live bid/pick`);
   if (queued) bits.push(`${queued} queued`);
   const total = bought + bidding + queued;
-  return `You can have at most ${max} Indian players across all categories. You already have ${bits.join(' + ')} = ${total}. You cannot bid on a 4th Indian player.`;
+  return `You can have at most ${max} Indian players. You currently have ${bits.join(' + ')} = ${total}. Release an Indian (and wait for pending Indian bids/picks to clear) before adding another.`;
+}
+
+async function activeIndianRosterCount(userId, excludePlayerId = null) {
+  const excl = excludePlayerId ? String(excludePlayerId) : null;
+  const owned = await UserPlayer.find({ userId, isActive: true }).select('playerId').lean();
+  const ownedIds = normalizeObjectIds(owned.map((row) => row.playerId)).filter((id) => id !== excl);
+  return countIndianByIds(ownedIds, { isSold: true });
+}
+
+async function liveIndianBidOrPickCount(userId, excludePlayerId = null) {
+  const excl = excludePlayerId ? String(excludePlayerId) : null;
+  const [bids, picks] = await Promise.all([
+    Bid.find({ bidder: userId, isActive: { $ne: false } }).select('playerId').lean(),
+    PickRequest.find({
+      user: userId,
+      status: { $in: ['pending', 'admin_pending'] },
+    })
+      .select('player')
+      .lean(),
+  ]);
+  const ids = normalizeObjectIds([
+    ...bids.map((b) => b.playerId),
+    ...picks.map((p) => p.player),
+  ]).filter((id) => id !== excl);
+  return countIndianByIds(ids, { isSold: { $ne: true } });
+}
+
+async function removeReleasedPlayerRefs(userId, playerId) {
+  const user = await User.findById(userId);
+  if (!user) return null;
+  const pid = extractObjectId(playerId);
+  user.boughtPlayers = normalizeObjectIds(user.boughtPlayers || []).filter((id) => id !== pid);
+  user.currentBids = (user.currentBids || []).filter(
+    (bid) => extractObjectId(bid?.playerId) !== pid
+  );
+  sanitizeUserPlayerRefs(user);
+  await user.save();
+  return user;
 }
 
 async function assertIndiaCap({
@@ -90,14 +133,13 @@ async function assertIndiaCap({
   includeQueue = false,
 }) {
   if (!player || !isIndiaCountry(player.country)) return { ok: true };
+  const playerId = extractObjectId(player._id) || extractObjectId(player);
   if (alreadyEngaged) return { ok: true };
 
   const max = Number.isFinite(Number(caps?.indiaMax)) ? Number(caps.indiaMax) : 3;
-  const bought = await countIndianByIds(user.boughtPlayers || []);
-  const bidding = await countIndianByIds(
-    (user.currentBids || []).map((bid) => bid.playerId)
-  );
-  const queued = includeQueue ? await queuedIndianCount(user._id, player._id) : 0;
+  const bought = await activeIndianRosterCount(user._id, playerId);
+  const bidding = await liveIndianBidOrPickCount(user._id, playerId);
+  const queued = includeQueue ? await queuedIndianCount(user._id, playerId) : 0;
   const total = bought + bidding + queued;
 
   if (total >= max) {
@@ -116,4 +158,5 @@ module.exports = {
   extractObjectId,
   normalizeObjectIds,
   sanitizeUserPlayerRefs,
+  removeReleasedPlayerRefs,
 };

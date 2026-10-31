@@ -9,6 +9,7 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
 const { findOrphanPickToPairOnReleaseApprove } = require('../utils/releasePickPairing');
+const { removeReleasedPlayerRefs } = require('../utils/indiaCap');
 
 const CRORE = 10000000;
 
@@ -245,11 +246,8 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
           console.error('Error updating player status:', playerUpdateError);
         }
         
-        // Remove player from user's boughtPlayers array
         try {
-          await User.findByIdAndUpdate(item.user, {
-            $pull: { boughtPlayers: item.player }
-          });
+          await removeReleasedPlayerRefs(item.user, item.player);
         } catch (userUpdateError) {
           console.error('Error removing player from boughtPlayers:', userUpdateError);
         }
