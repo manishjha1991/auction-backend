@@ -1381,8 +1381,20 @@ router.post('/helper/players/:playerId/delete', async (req, res) => {
     const player = await Player.findById(playerId);
     if (!player) return res.status(404).json({ message: 'Player not found' });
 
-    if (String(confirmName || '').trim().toLowerCase() !== String(player.name || '').trim().toLowerCase()) {
-      return res.status(400).json({ message: 'Type the exact player name to confirm delete' });
+    const foldName = (value) =>
+      String(value || '')
+        .normalize('NFKC')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+    const typed = foldName(confirmName);
+    const nameOk =
+      typed === 'delete' ||
+      (typed && (typed === foldName(player.name) || typed === foldName(player.playerID)));
+    if (!nameOk) {
+      return res.status(400).json({ message: 'Type DELETE to confirm' });
     }
 
     if (player.isSold) {
