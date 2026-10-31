@@ -9,6 +9,16 @@ const RetainedPlayer = require('../models/RetainedPlayer');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const PickRequest = require('../models/PickRequest');
 const TradeRequest = require('../models/TradeRequest');
+const Bid = require('../models/Bid');
+const BidHistory = require('../models/BidHistory');
+const BidNotification = require('../models/BidNotification');
+const BidPlayerQueue = require('../models/BidPlayerQueue');
+const PlayerStats = require('../models/PlayerStats');
+const PlayerCareerSummary = require('../models/PlayerCareerSummary');
+const PlayerTeamTournamentStat = require('../models/PlayerTeamTournamentStat');
+const VenueMatchEntry = require('../models/VenueMatchEntry');
+const { extractObjectId, sanitizeUserPlayerRefs } = require('../utils/indiaCap');
+const { removeLocalProfilePictureIfSafe } = require('../utils/removeLocalProfilePictureIfSafe');
 const {
   previewAuctionFixes,
   executeAuctionFixes,
@@ -33,6 +43,7 @@ const {
   executeMigratePlayerTotals,
 } = require('../utils/migratePlayerTotalsFromHistoricalDbs');
 const { reconcileUsersPurse } = require('../services/purseReconcileService');
+const { buildRosterMinReport } = require('../utils/rosterMinReport');
 
 const AUCTION_RESET_COLLECTIONS = [
   'bidhistories',
@@ -1202,6 +1213,18 @@ const PLAYER_EDIT_FIELDS = ['name', 'type', 'role', 'style', 'bowlingStyle', 'co
 const PLAYER_TYPES = ['Sapphire', 'Emerald', 'Gold', 'Silver'];
 const PLAYER_ROLES = ['Batsman', 'Bowler', 'Allrounder', 'WicketKeeper'];
 
+router.get('/helper/roster-mins', async (req, res) => {
+  try {
+    const { adminUserId } = req.query;
+    await requireAdmin(adminUserId);
+    const report = await buildRosterMinReport();
+    res.json(report);
+  } catch (error) {
+    console.error('helper/roster-mins error', error);
+    res.status(error.status || 500).json({ message: error.message || 'Failed to load roster mins' });
+  }
+});
+
 router.get('/helper/accounts', async (req, res) => {
   try {
     const { adminUserId } = req.query;
@@ -1343,6 +1366,128 @@ router.put('/helper/players/:playerId', async (req, res) => {
   } catch (error) {
     console.error('helper/players update error', error);
     res.status(error.status || 500).json({ message: error.message || 'Failed to update player' });
+  }
+});
+
+router.post('/helper/players/:playerId/delete', async (req, res) => {
+  try {
+    const { adminUserId, confirmName } = req.body || {};
+    await requireAdmin(adminUserId);
+    const playerId = req.params.playerId;
+    if (!mongoose.isValidObjectId(playerId)) {
+      return res.status(400).json({ message: 'Invalid player id' });
+    }
+
+    const player = await Player.findById(playerId);
+    if (!player) return res.status(404).json({ message: 'Player not found' });
+
+    if (String(confirmName || '').trim().toLowerCase() !== String(player.name || '').trim().toLowerCase()) {
+      return res.status(400).json({ message: 'Type the exact player name to confirm delete' });
+    }
+
+    if (player.isSold) {
+      return res.status(400).json({ message: 'Only unsold players can be deleted. Release them first.' });
+    }
+
+    const [activeOwner, retained] = await Promise.all([
+      UserPlayer.findOne({ playerId, isActive: true }).select('userId').lean(),
+      RetainedPlayer.findOne({ playerId, isActive: true }).select('userId').lean(),
+    ]);
+    if (activeOwner) {
+      return res.status(400).json({ message: 'This player is still on a roster. Release them first so they are unsold.' });
+    }
+    if (retained) {
+      return res.status(400).json({ message: 'This player is retained. Withdraw retention before deleting.' });
+    }
+
+    const openTrade = await TradeRequest.findOne({
+      status: { $in: ['pending', 'counter', 'admin_pending'] },
+      $or: [{ offeredPlayer: playerId }, { requestedPlayer: playerId }],
+    }).lean();
+    if (openTrade) {
+      return res.status(400).json({ message: 'This player is in an open trade. Reject or withdraw that trade first.' });
+    }
+
+    const pid = extractObjectId(player._id) || String(player._id);
+    const oid = player._id;
+    const queue = await BidPlayerQueue.findOne({ playerId: oid }).lean();
+    const refundedUserIds = new Set();
+
+    const users = await User.find({
+      $or: [
+        { boughtPlayers: oid },
+        { captainPlayerId: oid },
+        { 'currentBids.playerId': oid },
+      ],
+    });
+
+    for (const user of users) {
+      const bidRow = (user.currentBids || []).find((cb) => extractObjectId(cb?.playerId) === pid);
+      if (bidRow) {
+        const amount = Number(bidRow.amount || 0);
+        if (amount > 0) {
+          const purse = Number(user.purse ? parseFloat(user.purse.toString()) : 0);
+          user.purse = mongoose.Types.Decimal128.fromString(String(purse + amount));
+        }
+        refundedUserIds.add(String(user._id));
+      }
+      user.boughtPlayers = (user.boughtPlayers || []).filter((id) => extractObjectId(id) !== pid);
+      user.currentBids = (user.currentBids || []).filter((cb) => extractObjectId(cb?.playerId) !== pid);
+      if (extractObjectId(user.captainPlayerId) === pid) user.captainPlayerId = null;
+      sanitizeUserPlayerRefs(user);
+      await user.save();
+    }
+
+    if (queue?.entries?.length) {
+      for (const entry of queue.entries) {
+        if (!['queued', 'active_proxy'].includes(entry.status)) continue;
+        const uid = String(entry.userId);
+        if (refundedUserIds.has(uid)) continue;
+        const locked = Number(entry.lockedAmount || 0);
+        if (locked <= 0) continue;
+        const user = await User.findById(entry.userId);
+        if (!user) continue;
+        const purse = Number(user.purse ? parseFloat(user.purse.toString()) : 0);
+        user.purse = mongoose.Types.Decimal128.fromString(String(purse + locked));
+        sanitizeUserPlayerRefs(user);
+        await user.save();
+      }
+    }
+
+    await Promise.all([
+      Bid.deleteMany({ playerId: oid }),
+      BidHistory.deleteMany({ playerId: oid }),
+      BidNotification.deleteMany({ playerId: oid }),
+      BidPlayerQueue.deleteMany({ playerId: oid }),
+      PickRequest.deleteMany({ player: oid }),
+      ReleaseRequest.deleteMany({ player: oid }),
+      UserPlayer.deleteMany({ playerId: oid }),
+      RetainedPlayer.deleteMany({ playerId: oid }),
+      TradeRequest.deleteMany({
+        status: { $in: ['rejected', 'withdrawn'] },
+        $or: [{ offeredPlayer: oid }, { requestedPlayer: oid }],
+      }),
+      PlayerStats.deleteMany({ playerId: oid }),
+      PlayerCareerSummary.deleteMany({ playerId: oid }),
+      PlayerTeamTournamentStat.deleteMany({ playerId: oid }),
+      VenueMatchEntry.deleteMany({ playerId: oid }),
+    ]);
+
+    try {
+      await removeLocalProfilePictureIfSafe(player.profilePicture);
+    } catch (_) {}
+
+    await Player.deleteOne({ _id: oid });
+
+    try {
+      invalidateCache('players:data');
+      invalidateCareerSummaryCache();
+    } catch (_) {}
+
+    res.json({ message: `Deleted ${player.name} from the database` });
+  } catch (error) {
+    console.error('helper/players delete error', error);
+    res.status(error.status || 500).json({ message: error.message || 'Failed to delete player' });
   }
 });
 
