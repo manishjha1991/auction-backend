@@ -45,6 +45,10 @@ const FixtureSchema = new mongoose.Schema({
   matchType: { type: String, enum: ['group', 'normal'], default: 'normal' }, // Track match type
   headToHeadSynced: { type: Boolean, default: false }, // True once win/loss has been added to TeamHeadToHead
   pointsTableApplied: { type: Boolean, default: false }, // True once +2 pts / MP / fairness were applied for this result
+  tossWinner: { type: String, default: null },
+  tossWinnerUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  tossAt: { type: Date, default: null },
+  tossedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 });
 
 // Add indexes for better performance

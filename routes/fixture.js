@@ -3,7 +3,8 @@ const Fixture = require('../models/Fixture');
 const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
-const { cacheConfig } = require('../utils/cache');
+const { cacheConfig, invalidateCache } = require('../utils/cache');
+const { pickTossWinner, assertCanToss } = require('../utils/matchToss');
 const { saveFixtureResult } = require('../utils/fixtureSaveService');
 const {
   previewForfeit,
@@ -16,13 +17,9 @@ const router = express.Router();
 
 
 router.get('/', async (req, res) => {
-  // 🚀 PERFORMANCE: Check cache first (2 minute cache for fixtures)
-  const mode = req.query.mode || 'normal';
+  const rawMode = req.query.mode || 'normal';
+  const mode = rawMode === 'overall' ? 'normal' : rawMode;
   const cacheKey = `fixtures:${mode}`;
-  const cached = cacheConfig.medium.get(cacheKey);
-  if (cached) {
-    return res.status(200).json(cached);
-  }
 
   try {
     
@@ -31,7 +28,6 @@ router.get('/', async (req, res) => {
     const teams = await User.find({
       teamName: { $exists: true, $ne: null, $ne: 'NA' },
       isActive: true,
-      isTournamentReady: true, // Only include users who are tournament ready
       isParticipating: { $ne: false }, // Exclude non-participating teams
       isAdmin: { $ne: true } // Exclude admin teams
     })
@@ -40,33 +36,8 @@ router.get('/', async (req, res) => {
       .lean(); 
       // Include _id so we can reference owner user IDs for OCR dropdowns
 
-    // 2) Fetch all active fixtures (which store team1/team2 as strings)
-    // 🚀 PERFORMANCE: Use .lean() for faster queries
     const existingFixtures = await Fixture.find({ isActive: true }).lean();
-
-    // Deduplicate existing fixtures - batch delete duplicates (no winner) in one call
-    const uniqueFixtureMap = new Set();
-    const duplicateIdsToDelete = [];
-    for (const fixture of existingFixtures) {
-      let sortedKey;
-      if (fixture.team1UserId && fixture.team2UserId) {
-        sortedKey = [fixture.team1UserId.toString(), fixture.team2UserId.toString()].sort().join('-');
-      } else {
-        sortedKey = [fixture.team1, fixture.team2].sort().join('-');
-      }
-      if (uniqueFixtureMap.has(sortedKey) && !fixture.winner) {
-        duplicateIdsToDelete.push(fixture._id);
-      } else {
-        uniqueFixtureMap.add(sortedKey);
-      }
-    }
-    if (duplicateIdsToDelete.length > 0) {
-      await Fixture.deleteMany({ _id: { $in: duplicateIdsToDelete } });
-    }
-
-    // 3) Re-fetch cleaned active fixtures
-    // 🚀 PERFORMANCE: Use .lean() for faster queries
-    const cleanedFixtures = await Fixture.find({ isActive: true }).lean();
+    const cleanedFixtures = existingFixtures;
 
     // 4) Separate teams by groups
     const groupA = teams.filter(team => team.group === 'A');
@@ -227,10 +198,21 @@ router.get('/', async (req, res) => {
       .sort({ createdAt: 1 })
       .lean();
 
-    // Filter out fixtures involving non-participating teams
-    // Use userId for matching (more reliable than team name, which can change)
-    const participatingTeamIds = new Set(teams.map(t => t._id.toString()));
-    const participatingTeamNames = new Set(teams.map(t => t.teamName));
+    // Show fixtures for participating teams even if they are not tournament-ready yet.
+    // Generation above still uses tournament-ready teams so new matches are not invented early.
+    const visibleTeams = await User.find({
+      teamName: { $exists: true, $ne: null, $ne: 'NA' },
+      isActive: true,
+      isParticipating: { $ne: false },
+      isAdmin: { $ne: true },
+    })
+      .populate('boughtPlayers')
+      .select('_id teamName teamImage boughtPlayers group')
+      .lean();
+    const teamsForDisplay = visibleTeams.length ? visibleTeams : teams;
+
+    const participatingTeamIds = new Set(teamsForDisplay.map(t => t._id.toString()));
+    const participatingTeamNames = new Set(teamsForDisplay.map(t => t.teamName));
     
     const filteredFixtures = allFixtures.filter(fixture => {
       // Try userId matching first (most reliable)
@@ -251,20 +233,20 @@ router.get('/', async (req, res) => {
       // Find team1 by userId first (handles name changes), fallback to name matching
       let team1Details = null;
       if (fixture.team1UserId) {
-        team1Details = teams.find((t) => t._id.toString() === fixture.team1UserId.toString());
+        team1Details = teamsForDisplay.find((t) => t._id.toString() === fixture.team1UserId.toString());
       }
       if (!team1Details) {
-        team1Details = teams.find((t) => t.teamName === fixture.team1);
+        team1Details = teamsForDisplay.find((t) => t.teamName === fixture.team1);
       }
       team1Details = team1Details || {};
 
       // Find team2 by userId first (handles name changes), fallback to name matching
       let team2Details = null;
       if (fixture.team2UserId) {
-        team2Details = teams.find((t) => t._id.toString() === fixture.team2UserId.toString());
+        team2Details = teamsForDisplay.find((t) => t._id.toString() === fixture.team2UserId.toString());
       }
       if (!team2Details) {
-        team2Details = teams.find((t) => t.teamName === fixture.team2);
+        team2Details = teamsForDisplay.find((t) => t.teamName === fixture.team2);
       }
       team2Details = team2Details || {};
 
@@ -301,9 +283,7 @@ router.get('/', async (req, res) => {
       };
     });
 
-    // 🚀 PERFORMANCE: Cache the response (2 minute cache)
     cacheConfig.medium.set(cacheKey, enhancedFixtures);
-    if (process.env.NODE_ENV !== 'production') console.log(`💾 Fixtures cached: ${mode}`);
 
     // Return final list
     res.status(200).json(enhancedFixtures);
@@ -499,6 +479,71 @@ const isAdmin = async (req, res, next) => {
     });
   }
 };
+
+router.post('/:id/toss', async (req, res) => {
+  try {
+    const userId = req.body?.userId || req.body?.adminUserId;
+    if (!userId) return res.status(400).json({ message: 'userId is required' });
+    const user = await User.findById(userId).select('_id isAdmin teamName abbreviation');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const fixture = await Fixture.findById(req.params.id);
+    try {
+      assertCanToss({ fixture, user });
+    } catch (err) {
+      return res.status(err.status || 400).json({
+        message: err.message,
+        ...(err.payload || {}),
+      });
+    }
+
+    const pick = pickTossWinner(fixture.team1, fixture.team2, fixture.team1UserId, fixture.team2UserId);
+    const updated = await Fixture.findOneAndUpdate(
+      {
+        _id: fixture._id,
+        $or: [{ tossWinner: null }, { tossWinner: { $exists: false } }, { tossWinner: '' }],
+        $and: [{ $or: [{ winner: null }, { winner: { $exists: false } }, { winner: '' }] }],
+      },
+      {
+        $set: {
+          tossWinner: pick.tossWinner,
+          tossWinnerUserId: pick.tossWinnerUserId,
+          tossAt: new Date(),
+          tossedByUserId: user._id,
+        },
+      },
+      { new: true }
+    );
+
+    if (!updated) {
+      const latest = await Fixture.findById(fixture._id).lean();
+      if (latest?.tossWinner) {
+        return res.status(409).json({
+          message: `${latest.tossWinner} already won the toss. Toss cannot be reversed.`,
+          tossWinner: latest.tossWinner,
+          tossWinnerUserId: latest.tossWinnerUserId || null,
+          tossAt: latest.tossAt || null,
+        });
+      }
+      return res.status(400).json({ message: 'Toss could not be completed' });
+    }
+
+    try {
+      invalidateCache('fixtures:');
+    } catch (_) {}
+
+    res.json({
+      message: `${updated.tossWinner} won the toss`,
+      tossWinner: updated.tossWinner,
+      tossWinnerUserId: updated.tossWinnerUserId,
+      tossAt: updated.tossAt,
+      fixture: updated,
+    });
+  } catch (error) {
+    console.error('Fixture toss error', error);
+    res.status(500).json({ message: error.message || 'Failed to toss' });
+  }
+});
 
 router.post('/save', isAdmin, async (req, res) => {
   try {

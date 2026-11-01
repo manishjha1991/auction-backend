@@ -102,7 +102,11 @@ const playoffFixtureSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
-  headToHeadSynced: { type: Boolean, default: false }
+  headToHeadSynced: { type: Boolean, default: false },
+  tossWinner: { type: String, default: null },
+  tossWinnerUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  tossAt: { type: Date, default: null },
+  tossedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, {
   timestamps: true
 });

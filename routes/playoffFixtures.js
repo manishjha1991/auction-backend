@@ -6,6 +6,11 @@ const Tournament = require('../models/Tournament');
 const AppSettings = require('../models/AppSettings');
 const Fixture = require('../models/Fixture');
 const { applyPlayoffFixtureResult } = require('../utils/playoffSaveService');
+const { pickTossWinner, assertCanToss } = require('../utils/matchToss');
+const {
+  findRunningWorldCupTournament,
+  resolveTournamentFixtureByMatchId,
+} = require('../utils/tournamentFixtureSaveService');
 
 // Helper function to parse score string and extract runs
 const parseRuns = (scoreString) => {
@@ -215,12 +220,10 @@ router.get('/', async (req, res) => {
         playoffFixtures = mapTournamentFixturesToPlayoffShape(worldCupTournament);
         console.log('Fetching World Cup fixtures:', playoffFixtures.length, 'fixtures');
       } else {
-        console.log('World Cup mode enabled but no running World Cup tournament found');
+        playoffFixtures = await PlayoffFixture.find().sort({ matchId: 1 }).lean();
       }
     } else {
-      // Normal mode: fetch regular playoff fixtures
       playoffFixtures = await PlayoffFixture.find().sort({ matchId: 1 }).lean();
-      console.log('Fetching playoff fixtures:', playoffFixtures.map(f => `${f.matchId}: ${f.team1} vs ${f.team2}`));
     }
     
     res.json(playoffFixtures);
@@ -567,6 +570,116 @@ router.post('/initialize', async (req, res) => {
   } catch (error) {
     console.error('Error initializing playoff fixtures:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/:matchId/toss', async (req, res) => {
+  try {
+    const { matchId } = req.params;
+    const userId = req.body?.userId || req.body?.adminUserId;
+    if (!userId) return res.status(400).json({ message: 'userId is required' });
+    const user = await User.findById(userId).select('_id isAdmin teamName abbreviation');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const settings = await AppSettings.findOne().lean();
+    if (settings?.worldCupMode === true) {
+      const tournament = await findRunningWorldCupTournament();
+      const resolved = tournament ? resolveTournamentFixtureByMatchId(tournament, matchId) : null;
+      if (resolved?.fixture) {
+        try {
+          assertCanToss({ fixture: resolved.fixture, user });
+        } catch (err) {
+          return res.status(err.status || 400).json({ message: err.message, ...(err.payload || {}) });
+        }
+        const pick = pickTossWinner(
+          resolved.fixture.team1,
+          resolved.fixture.team2,
+          resolved.fixture.team1UserId,
+          resolved.fixture.team2UserId
+        );
+        const idx = resolved.fixtureIndex;
+        const tossAt = new Date();
+        const winnerPath = `tournamentFixtures.${idx}.winner`;
+        const tossPath = `tournamentFixtures.${idx}.tossWinner`;
+        const wcUpdate = await Tournament.findOneAndUpdate(
+          {
+            _id: tournament._id,
+            $and: [
+              { $or: [{ [tossPath]: null }, { [tossPath]: '' }, { [tossPath]: { $exists: false } }] },
+              { $or: [{ [winnerPath]: null }, { [winnerPath]: '' }, { [winnerPath]: { $exists: false } }] },
+            ],
+          },
+          {
+            $set: {
+              [`tournamentFixtures.${idx}.tossWinner`]: pick.tossWinner,
+              [`tournamentFixtures.${idx}.tossWinnerUserId`]: pick.tossWinnerUserId,
+              [`tournamentFixtures.${idx}.tossAt`]: tossAt,
+              [`tournamentFixtures.${idx}.tossedByUserId`]: user._id,
+            },
+          },
+          { new: true }
+        );
+        if (!wcUpdate) {
+          const latest = tournament.tournamentFixtures[idx];
+          if (latest?.tossWinner) {
+            return res.status(409).json({
+              message: `${latest.tossWinner} already won the toss. Toss cannot be reversed.`,
+              tossWinner: latest.tossWinner,
+            });
+          }
+          return res.status(400).json({ message: 'Toss could not be completed' });
+        }
+        return res.json({
+          message: `${pick.tossWinner} won the toss`,
+          tossWinner: pick.tossWinner,
+          tossWinnerUserId: pick.tossWinnerUserId,
+          tossAt,
+        });
+      }
+    }
+
+    const fixture = await PlayoffFixture.findOne({ matchId });
+    try {
+      assertCanToss({ fixture, user });
+    } catch (err) {
+      return res.status(err.status || 400).json({ message: err.message, ...(err.payload || {}) });
+    }
+    const pick = pickTossWinner(fixture.team1, fixture.team2, fixture.team1UserId, fixture.team2UserId);
+    const updated = await PlayoffFixture.findOneAndUpdate(
+      {
+        _id: fixture._id,
+        $or: [{ tossWinner: null }, { tossWinner: { $exists: false } }, { tossWinner: '' }],
+        $and: [{ $or: [{ winner: null }, { winner: { $exists: false } }, { winner: '' }] }],
+      },
+      {
+        $set: {
+          tossWinner: pick.tossWinner,
+          tossWinnerUserId: pick.tossWinnerUserId,
+          tossAt: new Date(),
+          tossedByUserId: user._id,
+        },
+      },
+      { new: true }
+    );
+    if (!updated) {
+      const latest = await PlayoffFixture.findById(fixture._id).lean();
+      if (latest?.tossWinner) {
+        return res.status(409).json({
+          message: `${latest.tossWinner} already won the toss. Toss cannot be reversed.`,
+          tossWinner: latest.tossWinner,
+        });
+      }
+      return res.status(400).json({ message: 'Toss could not be completed' });
+    }
+    res.json({
+      message: `${updated.tossWinner} won the toss`,
+      tossWinner: updated.tossWinner,
+      tossWinnerUserId: updated.tossWinnerUserId,
+      tossAt: updated.tossAt,
+    });
+  } catch (error) {
+    console.error('Playoff toss error', error);
+    res.status(500).json({ message: error.message || 'Failed to toss' });
   }
 });
 

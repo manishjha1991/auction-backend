@@ -7,6 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
+const { pickTossWinner, assertCanToss } = require('../utils/matchToss');
 
 /** Full round-robin count for n teams (each pair plays once). */
 const expectedRoundRobinFixtureCount = (tournament) => {
@@ -1177,6 +1178,67 @@ router.post('/:id/generate-fixtures', isAdmin, async (req, res) => {
   } catch (error) {
     console.error('Generate tournament fixtures error:', error);
     res.status(500).json({ error: 'Failed to generate tournament fixtures' });
+  }
+});
+
+// POST /api/tournaments/:id/fixtures/:fixtureIndex/toss
+router.post('/:id/fixtures/:fixtureIndex/toss', isAuthenticated, async (req, res) => {
+  try {
+    const tournament = await Tournament.findById(req.params.id);
+    if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
+    const fixtureIndex = parseInt(req.params.fixtureIndex, 10);
+    if (!Number.isFinite(fixtureIndex) || fixtureIndex < 0 || fixtureIndex >= tournament.tournamentFixtures.length) {
+      return res.status(404).json({ message: 'Fixture not found' });
+    }
+    const fixture = tournament.tournamentFixtures[fixtureIndex];
+    const user = req.user;
+    try {
+      assertCanToss({ fixture, user });
+    } catch (err) {
+      return res.status(err.status || 400).json({ message: err.message, ...(err.payload || {}) });
+    }
+
+    const pick = pickTossWinner(fixture.team1, fixture.team2, fixture.team1UserId, fixture.team2UserId);
+    const tossAt = new Date();
+    const tossPath = `tournamentFixtures.${fixtureIndex}.tossWinner`;
+    const winnerPath = `tournamentFixtures.${fixtureIndex}.winner`;
+    const updated = await Tournament.findOneAndUpdate(
+      {
+        _id: tournament._id,
+        $and: [
+          { $or: [{ [tossPath]: null }, { [tossPath]: '' }, { [tossPath]: { $exists: false } }] },
+          { $or: [{ [winnerPath]: null }, { [winnerPath]: '' }, { [winnerPath]: { $exists: false } }] },
+        ],
+      },
+      {
+        $set: {
+          [`tournamentFixtures.${fixtureIndex}.tossWinner`]: pick.tossWinner,
+          [`tournamentFixtures.${fixtureIndex}.tossWinnerUserId`]: pick.tossWinnerUserId,
+          [`tournamentFixtures.${fixtureIndex}.tossAt`]: tossAt,
+          [`tournamentFixtures.${fixtureIndex}.tossedByUserId`]: user._id,
+        },
+      },
+      { new: true }
+    );
+    if (!updated) {
+      const latest = tournament.tournamentFixtures[fixtureIndex];
+      if (latest?.tossWinner) {
+        return res.status(409).json({
+          message: `${latest.tossWinner} already won the toss. Toss cannot be reversed.`,
+          tossWinner: latest.tossWinner,
+        });
+      }
+      return res.status(400).json({ message: 'Toss could not be completed' });
+    }
+    return res.json({
+      message: `${pick.tossWinner} won the toss`,
+      tossWinner: pick.tossWinner,
+      tossWinnerUserId: pick.tossWinnerUserId,
+      tossAt,
+    });
+  } catch (error) {
+    console.error('Tournament toss error', error);
+    res.status(500).json({ message: error.message || 'Failed to toss' });
   }
 });
 

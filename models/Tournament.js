@@ -100,7 +100,11 @@ const TournamentSchema = new mongoose.Schema({
       score: { type: Number, default: null }, // Optional
       wickets: { type: Number, default: null } // Optional
     },
-    createdAt: { type: Date, default: Date.now }
+    createdAt: { type: Date, default: Date.now },
+    tossWinner: { type: String, default: null },
+    tossWinnerUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    tossAt: { type: Date, default: null },
+    tossedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   }],
   pointTable: [{
     teamName: { type: String, required: true },

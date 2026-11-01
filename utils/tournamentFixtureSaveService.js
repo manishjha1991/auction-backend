@@ -106,6 +106,9 @@ function mapTournamentFixturesToPlayoffShape(tournament) {
       fixtureIndex: index,
       isWorldCupTournament: true,
       tournamentName: tournament.name || '',
+      tossWinner: fixture.tossWinner || null,
+      tossWinnerUserId: fixture.tossWinnerUserId || null,
+      tossAt: fixture.tossAt || null,
     };
   });
 }
