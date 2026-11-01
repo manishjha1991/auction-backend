@@ -12,6 +12,7 @@ router.use((req, res, next) => {
   next();
 });
 const User = require('../models/User'); // Adjust the path based on your project structure
+const { isAllowedCplVenue } = require('../constants/cplVenues');
 const AppSettings = require('../models/AppSettings');
 const Player = require('../models/Player');
 const Bid = require('../models/Bid');
@@ -1270,7 +1271,7 @@ router.get('/teams', async (req, res) => {
     }
 
     let query = User.find(baseFilter).select(
-      'name teamName timezone streamLink abbreviation teamImage isActive themePrimary themeSecondary matchesPlayed points careerMatchesPlayed careerWins'
+      'name teamName timezone streamLink abbreviation teamImage isActive themePrimary themeSecondary homeGround matchesPlayed points careerMatchesPlayed careerWins'
     );
     if (includeInactive) {
       query = query.includeInactive();
@@ -2075,6 +2076,46 @@ router.put('/:userId/squad-theme', async (req, res) => {
     });
   } catch (error) {
     console.error('Error updating squad theme:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// PUT: home ground — admin only. Team owners cannot change it.
+router.put('/:userId/home-ground', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { requesterUserId, homeGround } = req.body || {};
+    if (!requesterUserId) {
+      return res.status(400).json({ message: 'requesterUserId is required' });
+    }
+
+    const requester = await User.findById(requesterUserId).select('isAdmin').lean();
+    if (!requester?.isAdmin) {
+      return res.status(403).json({ message: 'Only an admin can set a home ground' });
+    }
+
+    const teamUser = await User.findById(userId);
+    if (!teamUser) {
+      return res.status(404).json({ message: 'Team not found' });
+    }
+
+    const value = String(homeGround || '').trim();
+    if (!value) {
+      teamUser.homeGround = null;
+    } else if (!isAllowedCplVenue(value)) {
+      return res.status(400).json({ message: 'Pick a stadium from the official list' });
+    } else {
+      teamUser.homeGround = value;
+    }
+
+    await teamUser.save();
+    invalidateCache(`user-details:${userId}`);
+    return res.json({
+      message: 'Home ground updated',
+      homeGround: teamUser.homeGround || null,
+    });
+  } catch (error) {
+    console.error('Error updating home ground:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

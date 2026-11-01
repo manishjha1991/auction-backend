@@ -356,7 +356,7 @@ router.get('/', async (req, res) => {
       tournaments = await Tournament.find(query)
         .populate({
           path: 'subscribedTeams.userId',
-          select: 'name teamName teamImage abbreviation themePrimary themeSecondary',
+          select: 'name teamName teamImage abbreviation themePrimary themeSecondary homeGround',
           model: 'User'
         })
         .populate({
@@ -410,6 +410,7 @@ router.get('/', async (req, res) => {
         abbreviation: team.userId?.abbreviation || team.abbreviation || null,
         themePrimary: team.userId?.themePrimary || null,
         themeSecondary: team.userId?.themeSecondary || null,
+        homeGround: team.userId?.homeGround || null,
       })),
       // Ensure winner field is included and properly formatted
       winner: tournament.winner || null
@@ -487,7 +488,7 @@ router.get('/recent-results', async (req, res) => {
       .select('name status startDate tournamentFixtures subscribedTeams')
       .populate({
         path: 'subscribedTeams.userId',
-        select: 'teamName teamImage abbreviation themePrimary themeSecondary',
+        select: 'teamName teamImage abbreviation themePrimary themeSecondary homeGround',
         model: 'User',
       })
       .sort({ status: 1, startDate: -1 })
@@ -513,6 +514,7 @@ router.get('/recent-results', async (req, res) => {
         abbreviation: populated?.abbreviation || row.abbreviation || null,
         themePrimary: populated?.themePrimary || null,
         themeSecondary: populated?.themeSecondary || null,
+        homeGround: populated?.homeGround || null,
       };
     };
 
@@ -532,6 +534,7 @@ router.get('/recent-results', async (req, res) => {
       team1Overs: fixture.team1Overs || null,
       team2Overs: fixture.team2Overs || null,
       mom: fixture.mom || null,
+      tossWinner: fixture.tossWinner || null,
       createdAt: fixture.createdAt || null,
       team1Meta: resolveTeam(tournament, fixture.team1),
       team2Meta: resolveTeam(tournament, fixture.team2),
@@ -614,7 +617,7 @@ router.get('/subscription-count', isAuthenticated, async (req, res) => {
 router.get('/:id', isAuthenticated, async (req, res) => {
   try {
     const tournament = await Tournament.findById(req.params.id)
-      .populate('subscribedTeams.userId', 'name teamName teamImage abbreviation themePrimary themeSecondary')
+      .populate('subscribedTeams.userId', 'name teamName teamImage abbreviation themePrimary themeSecondary homeGround')
       .populate('createdBy', 'name teamName')
       .lean();
 
@@ -643,6 +646,7 @@ router.get('/:id', isAuthenticated, async (req, res) => {
           abbreviation: populated?.abbreviation || team.abbreviation || null,
           themePrimary: populated?.themePrimary || null,
           themeSecondary: populated?.themeSecondary || null,
+          homeGround: populated?.homeGround || null,
         };
       }),
     };

@@ -48,6 +48,8 @@ const UserSchema = new mongoose.Schema({
   /** Custom colours for Team Squads page cards / modal (hex #rrggbb); null = use default palette */
   themePrimary: { type: String, default: null },
   themeSecondary: { type: String, default: null },
+  /** Official home stadium. Set by an admin only. */
+  homeGround: { type: String, default: null },
   /** One-click league forfeit snapshot so admin can Restore prior results */
   leagueForfeit: {
     active: { type: Boolean, default: false },

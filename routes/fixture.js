@@ -329,7 +329,7 @@ router.get('/recent-results', async (req, res) => {
       isActive: true,
       isAdmin: { $ne: true },
     })
-      .select('_id teamName teamImage abbreviation themePrimary themeSecondary')
+      .select('_id teamName teamImage abbreviation themePrimary themeSecondary homeGround')
       .lean();
 
     const byId = new Map(teams.map((t) => [String(t._id), t]));
@@ -350,6 +350,7 @@ router.get('/recent-results', async (req, res) => {
           abbreviation: null,
           themePrimary: null,
           themeSecondary: null,
+          homeGround: null,
         };
       }
       return {
@@ -358,6 +359,7 @@ router.get('/recent-results', async (req, res) => {
         abbreviation: row.abbreviation || null,
         themePrimary: row.themePrimary || null,
         themeSecondary: row.themeSecondary || null,
+        homeGround: row.homeGround || null,
       };
     };
 
@@ -391,6 +393,7 @@ router.get('/recent-results', async (req, res) => {
         team1Overs: fixture.team1Overs || null,
         team2Overs: fixture.team2Overs || null,
         mom: fixture.mom || null,
+        tossWinner: fixture.tossWinner || null,
         createdAt: fixture.createdAt || null,
         team1Meta,
         team2Meta,
