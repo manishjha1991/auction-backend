@@ -19,6 +19,7 @@ const { getRosterCaps, typeLimitMap } = require('../utils/rosterCaps');
 const { sanitizeUserPlayerRefs, extractObjectId } = require('../utils/indiaCap');
 const bidQueueService = require('../services/bidQueueService');
 const { reconcileUsersPurse } = require('../services/purseReconcileService');
+const { recordWindowRosterMove } = require('../utils/windowRosterTrade');
 const { getTopWatchedPlayers, getWatchCountFromAdapter } = require('../utils/playerWatchSocket');
 const NodeCache = require('node-cache');
 
@@ -774,6 +775,17 @@ router.post("/bid/sold", async (req, res) => {
           logTag: "manual-sell",
         });
 
+        try {
+          await recordWindowRosterMove({
+            userId: highestBid.bidder,
+            playerId: pid,
+            playerType: player.type,
+            kind: 'sale',
+          });
+        } catch (tradeCountError) {
+          console.error('Trade-window sale count failed:', tradeCountError);
+        }
+
         // Keep sell cleanup consistent with cron flow: clear stale queue/proxy rows and
         // apply any queue-lock refunds that are still pending on this sold player.
         await clearQueueAfterSold(pid, highestBid.bidder, highestBid.bidAmount, io);
@@ -885,6 +897,17 @@ router.post("/release-player", async (req, res) => {
 
     // Delete all bids for this player from the Bid collection
     await Bid.deleteMany({ playerId });
+
+    try {
+      await recordWindowRosterMove({
+        userId,
+        playerId,
+        playerType: player.type,
+        kind: 'release',
+      });
+    } catch (tradeCountError) {
+      console.error('Trade-window popup release count failed:', tradeCountError);
+    }
 
     res.status(200).json({
       message:

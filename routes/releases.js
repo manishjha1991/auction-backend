@@ -6,7 +6,7 @@ const User = require('../models/User');
 const Player = require('../models/Player'); // Add Player model import
 const Bid = require('../models/Bid'); // Add Bid model import for cleanup
 const { clampTradesUsed } = require('../utils/tradeConstants');
-const { getTradeRules } = require('../utils/tradeRules');
+const { getTradeRules, isTradeWindowOpen } = require('../utils/tradeRules');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('../utils/tradeApprovalShared');
 const { findOrphanPickToPairOnReleaseApprove } = require('../utils/releasePickPairing');
 const { removeReleasedPlayerRefs } = require('../utils/indiaCap');
@@ -94,11 +94,13 @@ router.post('/', async (req, res) => {
     // Guard: user cannot exceed season trade cap (trade + release combined)
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const rules = await getTradeRules();
-    try {
-      const { assertHasTradeSlotRemaining } = require('../utils/tradeSlotReservation');
-      await assertHasTradeSlotRemaining(userId, rules);
-    } catch (e) {
-      return res.status(e.statusCode || 400).json({ message: e.message });
+    if (await isTradeWindowOpen()) {
+      try {
+        const { assertHasTradeSlotRemaining } = require('../utils/tradeSlotReservation');
+        await assertHasTradeSlotRemaining(userId, rules);
+      } catch (e) {
+        return res.status(e.statusCode || 400).json({ message: e.message });
+      }
     }
     // 🚀 PERFORMANCE: Use .lean() for read-only query
     const ownership = await UserPlayer.findOne({ userId, playerId, isActive: true }).lean();
@@ -266,14 +268,20 @@ router.post('/admin/:releaseId/decide', async (req, res) => {
         item.releasedPlayerType = player.type;
       }
 
-      // One slot for release + same-tier unsold pick together. If the pick was approved first, it already +1; link and skip release +1.
-      let releaseSlotCharge = 1;
-      if (player?.type && ['Sapphire', 'Gold', 'Emerald', 'Silver'].includes(player.type)) {
+      // Trade window open: a release is one trade, unless a same-category pick already used that slot.
+      // Trade window closed: a release does not count.
+      const tradeWindowOpen = await isTradeWindowOpen();
+      let releaseSlotCharge = 0;
+      if (tradeWindowOpen && player?.type && ['Sapphire', 'Gold', 'Emerald', 'Silver'].includes(player.type)) {
         const orphanPick = await findOrphanPickToPairOnReleaseApprove(item, player.type);
         if (orphanPick) {
           item.pairedPickRequest = orphanPick._id;
           releaseSlotCharge = 0;
+        } else {
+          releaseSlotCharge = 1;
         }
+      } else if (tradeWindowOpen) {
+        releaseSlotCharge = 1;
       }
 
       try {

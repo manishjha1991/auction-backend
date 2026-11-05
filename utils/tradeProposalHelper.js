@@ -3,7 +3,7 @@ const User = require('../models/User');
 const UserPlayer = require('../models/UserPlayer');
 const Player = require('../models/Player');
 const { clampTradesUsed } = require('./tradeConstants');
-const { getTradeRules, assertPairAllowsNewProposal } = require('./tradeRules');
+const { getTradeRules, assertPairAllowsNewProposal, isTradeWindowOpen } = require('./tradeRules');
 const { assertHasTradeSlotRemaining } = require('./tradeSlotReservation');
 const { isTradeLocked, TRADE_LOCK_HOURS } = require('./tradeApprovalShared');
 const { getTradeApprovalBlockers } = require('./tradeApprovalBlockers');
@@ -32,10 +32,12 @@ async function createTradeProposal({ fromUserId, offeredPlayerId, requestedPlaye
     };
   }
 
-  try {
-    await assertHasTradeSlotRemaining(fromUserId, rules);
-  } catch (e) {
-    return { ok: false, statusCode: e.statusCode || 400, message: e.message };
+  if (await isTradeWindowOpen()) {
+    try {
+      await assertHasTradeSlotRemaining(fromUserId, rules);
+    } catch (e) {
+      return { ok: false, statusCode: e.statusCode || 400, message: e.message };
+    }
   }
 
   const activeTrade = await TradeRequest.findOne({

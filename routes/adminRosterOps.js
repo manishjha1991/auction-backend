@@ -23,6 +23,7 @@ const {
   autoRejectTradesInvolvingPlayers,
   TRADE_LOCK_HOURS,
 } = require('../utils/tradeApprovalShared');
+const { recordWindowRosterMove } = require('../utils/windowRosterTrade');
 
 const CRORE = 10_000_000;
 
@@ -375,6 +376,17 @@ router.post('/pick/execute', async (req, res) => {
 
     await setTradeLockOnPlayers([playerId]);
 
+    try {
+      await recordWindowRosterMove({
+        userId: teamUserId,
+        playerId,
+        playerType: player.type,
+        kind: 'sale',
+      });
+    } catch (tradeCountError) {
+      console.error('Trade-window roster pick count failed:', tradeCountError);
+    }
+
     res.json({
       ok: true,
       message: 'Pick completed',
@@ -482,6 +494,17 @@ router.post('/release/execute', async (req, res) => {
 
     await removeReleasedPlayerRefs(teamUserId, playerId);
     await Bid.deleteMany({ playerId });
+
+    try {
+      await recordWindowRosterMove({
+        userId: teamUserId,
+        playerId,
+        playerType: playerDoc.type,
+        kind: 'release',
+      });
+    } catch (tradeCountError) {
+      console.error('Trade-window roster release count failed:', tradeCountError);
+    }
 
     const user = await User.findById(teamUserId);
     res.json({

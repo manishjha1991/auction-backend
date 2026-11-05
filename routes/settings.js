@@ -6,6 +6,7 @@ const Player = require('../models/Player');
 const { RULE_MIN, RULE_MAX, getTradeRules } = require('../utils/tradeRules');
 const { getArmedCronFlags } = require('../utils/auctionNightPhase');
 const { getRosterCaps, normalizeRosterCaps } = require('../utils/rosterCaps');
+const { settleTradeWindowUsage } = require('../utils/tradeWindowBalance');
 
 async function getSettingsDoc() {
   let doc = await AppSettings.findOne();
@@ -147,6 +148,7 @@ router.post('/', async (req, res) => {
     const admin = await User.findById(adminUserId);
     if (!admin || !admin.isAdmin) return res.status(403).json({ message: 'Only admin can update settings' });
     const doc = await getSettingsDoc();
+    const wasTradeWindowOpen = doc.enableTradeCenter === true;
     if (typeof enableTradeCenter === 'boolean') doc.enableTradeCenter = enableTradeCenter;
     if (typeof enableUnsoldPlayers === 'boolean') doc.enableUnsoldPlayers = enableUnsoldPlayers;
     if (typeof enablePickButton === 'boolean') doc.enablePickButton = enablePickButton;
@@ -218,6 +220,13 @@ router.post('/', async (req, res) => {
       }
     }
     await doc.save();
+    if (wasTradeWindowOpen && doc.enableTradeCenter === false) {
+      try {
+        await settleTradeWindowUsage();
+      } catch (settleError) {
+        console.error('Trade window close count failed:', settleError);
+      }
+    }
     const tradeRules = await getTradeRules();
     const savedRosterCaps = await getRosterCaps();
     res.json({ 

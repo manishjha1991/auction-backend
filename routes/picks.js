@@ -10,7 +10,7 @@ const mongoose = require('mongoose');
 const Notification = require('../models/Notification');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const { clampTradesUsed } = require('../utils/tradeConstants');
-const { getTradeRules } = require('../utils/tradeRules');
+const { getTradeRules, isTradeWindowOpen } = require('../utils/tradeRules');
 const { findUnpairedReleaseForSameTierPick } = require('../utils/releasePickPairing');
 const { setTradeLockOnPlayers } = require('../utils/tradeApprovalShared');
 const { getRosterCaps, typeLimitMap } = require('../utils/rosterCaps');
@@ -288,18 +288,21 @@ router.post('/admin/:pickId/decide', async (req, res) => {
         return res.status(indiaCheck.status || 400).json({ message: indiaCheck.message });
       }
 
-      // Same-tier release + same-tier unsold pick = one tradesUsed total (paired on ReleaseRequest).
-      // Any other unsold pick (e.g. after a cross-tier trade to refill a short category) adds +1 tradesUsed — same as a separate roster move.
+      // Trade window open: a pick is one trade, unless it replaces a same-category release (still one trade).
+      // Trade window closed: a pick does not count.
       const userLean = await User.findById(item.user).select('tradesUsed').lean();
       const rules = await getTradeRules();
-      const releasePairDoc = await findUnpairedReleaseForSameTierPick(
-        item.user,
-        player.type,
-        item.createdAt
-      );
+      const tradeWindowOpen = await isTradeWindowOpen();
+      const releasePairDoc = tradeWindowOpen
+        ? await findUnpairedReleaseForSameTierPick(
+            item.user,
+            player.type,
+            item.createdAt
+          )
+        : null;
 
       const usePair = !!releasePairDoc;
-      const useStandaloneCharge = !usePair;
+      const useStandaloneCharge = tradeWindowOpen && !usePair;
 
       if (
         useStandaloneCharge &&

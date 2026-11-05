@@ -2,6 +2,7 @@ const User = require('../models/User');
 const { validateTradeForAdminApproval } = require('./tradeApprovalBlockers');
 const { setTradeLockOnPlayers, autoRejectTradesInvolvingPlayers } = require('./tradeApprovalShared');
 const { invalidateCache } = require('./cache');
+const { isTradeWindowOpen } = require('./tradeRules');
 
 async function executeApprovedTrade(trade, adminUserId, note, options = {}) {
   const validation = await validateTradeForAdminApproval(trade, options);
@@ -48,10 +49,12 @@ async function executeApprovedTrade(trade, adminUserId, note, options = {}) {
   };
 
   try {
-    await Promise.all([
-      User.findByIdAndUpdate(trade.fromUser, { $inc: { tradesUsed: 1 } }),
-      User.findByIdAndUpdate(trade.toUser, { $inc: { tradesUsed: 1 } }),
-    ]);
+    if (await isTradeWindowOpen()) {
+      await Promise.all([
+        User.findByIdAndUpdate(trade.fromUser, { $inc: { tradesUsed: 1 } }),
+        User.findByIdAndUpdate(trade.toUser, { $inc: { tradesUsed: 1 } }),
+      ]);
+    }
   } catch (_) {}
 
   await trade.save();

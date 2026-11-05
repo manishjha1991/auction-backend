@@ -2,15 +2,16 @@ const User = require('../models/User');
 const ReleaseRequest = require('../models/ReleaseRequest');
 const PickRequest = require('../models/PickRequest');
 const TradeRequest = require('../models/TradeRequest');
-const { getTradeRules } = require('./tradeRules');
+const { getTradeRules, isTradeWindowOpen } = require('./tradeRules');
 const { clampTradesUsed } = require('./tradeConstants');
+const { moveTiersByUser, slotsForTiers, emptyTiers } = require('./tradeWindowBalance');
 
 /**
- * Per-team trade slot accounting: completed trades + releases + standalone picks (picks not linked from a release).
- * Compare to User.tradesUsed for drift detection.
+ * While the trade window is open, swaps count, and a release plus a same-category pick count as one trade.
+ * While it is closed, only completed swaps count. Stored tradesUsed is compared for drift.
  */
 async function getTeamTradeUsageRows() {
-  const tradeRules = await getTradeRules();
+  const [tradeRules, tradeWindowOpen] = await Promise.all([getTradeRules(), isTradeWindowOpen()]);
   const TRADE_CAP = tradeRules.tradeSeasonCap;
 
   const teams = await User.find({ isActive: true, isAdmin: false })
@@ -20,7 +21,7 @@ async function getTeamTradeUsageRows() {
 
   const teamIds = teams.map((t) => t._id);
 
-  const [releaseCounts, pickCounts, pairedPickCounts, tradeAsFrom, tradeAsTo] = await Promise.all([
+  const [releaseCounts, pickCounts, pairedPickCounts, tradeAsFrom, tradeAsTo, tierMoves] = await Promise.all([
     ReleaseRequest.aggregate([
       { $match: { user: { $in: teamIds }, status: 'completed' } },
       { $group: { _id: '$user', count: { $sum: 1 } } },
@@ -47,6 +48,7 @@ async function getTeamTradeUsageRows() {
       { $match: { status: 'completed' } },
       { $group: { _id: '$toUser', count: { $sum: 1 } } },
     ]),
+    moveTiersByUser(teamIds),
   ]);
 
   const releaseMap = new Map(releaseCounts.map((r) => [r._id.toString(), r.count]));
@@ -65,10 +67,14 @@ async function getTeamTradeUsageRows() {
     const pairedPicks = pairedPickMap.get(uid) || 0;
     const trades = tradeMap.get(uid) || 0;
     const tradesUsed = clampTradesUsed(team.tradesUsed);
-    const remaining = Math.max(0, TRADE_CAP - tradesUsed);
     const standalonePicks = Math.max(0, picks - pairedPicks);
-    const expectedTradesUsed = trades + releases + standalonePicks;
+    const categorySlots = slotsForTiers(
+      tierMoves.releaseMap.get(uid) || emptyTiers(),
+      tierMoves.pickMap.get(uid) || emptyTiers()
+    );
+    const expectedTradesUsed = tradeWindowOpen ? trades + categorySlots : trades;
     const usageDrift = tradesUsed - expectedTradesUsed;
+    const counted = expectedTradesUsed;
     return {
       userId: uid,
       teamName: team.teamName || team.name || 'Unknown',
@@ -78,10 +84,11 @@ async function getTeamTradeUsageRows() {
       trades,
       pairedPicks,
       standalonePicks,
+      tradeWindowOpen,
       expectedTradesUsed,
       usageDrift,
       tradesUsed,
-      remaining,
+      remaining: Math.max(0, TRADE_CAP - counted),
       cap: TRADE_CAP,
     };
   });

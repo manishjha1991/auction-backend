@@ -16,7 +16,7 @@ const {
   TRADE_LOCK_HOURS,
 } = require('../utils/tradeApprovalShared');
 const { clampTradesUsed } = require('../utils/tradeConstants');
-const { getTradeRules, assertPairAllowsNewProposal } = require('../utils/tradeRules');
+const { getTradeRules, assertPairAllowsNewProposal, isTradeWindowOpen } = require('../utils/tradeRules');
 const { invalidateCache } = require('../utils/cache');
 const {
   getTradeApprovalBlockers,
@@ -127,10 +127,12 @@ router.post('/:tradeId/respond', async (req, res) => {
     }
 
     if (decision === 'accept') {
-      try {
-        await assertHasTradeSlotRemaining(byUserId);
-      } catch (e) {
-        return res.status(e.statusCode || 400).json({ message: e.message });
+      if (await isTradeWindowOpen()) {
+        try {
+          await assertHasTradeSlotRemaining(byUserId);
+        } catch (e) {
+          return res.status(e.statusCode || 400).json({ message: e.message });
+        }
       }
 
       const blockers = trade.bundleId

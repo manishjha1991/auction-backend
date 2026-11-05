@@ -33,6 +33,12 @@ async function getTradeRules() {
   };
 }
 
+/** Trade center toggle. Release, pick, and swap count as trades only while this is on. */
+async function isTradeWindowOpen() {
+  const doc = await AppSettings.findOne().select('enableTradeCenter').lean();
+  return doc?.enableTradeCenter === true;
+}
+
 function toObjectId(id) {
   if (id == null) return null;
   if (id instanceof mongoose.Types.ObjectId) return id;
@@ -210,4 +216,5 @@ module.exports = {
   assertPairAllowsNewProposal,
   assertPairAllowsCompletion,
   assertBundlePairAllowsCompletion,
+  isTradeWindowOpen,
 };
