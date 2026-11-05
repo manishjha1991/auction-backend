@@ -74,7 +74,6 @@ async function getTeamTradeUsageRows() {
     );
     const expectedTradesUsed = tradeWindowOpen ? trades + categorySlots : trades;
     const usageDrift = tradesUsed - expectedTradesUsed;
-    const counted = expectedTradesUsed;
     return {
       userId: uid,
       teamName: team.teamName || team.name || 'Unknown',
@@ -88,7 +87,7 @@ async function getTeamTradeUsageRows() {
       expectedTradesUsed,
       usageDrift,
       tradesUsed,
-      remaining: Math.max(0, TRADE_CAP - counted),
+      remaining: TRADE_CAP - expectedTradesUsed,
       cap: TRADE_CAP,
     };
   });
