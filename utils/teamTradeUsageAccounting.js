@@ -87,7 +87,7 @@ async function getTeamTradeUsageRows() {
       expectedTradesUsed,
       usageDrift,
       tradesUsed,
-      remaining: TRADE_CAP - expectedTradesUsed,
+      remaining: TRADE_CAP - tradesUsed,
       cap: TRADE_CAP,
     };
   });
