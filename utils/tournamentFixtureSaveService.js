@@ -4,16 +4,15 @@
  */
 const Tournament = require('../models/Tournament');
 const { applyCareerLeagueResult } = require('./careerUserCounters');
+const {
+  resolveWinnerName: resolveWinnerNameShared,
+  resolveWinnerUserId,
+} = require('./matchWinner');
 
 const expectedRoundRobinFixtureCount = (tournament) => {
   const n = tournament?.subscribedTeams?.length || 0;
   return n >= 2 ? (n * (n - 1)) / 2 : 0;
 };
-
-const normalizeTeamKey = (value = '') =>
-  String(value || '')
-    .replace(/[^a-z0-9]/gi, '')
-    .toLowerCase();
 
 const isPlaceholderTeam = (name = '') => {
   const s = String(name || '');
@@ -125,23 +124,38 @@ function resolveTournamentFixtureByMatchId(tournament, matchId) {
   };
 }
 
-function resolveWinnerOnTournamentFixture(winner, fixture) {
+function aliasesFromSubscribedTeams(fixture, subscribedTeams = []) {
+  const teams = subscribedTeams || [];
+  const findSide = (userId, storedName) => {
+    const byId = teams.find(
+      (t) => t.userId && String(t.userId._id || t.userId) === String(userId)
+    );
+    return byId?.userId?.teamName || byId?.teamName || storedName;
+  };
+  return {
+    team1: findSide(fixture?.team1UserId, fixture?.team1),
+    team2: findSide(fixture?.team2UserId, fixture?.team2),
+  };
+}
+
+function resolveWinnerOnTournamentFixture(winner, fixture, subscribedTeams = []) {
   if (!winner || !fixture) return { winnerName: null, winnerUserId: null };
 
-  const winnerStr = String(winner).trim();
-  if (fixture.team1UserId && winnerStr === String(fixture.team1UserId)) {
-    return { winnerName: fixture.team1, winnerUserId: fixture.team1UserId };
+  const aliases = aliasesFromSubscribedTeams(fixture, subscribedTeams);
+  const winnerUserId = resolveWinnerUserId(winner, fixture, aliases);
+  if (winnerUserId && fixture.team1UserId && String(winnerUserId) === String(fixture.team1UserId)) {
+    return { winnerName: aliases.team1 || fixture.team1, winnerUserId: fixture.team1UserId };
   }
-  if (fixture.team2UserId && winnerStr === String(fixture.team2UserId)) {
-    return { winnerName: fixture.team2, winnerUserId: fixture.team2UserId };
+  if (winnerUserId && fixture.team2UserId && String(winnerUserId) === String(fixture.team2UserId)) {
+    return { winnerName: aliases.team2 || fixture.team2, winnerUserId: fixture.team2UserId };
   }
 
-  const wKey = normalizeTeamKey(winnerStr);
-  if (wKey && wKey === normalizeTeamKey(fixture.team1)) {
-    return { winnerName: fixture.team1, winnerUserId: fixture.team1UserId || null };
-  }
-  if (wKey && wKey === normalizeTeamKey(fixture.team2)) {
-    return { winnerName: fixture.team2, winnerUserId: fixture.team2UserId || null };
+  const winnerName = resolveWinnerNameShared(winner, fixture, aliases);
+  if (winnerName && (winnerName === (aliases.team1 || fixture.team1) || winnerName === (aliases.team2 || fixture.team2))) {
+    const side1 = aliases.team1 || fixture.team1;
+    return winnerName === side1
+      ? { winnerName, winnerUserId: fixture.team1UserId || null }
+      : { winnerName, winnerUserId: fixture.team2UserId || null };
   }
 
   return { winnerName: null, winnerUserId: null };
@@ -205,7 +219,11 @@ async function applyTournamentFixtureResult(tournamentId, fixtureIndex, body = {
   }
 
   const oldWinner = tournament.tournamentFixtures[idx].winner || null;
-  const resolved = resolveWinnerOnTournamentFixture(winner, tournament.tournamentFixtures[idx]);
+  const resolved = resolveWinnerOnTournamentFixture(
+    winner,
+    tournament.tournamentFixtures[idx],
+    tournament.subscribedTeams
+  );
   const winnerName = resolved.winnerName || winner || null;
 
   if (winner !== undefined) {
@@ -249,8 +267,11 @@ async function applyTournamentFixtureResult(tournamentId, fixtureIndex, body = {
     applyCareerLeagueResult({
       team1: fxAfterSave.team1,
       team2: fxAfterSave.team2,
+      team1UserId: fxAfterSave.team1UserId,
+      team2UserId: fxAfterSave.team2UserId,
       newWinnerName: twNow,
       oldWinnerName: oldWinner || null,
+      newWinnerUserId: fxAfterSave.winnerUserId,
     }).catch((err) => console.error('Career counters (tournament OCR):', err));
   }
 

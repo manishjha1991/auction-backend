@@ -267,11 +267,21 @@ router.get('/', async (req, res) => {
 
       // Note: Since we use .lean(), fixture is a plain object, not a Mongoose document
       // So we spread fixture directly (not fixture._doc)
+      const liveTeam1 = team1Details.teamName || fixture.team1;
+      const liveTeam2 = team2Details.teamName || fixture.team2;
+      let liveWinner = fixture.winner;
+      if (fixture.winnerUserId && team1Details._id && String(fixture.winnerUserId) === String(team1Details._id)) {
+        liveWinner = liveTeam1;
+      } else if (fixture.winnerUserId && team2Details._id && String(fixture.winnerUserId) === String(team2Details._id)) {
+        liveWinner = liveTeam2;
+      }
+
       return {
         ...fixture,
         // OVERRIDE with CURRENT team names (not old stored names)
-        team1: team1Details.teamName || fixture.team1,
-        team2: team2Details.teamName || fixture.team2,
+        team1: liveTeam1,
+        team2: liveTeam2,
+        winner: liveWinner,
 
         // Add extra details
         team1Details: {

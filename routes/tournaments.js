@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const { applyCareerLeagueResult } = require('../utils/careerUserCounters');
 const { pickTossWinner, assertCanToss } = require('../utils/matchToss');
+const { resolveWinnerName, resolveWinnerUserId, pickWinnerUserId, idsEqual, idStr, userIsTeam1, userIsTeam2, sameTeam } = require('../utils/matchWinner');
 
 /** Full round-robin count for n teams (each pair plays once). */
 const expectedRoundRobinFixtureCount = (tournament) => {
@@ -135,7 +136,7 @@ const parseOvers = (oversString) => {
 };
 
 // Calculate Net Run Rate (NRR) for a team from tournament fixtures
-const calculateTournamentNRR = (fixtures, teamName) => {
+const calculateTournamentNRR = (fixtures, teamName, userId) => {
   const DEFAULT_OVERS = 20; // Standard T20 format - used if overs not provided
   let totalRunsScored = 0;
   let totalRunsConceded = 0;
@@ -184,25 +185,8 @@ const calculateTournamentNRR = (fixtures, teamName) => {
     let team1OversBowled = (team2Wickets === 10) ? DEFAULT_OVERS : team2OversActual;
     let team2OversBowled = (team1Wickets === 10) ? DEFAULT_OVERS : team1OversActual;
 
-    // Match by teamName (flexible matching to handle variations like spaces, special chars)
-    const normalizeTeamName = (name) => {
-      if (!name) return '';
-      // Trim and normalize: remove extra spaces, convert to lowercase, remove special chars
-      return name.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[^a-z0-9\s]/g, '').trim();
-    };
-    const normalizedTeamName = normalizeTeamName(teamName);
-    const normalizedTeam1 = normalizeTeamName(fixture.team1);
-    const normalizedTeam2 = normalizeTeamName(fixture.team2);
-    
-    // Use includes for more flexible matching (handles partial matches)
-    const isTeam1 = normalizedTeam1 && normalizedTeamName && 
-                    (normalizedTeam1 === normalizedTeamName || 
-                     normalizedTeam1.includes(normalizedTeamName) || 
-                     normalizedTeamName.includes(normalizedTeam1));
-    const isTeam2 = normalizedTeam2 && normalizedTeamName && 
-                    (normalizedTeam2 === normalizedTeamName || 
-                     normalizedTeam2.includes(normalizedTeamName) || 
-                     normalizedTeamName.includes(normalizedTeam2));
+    const isTeam1 = userIsTeam1(fixture, userId);
+    const isTeam2 = userIsTeam2(fixture, userId);
 
     if (!isTeam1 && !isTeam2) {
       return; // Team not involved in this match
@@ -1259,7 +1243,7 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Fixture not found' });
     }
 
-    const { winner, margin, team1Score, team2Score, team1Overs, team2Overs, team1Fairness, team2Fairness, mom } = req.body;
+    const { winner, winnerUserId, margin, team1Score, team2Score, team1Overs, team2Overs, team1Fairness, team2Fairness, mom } = req.body;
 
     // Validate score format: must be in "runs/wickets" format (e.g., "107/10", "150/5")
     const scoreFormatRegex = /^\d+\/\d+$/; // Matches "number/number" format
@@ -1287,8 +1271,33 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
     const oldTournamentFixtureWinner =
       tournament.tournamentFixtures[fixtureIndex].winner || null;
 
+    const fxRow = tournament.tournamentFixtures[fixtureIndex];
+    const sideName = (userId, stored) => {
+      const sub = (tournament.subscribedTeams || []).find(
+        (t) => t.userId && String(t.userId._id || t.userId) === String(userId)
+      );
+      return sub?.userId?.teamName || sub?.teamName || stored;
+    };
+    const winnerAliases = {
+      team1: sideName(fxRow.team1UserId, fxRow.team1),
+      team2: sideName(fxRow.team2UserId, fxRow.team2),
+    };
+    if (winnerAliases.team1) fxRow.team1 = winnerAliases.team1;
+    if (winnerAliases.team2) fxRow.team2 = winnerAliases.team2;
+
     // Update the fixture in the array
-    if (winner !== undefined) tournament.tournamentFixtures[fixtureIndex].winner = winner;
+    if (winner !== undefined || winnerUserId !== undefined) {
+      const resolvedUserId = pickWinnerUserId(winner, fxRow, winnerAliases, winnerUserId);
+      if ((winner || winnerUserId) && !resolvedUserId) {
+        return res.status(400).json({
+          error: `Winner does not match either team id for ${fxRow.team1} vs ${fxRow.team2}.`,
+        });
+      }
+      fxRow.winnerUserId = resolvedUserId || null;
+      fxRow.winner = resolvedUserId
+        ? resolveWinnerName(resolvedUserId, fxRow, winnerAliases)
+        : winner;
+    }
     if (margin !== undefined) tournament.tournamentFixtures[fixtureIndex].margin = margin;
     if (team1Score !== undefined) tournament.tournamentFixtures[fixtureIndex].team1Score = team1Score;
     if (team2Score !== undefined) tournament.tournamentFixtures[fixtureIndex].team2Score = team2Score;
@@ -1344,8 +1353,11 @@ router.put('/:id/fixtures/:fixtureIndex', isAdmin, async (req, res) => {
       applyCareerLeagueResult({
         team1: fxAfterSave.team1,
         team2: fxAfterSave.team2,
+        team1UserId: fxAfterSave.team1UserId,
+        team2UserId: fxAfterSave.team2UserId,
         newWinnerName: twNow,
         oldWinnerName: oldTournamentFixtureWinner || null,
+        newWinnerUserId: fxAfterSave.winnerUserId,
       }).catch((err) => console.error('Career counters (tournament):', err));
     }
 
@@ -2132,62 +2144,83 @@ const updateTournamentPointTable = async (tournamentId) => {
 
     if (!tournament) return;
 
-    // Initialize point table with all subscribed teams
+    // Initialize point table keyed by userId so renamed teams (MSD Lions etc.) still score.
     const pointTable = {};
-    tournament.subscribedTeams.forEach(team => {
+    const rowById = new Map();
+    const rowByName = new Map();
+
+    tournament.subscribedTeams.forEach((team) => {
       const teamName = team.userId?.teamName || team.teamName;
-      pointTable[teamName] = {
+      const uid = idStr(team.userId?._id || team.userId);
+      const row = {
         teamName: teamName,
         matches: 0,
         won: 0,
         lost: 0,
         points: 0,
-        fairness: 0
+        fairness: 0,
       };
+      const key = uid || teamName;
+      pointTable[key] = row;
+      if (uid) rowById.set(uid, row);
+      if (teamName) rowByName.set(String(teamName).trim().toLowerCase(), row);
     });
 
-    // Process embedded tournament fixtures
-    tournament.tournamentFixtures.forEach(fixture => {
-      if (fixture.winner) {
-        // Update matches played
-        if (pointTable[fixture.team1]) pointTable[fixture.team1].matches++;
-        if (pointTable[fixture.team2]) pointTable[fixture.team2].matches++;
+    const findRow = (userId, teamName) => {
+      const uid = idStr(userId);
+      if (uid && rowById.has(uid)) return rowById.get(uid);
+      if (teamName) {
+        const exact = rowByName.get(String(teamName).trim().toLowerCase());
+        if (exact) return exact;
+        return Object.values(pointTable).find((r) => sameTeam(r.teamName, teamName)) || null;
+      }
+      return null;
+    };
 
-        // Update wins/losses
-        if (fixture.winner === fixture.team1) {
-          if (pointTable[fixture.team1]) {
-            pointTable[fixture.team1].won++;
-            pointTable[fixture.team1].points += 2;
-          }
-          if (pointTable[fixture.team2]) {
-            pointTable[fixture.team2].lost++;
-          }
-        } else if (fixture.winner === fixture.team2) {
-          if (pointTable[fixture.team2]) {
-            pointTable[fixture.team2].won++;
-            pointTable[fixture.team2].points += 2;
-          }
-          if (pointTable[fixture.team1]) {
-            pointTable[fixture.team1].lost++;
-          }
-        }
-      }
-    });
+    tournament.tournamentFixtures.forEach((fixture) => {
+      if (!fixture.winner) return;
+      // Knockout results must not change the round-robin table.
+      const isKnockout =
+        String(fixture.team1 || '').includes('Winner of') ||
+        String(fixture.team1 || '').includes('Top ') ||
+        String(fixture.team2 || '').includes('Winner of') ||
+        String(fixture.team2 || '').includes('Top ');
+      if (isKnockout) return;
 
-    // Calculate fairness - sum of team fairness from all fixtures
-    tournament.tournamentFixtures.forEach(fixture => {
-      if (fixture.team1Fairness && pointTable[fixture.team1]) {
-        pointTable[fixture.team1].fairness += fixture.team1Fairness;
+      const row1 = findRow(fixture.team1UserId, fixture.team1);
+      const row2 = findRow(fixture.team2UserId, fixture.team2);
+      if (!row1 || !row2) return;
+
+      const aliases = { team1: row1.teamName, team2: row2.teamName };
+      const winnerId = fixture.winnerUserId
+        ? fixture.winnerUserId
+        : resolveWinnerUserId(fixture.winner, fixture, aliases);
+      const team1Won = idsEqual(winnerId, fixture.team1UserId);
+      const team2Won = idsEqual(winnerId, fixture.team2UserId);
+
+      if (!team1Won && !team2Won) return;
+
+      row1.matches++;
+      row2.matches++;
+      if (team1Won && !team2Won) {
+        row1.won++;
+        row1.points += 2;
+        row2.lost++;
+      } else if (team2Won && !team1Won) {
+        row2.won++;
+        row2.points += 2;
+        row1.lost++;
       }
-      if (fixture.team2Fairness && pointTable[fixture.team2]) {
-        pointTable[fixture.team2].fairness += fixture.team2Fairness;
-      }
+
+      row1.fairness += fixture.team1Fairness || 0;
+      row2.fairness += fixture.team2Fairness || 0;
     });
 
     // Calculate NRR for each team from tournament fixtures only (Super 8 matches)
-    Object.keys(pointTable).forEach(teamName => {
-      const nrr = calculateTournamentNRR(tournament.tournamentFixtures, teamName);
-      pointTable[teamName].nrr = nrr;
+    Object.keys(pointTable).forEach((key) => {
+      const teamName = pointTable[key].teamName;
+      const nrr = calculateTournamentNRR(tournament.tournamentFixtures, teamName, key);
+      pointTable[key].nrr = nrr;
       // Debug logging for first team to help diagnose NRR issues
       if (Object.keys(pointTable)[0] === teamName) {
         const completedFixtures = tournament.tournamentFixtures.filter(f => f.winner);

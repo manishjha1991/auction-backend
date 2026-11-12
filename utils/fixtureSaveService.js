@@ -8,15 +8,43 @@ const headToHeadModule = require('../routes/headToHead');
 const { invalidateCache } = require('./cache');
 const { emitPointsTableUpdated } = require('./emitPointsTableUpdate');
 const { applyCareerLeagueResult, revertCareerLeagueResult } = require('./careerUserCounters');
+const {
+  normalizeTeamKey,
+  idsEqual,
+  resolveWinnerUserId: resolveWinnerUserIdWithAliases,
+  resolveWinnerName: resolveWinnerNameWithAliases,
+  pickWinnerUserId,
+} = require('./matchWinner');
 
 const SCORE_FORMAT_REGEX = /^\d+\/\d+$/;
 
-const normalizeTeamKey = (value = '') =>
-  String(value || '')
-    .replace(/[^a-z0-9]/gi, '')
-    .toLowerCase();
-
 const escapeRegex = (value = '') => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function aliasesFromUsers(team1User, team2User, extra = {}) {
+  return {
+    team1: team1User?.teamName || extra.team1,
+    team2: team2User?.teamName || extra.team2,
+    team1Abbreviation: team1User?.abbreviation,
+    team2Abbreviation: team2User?.abbreviation,
+  };
+}
+
+async function loadWinnerAliases(fixture, extra = {}) {
+  if (!fixture?.team1UserId || !fixture?.team2UserId) {
+    return {
+      team1: extra.team1 || fixture?.team1,
+      team2: extra.team2 || fixture?.team2,
+    };
+  }
+  const [team1User, team2User] = await Promise.all([
+    User.findById(fixture.team1UserId).select('teamName abbreviation').lean(),
+    User.findById(fixture.team2UserId).select('teamName abbreviation').lean(),
+  ]);
+  return aliasesFromUsers(team1User, team2User, {
+    team1: extra.team1 || fixture.team1,
+    team2: extra.team2 || fixture.team2,
+  });
+}
 
 /** Match User by exact teamName, then case-insensitive, then normalized key via userId on fixture. */
 async function findUserForTeam(teamName, userId) {
@@ -75,51 +103,31 @@ async function loadFixtureTeamUsers(fixture) {
  * Which team won — resolved via user IDs on the fixture, with normalized name fallback.
  * Returns team1UserId or team2UserId of the winning side.
  */
-function resolveWinnerUserId(winner, fixture) {
-  if (!winner || !fixture) return null;
-
-  const winnerStr = String(winner).trim();
-  if (fixture.team1UserId && winnerStr === String(fixture.team1UserId)) return fixture.team1UserId;
-  if (fixture.team2UserId && winnerStr === String(fixture.team2UserId)) return fixture.team2UserId;
-
-  const wKey = normalizeTeamKey(winnerStr);
-  if (!wKey) return null;
-
-  if (fixture.team1UserId && wKey === normalizeTeamKey(fixture.team1)) return fixture.team1UserId;
-  if (fixture.team2UserId && wKey === normalizeTeamKey(fixture.team2)) return fixture.team2UserId;
-
-  return null;
+function resolveWinnerUserId(winner, fixture, aliases) {
+  return resolveWinnerUserIdWithAliases(winner, fixture, aliases || fixture?._winnerAliases || {});
 }
 
 /** Map OCR/submission winner to the fixture's canonical team1 or team2 display string. */
-function resolveWinnerName(winner, fixture) {
-  if (!winner || !fixture) return winner;
-
-  const winnerUserId = resolveWinnerUserId(winner, fixture);
-  if (winnerUserId && fixture.team1UserId && String(winnerUserId) === String(fixture.team1UserId)) {
-    return fixture.team1;
-  }
-  if (winnerUserId && fixture.team2UserId && String(winnerUserId) === String(fixture.team2UserId)) {
-    return fixture.team2;
-  }
-
-  const wKey = normalizeTeamKey(winner);
-  if (wKey && wKey === normalizeTeamKey(fixture.team1)) return fixture.team1;
-  if (wKey && wKey === normalizeTeamKey(fixture.team2)) return fixture.team2;
-  return winner;
+function resolveWinnerName(winner, fixture, aliases) {
+  return resolveWinnerNameWithAliases(winner, fixture, aliases || fixture?._winnerAliases || {});
 }
 
 function isTeam1Winner(fixture, winner) {
-  const winnerUserId = resolveWinnerUserId(winner, fixture);
+  const aliases = fixture?._winnerAliases || {};
+  const winnerUserId = resolveWinnerUserId(winner, fixture, aliases);
   if (winnerUserId && fixture.team1UserId) {
     return String(winnerUserId) === String(fixture.team1UserId);
   }
-  return resolveWinnerName(winner, fixture) === fixture.team1;
+  return resolveWinnerName(winner, fixture, aliases) === (aliases.team1 || fixture.team1);
 }
 
 async function revertPointsTableStats(fixture, winner, team1Fairness, team2Fairness) {
   const { team1User, team2User } = await loadFixtureTeamUsers(fixture);
-  const winnerUserId = resolveWinnerUserId(winner, fixture);
+  const aliases = aliasesFromUsers(team1User, team2User, {
+    team1: fixture.team1,
+    team2: fixture.team2,
+  });
+  const winnerUserId = resolveWinnerUserId(winner, fixture, aliases);
   if (!winnerUserId) {
     throw new Error(`Cannot revert points: unknown winner "${winner}" for fixture ${fixture._id}`);
   }
@@ -140,7 +148,11 @@ async function revertPointsTableStats(fixture, winner, team1Fairness, team2Fairn
 
 async function applyPointsTableStats(fixture) {
   const { team1User, team2User } = await loadFixtureTeamUsers(fixture);
-  const winnerUserId = resolveWinnerUserId(fixture.winner, fixture);
+  const aliases = aliasesFromUsers(team1User, team2User, {
+    team1: fixture.team1,
+    team2: fixture.team2,
+  });
+  const winnerUserId = resolveWinnerUserId(fixture.winner, fixture, aliases);
   if (!winnerUserId) {
     throw new Error(
       `Cannot update points table: winner "${fixture.winner}" does not match either team in fixture ${fixture._id}.`
@@ -280,25 +292,28 @@ function buildFixtureSavePayload(fixture, fields) {
 }
 
 /** Align request body with the fixture record in DB (user IDs win over display names). */
-function normalizeBodyWithFixture(body, fixture) {
+function normalizeBodyWithFixture(body, fixture, aliases = {}) {
   const normalized = { ...body, _id: fixture._id };
 
   normalized.team1UserId = fixture.team1UserId;
   normalized.team2UserId = fixture.team2UserId;
-  normalized.team1 = fixture.team1;
-  normalized.team2 = fixture.team2;
+  // Prefer live team names so renamed sides (e.g. MSD Lions) still match the winner dropdown.
+  normalized.team1 = aliases.team1 || fixture.team1;
+  normalized.team2 = aliases.team2 || fixture.team2;
   normalized.group = body.group !== undefined ? body.group : fixture.group;
   normalized.matchType = body.matchType !== undefined ? body.matchType : fixture.matchType;
 
-  if (body.winner != null && body.winner !== '') {
-    const winnerUserId = resolveWinnerUserId(body.winner, fixture);
+  if ((body.winner != null && body.winner !== '') || body.winnerUserId) {
+    const winnerUserId = pickWinnerUserId(body.winner, fixture, aliases, body.winnerUserId);
     if (!winnerUserId) {
       throw new Error(
-        `Winner "${body.winner}" does not match either team in this fixture. Pick the winning team and try again.`
+        `Winner does not match either team user id in this fixture. Pick the winning team and try again.`
       );
     }
-    normalized.winner =
-      String(winnerUserId) === String(fixture.team1UserId) ? fixture.team1 : fixture.team2;
+    normalized.winnerUserId = winnerUserId;
+    normalized.winner = idsEqual(winnerUserId, fixture.team1UserId)
+      ? (aliases.team1 || fixture.team1)
+      : (aliases.team2 || fixture.team2);
   }
 
   return normalized;
@@ -311,7 +326,9 @@ function normalizeBodyWithFixture(body, fixture) {
  */
 async function saveFixtureResult(body, options = {}) {
   let fixture = await findFixtureDocument(body);
-  const saveBody = fixture ? normalizeBodyWithFixture(body, fixture) : body;
+  const aliases = fixture ? await loadWinnerAliases(fixture, body) : {};
+  if (fixture) fixture._winnerAliases = aliases;
+  const saveBody = fixture ? normalizeBodyWithFixture(body, fixture, aliases) : body;
 
   const {
     _id,
@@ -320,6 +337,7 @@ async function saveFixtureResult(body, options = {}) {
     team1UserId,
     team2UserId,
     winner,
+    winnerUserId,
     margin,
     mom,
     team1Score,
@@ -341,7 +359,7 @@ async function saveFixtureResult(body, options = {}) {
   let prevTeam2Fairness = 0;
   const canonicalWinner =
     winner !== undefined && winner !== null && fixture
-      ? resolveWinnerName(winner, fixture)
+      ? resolveWinnerName(winner, fixture, aliases)
       : winner !== undefined && winner !== null
         ? winner
         : undefined;
@@ -365,6 +383,7 @@ async function saveFixtureResult(body, options = {}) {
       team1UserId: finalUserId1,
       team2UserId: finalUserId2,
       winner: canonicalWinner,
+      winnerUserId: winnerUserId || pickWinnerUserId(canonicalWinner, { team1UserId: finalUserId1, team2UserId: finalUserId2, team1, team2 }, aliases),
       margin,
       mom: mom
         ? {
@@ -387,7 +406,13 @@ async function saveFixtureResult(body, options = {}) {
     prevStatsApplied = !!fixture.pointsTableApplied;
     prevTeam1Fairness = fixture.team1Fairness || 0;
     prevTeam2Fairness = fixture.team2Fairness || 0;
-    if (canonicalWinner !== undefined) fixture.winner = resolveWinnerName(canonicalWinner, fixture);
+    if (aliases.team1) fixture.team1 = aliases.team1;
+    if (aliases.team2) fixture.team2 = aliases.team2;
+    if (canonicalWinner !== undefined) {
+      fixture.winner = resolveWinnerName(canonicalWinner, fixture, aliases);
+      const resolvedId = winnerUserId || pickWinnerUserId(canonicalWinner, fixture, aliases);
+      if (resolvedId) fixture.winnerUserId = resolvedId;
+    }
     if (margin !== undefined) fixture.margin = margin;
     if (mom !== undefined) {
       fixture.mom = {
@@ -420,7 +445,7 @@ async function saveFixtureResult(body, options = {}) {
     }
 
     if (fixture.winner) {
-      const winnerUserId = resolveWinnerUserId(fixture.winner, fixture);
+      const winnerUserId = resolveWinnerUserId(fixture.winner, fixture, aliases);
       if (winnerUserId) fixture.winnerUserId = winnerUserId;
     }
   }
@@ -435,26 +460,44 @@ async function saveFixtureResult(body, options = {}) {
     );
   }
 
-  if (fixture.winner && !resolveWinnerUserId(fixture.winner, fixture)) {
+  if (fixture.winner && !resolveWinnerUserId(fixture.winner, fixture, aliases)) {
     throw new Error(
       `Cannot save result: winner "${fixture.winner}" does not match either team in this fixture.`
     );
   }
 
+  if (fixture._winnerAliases) delete fixture._winnerAliases;
+
   await fixture.save();
   invalidateCache('fixtures:');
 
   if (fixture.winner) {
-    if (oldWinnerBeforeSave && prevStatsApplied) {
-      await revertPointsTableStats(
-        fixture,
-        oldWinnerBeforeSave,
-        prevTeam1Fairness,
-        prevTeam2Fairness
-      );
-    }
+    let reverted = false;
+    try {
+      if (oldWinnerBeforeSave && prevStatsApplied) {
+        await revertPointsTableStats(
+          fixture,
+          oldWinnerBeforeSave,
+          prevTeam1Fairness,
+          prevTeam2Fairness
+        );
+        reverted = true;
+      }
 
-    await applyPointsTableStats(fixture);
+      await applyPointsTableStats(fixture);
+    } catch (pointsErr) {
+      if (reverted) {
+        try {
+          const restoreWinner = fixture.winner;
+          fixture.winner = oldWinnerBeforeSave;
+          await applyPointsTableStats(fixture);
+          fixture.winner = restoreWinner;
+        } catch (restoreErr) {
+          console.error('Failed to restore points after save error:', restoreErr);
+        }
+      }
+      throw pointsErr;
+    }
     fixture.pointsTableApplied = true;
     await Fixture.updateOne({ _id: fixture._id }, { $set: { pointsTableApplied: true } });
 
@@ -473,8 +516,11 @@ async function saveFixtureResult(body, options = {}) {
         applyCareerLeagueResult({
           team1: fixture.team1,
           team2: fixture.team2,
+          team1UserId: fixture.team1UserId,
+          team2UserId: fixture.team2UserId,
           newWinnerName: fixture.winner,
           oldWinnerName: oldWinnerBeforeSave || null,
+          newWinnerUserId: fixture.winnerUserId,
         }).catch((err) => console.error('Career counters:', err));
       }
   }
@@ -509,6 +555,7 @@ async function clearFixtureResult(fixtureId, options = {}) {
   }
 
   const oldWinner = fixture.winner;
+  const oldWinnerUserId = fixture.winnerUserId;
   const prevStatsApplied = !!fixture.pointsTableApplied;
   const prevTeam1Fairness = fixture.team1Fairness || 0;
   const prevTeam2Fairness = fixture.team2Fairness || 0;
@@ -537,6 +584,9 @@ async function clearFixtureResult(fixtureId, options = {}) {
       team1: fixture.team1,
       team2: fixture.team2,
       winnerName: oldWinner,
+      team1UserId: fixture.team1UserId,
+      team2UserId: fixture.team2UserId,
+      winnerUserId: oldWinnerUserId,
     });
   } catch (err) {
     console.error('Career counters (clear):', err);

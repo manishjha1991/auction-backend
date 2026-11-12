@@ -29,9 +29,36 @@ function isPlaceholderTeamName(name) {
  * @param {string} opts.newWinnerName - team name as stored on fixture (matches User.teamName)
  * @param {string|null|undefined} opts.oldWinnerName
  */
-async function applyCareerLeagueResult({ team1, team2, newWinnerName, oldWinnerName }) {
-  if (!team1 || !team2 || !newWinnerName) return;
+async function applyCareerLeagueResult({
+  team1,
+  team2,
+  newWinnerName,
+  oldWinnerName,
+  team1UserId,
+  team2UserId,
+  newWinnerUserId,
+  oldWinnerUserId,
+}) {
   if (isPlaceholderTeamName(team1) || isPlaceholderTeamName(team2)) return;
+
+  const incOpts = { includeInactive: true };
+  const hasIds = team1UserId && team2UserId && newWinnerUserId;
+  if (hasIds) {
+    const nw = String(newWinnerUserId);
+    const ow = oldWinnerUserId ? String(oldWinnerUserId) : '';
+    if (ow && ow !== nw) {
+      await User.findByIdAndUpdate(ow, { $inc: { careerWins: -1 } }, incOpts);
+      await User.findByIdAndUpdate(nw, { $inc: { careerWins: 1 } }, incOpts);
+      return;
+    }
+    if (ow === nw) return;
+    await User.findByIdAndUpdate(team1UserId, { $inc: { careerMatchesPlayed: 1 } }, incOpts);
+    await User.findByIdAndUpdate(team2UserId, { $inc: { careerMatchesPlayed: 1 } }, incOpts);
+    await User.findByIdAndUpdate(nw, { $inc: { careerWins: 1 } }, incOpts);
+    return;
+  }
+
+  if (!team1 || !team2 || !newWinnerName) return;
 
   const nw = norm(newWinnerName);
   const t1 = norm(team1);
@@ -40,8 +67,6 @@ async function applyCareerLeagueResult({ team1, team2, newWinnerName, oldWinnerN
   if (nw !== t1 && nw !== t2) return;
 
   const ow = oldWinnerName ? norm(oldWinnerName) : '';
-
-  const incOpts = { includeInactive: true };
 
   if (ow && ow !== nw) {
     if (ow === t1 || ow === t2) {
@@ -71,17 +96,44 @@ async function applyCareerLeagueResult({ team1, team2, newWinnerName, oldWinnerN
  * Undo career bump when a completed league result is cleared (e.g. forfeit restore).
  * Both teams −1 played; winner −1 wins. Floors at 0.
  */
-async function revertCareerLeagueResult({ team1, team2, winnerName }) {
-  if (!team1 || !team2 || !winnerName) return;
+async function revertCareerLeagueResult({
+  team1,
+  team2,
+  winnerName,
+  team1UserId,
+  team2UserId,
+  winnerUserId,
+}) {
   if (isPlaceholderTeamName(team1) || isPlaceholderTeamName(team2)) return;
+
+  const incOpts = { includeInactive: true };
+
+  const decPlayedById = async (id) => {
+    if (!id) return;
+    const u = await User.findById(id).setOptions(incOpts);
+    if (!u) return;
+    u.careerMatchesPlayed = Math.max(0, (u.careerMatchesPlayed || 0) - 1);
+    await u.save();
+  };
+
+  if (team1UserId && team2UserId && winnerUserId) {
+    await decPlayedById(team1UserId);
+    await decPlayedById(team2UserId);
+    const winner = await User.findById(winnerUserId).setOptions(incOpts);
+    if (winner) {
+      winner.careerWins = Math.max(0, (winner.careerWins || 0) - 1);
+      await winner.save();
+    }
+    return;
+  }
+
+  if (!team1 || !team2 || !winnerName) return;
 
   const nw = norm(winnerName);
   const t1 = norm(team1);
   const t2 = norm(team2);
   if (nw === 'tie' || nw === 'no_result' || nw === 'tbd') return;
   if (nw !== t1 && nw !== t2) return;
-
-  const incOpts = { includeInactive: true };
 
   const decPlayed = async (teamName) => {
     const u = await User.findOne({ teamName }).setOptions(incOpts);

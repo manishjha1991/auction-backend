@@ -6,6 +6,7 @@ const PlayoffFixture = require('../models/PlayoffFixture');
 const User = require('../models/User');
 const headToHeadModule = require('../routes/headToHead');
 const { applyCareerLeagueResult } = require('./careerUserCounters');
+const { pickWinnerUserId, resolveWinnerName, idsEqual } = require('./matchWinner');
 
 const normalizeTeamKey = (value = '') =>
   String(value || '')
@@ -22,36 +23,14 @@ async function getUserIdFromTeamName(teamName) {
 }
 
 function resolvePlayoffWinnerUserId(winner, fixture) {
-  if (!winner || !fixture) return null;
-
-  const winnerStr = String(winner).trim();
-  if (fixture.team1UserId && winnerStr === String(fixture.team1UserId)) return fixture.team1UserId;
-  if (fixture.team2UserId && winnerStr === String(fixture.team2UserId)) return fixture.team2UserId;
-
-  const wKey = normalizeTeamKey(winnerStr);
-  if (!wKey) return null;
-
-  if (fixture.team1UserId && wKey === normalizeTeamKey(fixture.team1)) return fixture.team1UserId;
-  if (fixture.team2UserId && wKey === normalizeTeamKey(fixture.team2)) return fixture.team2UserId;
-
-  return null;
+  return pickWinnerUserId(winner, fixture, {}, fixture?.winnerUserId);
 }
 
 function resolvePlayoffWinnerName(winner, fixture) {
-  if (!winner || !fixture) return winner;
-
-  const winnerUserId = resolvePlayoffWinnerUserId(winner, fixture);
-  if (winnerUserId && fixture.team1UserId && String(winnerUserId) === String(fixture.team1UserId)) {
-    return fixture.team1;
-  }
-  if (winnerUserId && fixture.team2UserId && String(winnerUserId) === String(fixture.team2UserId)) {
-    return fixture.team2;
-  }
-
-  const wKey = normalizeTeamKey(winner);
-  if (wKey && wKey === normalizeTeamKey(fixture.team1)) return fixture.team1;
-  if (wKey && wKey === normalizeTeamKey(fixture.team2)) return fixture.team2;
-  return winner;
+  return resolveWinnerName(winner, fixture, {
+    team1: fixture?.team1,
+    team2: fixture?.team2,
+  });
 }
 
 function isPlayoffMatchReady(fixture) {
@@ -62,9 +41,8 @@ function isPlayoffMatchReady(fixture) {
 
 function userInPlayoffFixture(user, fixture) {
   if (!user || !fixture) return false;
-  const uid = String(user._id);
-  if (fixture.team1UserId && String(fixture.team1UserId) === uid) return true;
-  if (fixture.team2UserId && String(fixture.team2UserId) === uid) return true;
+  if (idsEqual(user._id, fixture.team1UserId) || idsEqual(user._id, fixture.team2UserId)) return true;
+  if (fixture.team1UserId || fixture.team2UserId) return false;
   const team = user.teamName || '';
   if (!team) return false;
   const mine = normalizeTeamKey(team);
@@ -175,9 +153,20 @@ async function applyPlayoffFixtureResult(matchId, body = {}) {
 
   const updateData = { ...body };
 
-  if (updateData.winner && !updateData.winnerUserId) {
-    const winnerUser = await User.findOne({ teamName: updateData.winner, isActive: true }).lean();
-    if (winnerUser) updateData.winnerUserId = winnerUser._id;
+  if (updateData.winner || updateData.winnerUserId) {
+    const resolvedId = pickWinnerUserId(
+      updateData.winner,
+      existing,
+      {},
+      updateData.winnerUserId
+    );
+    if (resolvedId) {
+      updateData.winnerUserId = resolvedId;
+      updateData.winner = resolveWinnerName(resolvedId, existing, {
+        team1: existing.team1,
+        team2: existing.team2,
+      });
+    }
   }
 
   if (
@@ -239,8 +228,11 @@ async function applyPlayoffFixtureResult(matchId, body = {}) {
         applyCareerLeagueResult({
           team1: playoffFixture.team1,
           team2: playoffFixture.team2,
+          team1UserId: playoffFixture.team1UserId,
+          team2UserId: playoffFixture.team2UserId,
           newWinnerName: newWinner,
           oldWinnerName: oldWinner || null,
+          newWinnerUserId: playoffFixture.winnerUserId,
         }).catch((err) => console.error('Career counters (playoff):', err));
       }
     }

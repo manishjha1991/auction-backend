@@ -68,19 +68,23 @@ const computeHeadToHeadFromSource = async () => {
   };
 
   const [fixtures, matchResults, playoffs] = await Promise.all([
-    Fixture.find({ isActive: true, winner: { $exists: true, $ne: null, $ne: '' } }).select('team1 team2 team1UserId team2UserId winner').lean(),
+    Fixture.find({ isActive: true, winner: { $exists: true, $ne: null, $ne: '' } }).select('team1 team2 team1UserId team2UserId winner winnerUserId').lean(),
     MatchResult.find({ winner: { $in: ['team1', 'team2'] } }).select('team1 team2 winner').lean(),
     PlayoffFixture.find({ isCompleted: true, winner: { $exists: true, $ne: null, $ne: '' } })
-      .select('team1 team2 team1UserId team2UserId winner')
+      .select('team1 team2 team1UserId team2UserId winner winnerUserId')
       .lean(),
   ]);
 
   for (const f of fixtures) {
-    if (f.winner !== f.team1 && f.winner !== f.team2) continue;
     let u1 = f.team1UserId ? { _id: f.team1UserId, teamName: f.team1 } : resolveToUser(f.team1);
     let u2 = f.team2UserId ? { _id: f.team2UserId, teamName: f.team2 } : resolveToUser(f.team2);
     if (!u1 || !u2) continue;
-    const winnerUid = f.winner === f.team1 ? u1._id : u2._id;
+    let winnerUid = f.winnerUserId || null;
+    if (!winnerUid) {
+      if (f.winner === f.team1) winnerUid = u1._id;
+      else if (f.winner === f.team2) winnerUid = u2._id;
+      else continue;
+    }
     addWin(u1._id, u2._id, winnerUid, f.team1, f.team2);
   }
 
@@ -94,11 +98,15 @@ const computeHeadToHeadFromSource = async () => {
 
   for (const p of playoffs) {
     if (String(p.team1 || '').includes('Winner of') || String(p.team2 || '').includes('Winner of')) continue;
-    if (p.winner !== p.team1 && p.winner !== p.team2) continue;
     let u1 = p.team1UserId ? { _id: p.team1UserId, teamName: p.team1 } : resolveToUser(p.team1);
     let u2 = p.team2UserId ? { _id: p.team2UserId, teamName: p.team2 } : resolveToUser(p.team2);
     if (!u1 || !u2) continue;
-    const winnerUid = p.winner === p.team1 ? u1._id : u2._id;
+    let winnerUid = p.winnerUserId || null;
+    if (!winnerUid) {
+      if (p.winner === p.team1) winnerUid = u1._id;
+      else if (p.winner === p.team2) winnerUid = u2._id;
+      else continue;
+    }
     addWin(u1._id, u2._id, winnerUid, p.team1, p.team2);
   }
 

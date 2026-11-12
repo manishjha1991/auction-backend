@@ -26,6 +26,7 @@ const { clampTradesUsed } = require('../utils/tradeConstants');
 const { getTradeRules } = require('../utils/tradeRules');
 const MatchResult = require('../models/MatchResult');
 const Tournament = require('../models/Tournament');
+const { idsEqual, userIsTeam1, userIsTeam2, userWonFixture } = require('../utils/matchWinner');
 const RetainedPlayer = require('../models/RetainedPlayer');
 const multer = require('multer');
 const path = require('path');
@@ -301,6 +302,8 @@ router.get("/:userId/details", async (req, res) => {
     //    so the Recent Form list shows real results, not upcoming fixtures.
     let fixtures = await Fixture.find({
       $or: [
+        { team1UserId: user._id },
+        { team2UserId: user._id },
         { team1: user.teamName },
         { team2: user.teamName },
       ],
@@ -310,8 +313,8 @@ router.get("/:userId/details", async (req, res) => {
       .exec();
 
     // OPTIMIZATION: Get all opponent team names first
-    const opponentTeamNames = fixtures.map(fx => 
-      fx.team1 === user.teamName ? fx.team2 : fx.team1
+    const opponentTeamNames = fixtures.map(fx =>
+      userIsTeam1(fx, user._id) || fx.team1 === user.teamName ? fx.team2 : fx.team1
     );
 
     // OPTIMIZATION: Get all opponent users in ONE query instead of N queries
@@ -327,7 +330,7 @@ router.get("/:userId/details", async (req, res) => {
     // Filter out fixtures where the opponent is not tournament ready
     // and keep only matches that were actually played (have a winner declared)
     const filteredFixtures = fixtures.filter(fx => {
-      const opponentTeamName = fx.team1 === user.teamName ? fx.team2 : fx.team1;
+      const opponentTeamName = userIsTeam1(fx, user._id) || fx.team1 === user.teamName ? fx.team2 : fx.team1;
       if (!tournamentReadyTeams.has(opponentTeamName)) return false;
       return Boolean(fx.winner);
     });
@@ -335,7 +338,7 @@ router.get("/:userId/details", async (req, res) => {
     // Transform fixture data into a simpler "score/fairness/result/opponentTeam" format
     const allMatches = filteredFixtures.map((fx) => {
       // Determine if user is team1 or team2 in this fixture
-      const isTeam1 = (fx.team1 === user.teamName);
+      const isTeam1 = userIsTeam1(fx, user._id) || (!fx.team1UserId && fx.team1 === user.teamName);
 
       // The user's score/fairness
       const userScore = isTeam1 ? fx.team1Score : fx.team2Score;
@@ -346,8 +349,8 @@ router.get("/:userId/details", async (req, res) => {
 
       // Determine result from fixture's winner field
       let userResult = "TBD";
-      if (fx.winner) {
-        userResult = (fx.winner === user.teamName) ? "Won" : "Lost";
+      if (fx.winner || fx.winnerUserId) {
+        userResult = userWonFixture(fx, user._id) ? "Won" : "Lost";
       }
 
       return {
@@ -2963,11 +2966,11 @@ router.get('/position-calculator-advanced/:userId', async (req, res) => {
 
     // Calculate current point table
     const pointsTable = users.map(user => {
-      const userFixtures = allFixtures.filter(f => 
-        (f.team1 === user.teamName || f.team2 === user.teamName) && f.winner
+      const userFixtures = allFixtures.filter(f =>
+        (userIsTeam1(f, user._id) || userIsTeam2(f, user._id) || f.team1 === user.teamName || f.team2 === user.teamName) && f.winner
       );
       
-      const wins = userFixtures.filter(f => f.winner === user.teamName).length;
+      const wins = userFixtures.filter(f => userWonFixture(f, user._id)).length;
       const matchesPlayed = userFixtures.length;
       const points = wins * 2;
       const nrr = calculateNRR(allFixtures, user.teamName, user._id);
@@ -3366,13 +3369,13 @@ router.get('/position-calculator-advanced/:userId', async (req, res) => {
             const overs1 = parseOvers(f.team1Overs) || 20;
             const overs2 = parseOvers(f.team2Overs) || 20;
             
-            if (isTeam1 && f.winner === team.originalTeamName) {
+            if (isTeam1 && userWonFixture(f, team._id)) {
               teamWins++;
               teamTotalRunsScored += runs1;
               teamTotalRunsConceded += runs2;
               teamTotalOversFaced += overs1;
               teamTotalOversBowled += overs2;
-            } else if (isTeam2 && f.winner === team.originalTeamName) {
+            } else if (isTeam2 && userWonFixture(f, team._id)) {
               teamWins++;
               teamTotalRunsScored += runs2;
               teamTotalRunsConceded += runs1;
